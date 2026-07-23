@@ -59,9 +59,9 @@ _ensure_ankbase() {
     [ -e "$ANKBASE/dev/urandom" ] || mknod "$ANKBASE/dev/urandom" c 1 9 2>/dev/null
 
     # Install packages (stream output)
-    echo "Installing openssh, bash, busybox, shadow..."
+    echo "Installing openssh, bash, busybox, shadow, supervisor..."
     mount -t proc proc "$ANKBASE/proc" 2>/dev/null
-    chroot "$ANKBASE" /sbin/apk add --no-cache busybox bash shadow openssh 2>&1
+    chroot "$ANKBASE" /sbin/apk add --no-cache busybox bash shadow openssh supervisor 2>&1
     local RC=$?
     umount "$ANKBASE/proc" 2>/dev/null
 
@@ -101,12 +101,33 @@ SSHEOF
     touch "$ANKBASE/root/.ssh/authorized_keys" 2>/dev/null
     chmod 600 "$ANKBASE/root/.ssh/authorized_keys" 2>/dev/null
 
+    # Create default supervisord.conf
+    mkdir -p "$ANKBASE/etc/supervisor/conf.d"
+    cat > "$ANKBASE/etc/supervisord.conf" << 'SUPEREOF'
+[unix_http_server]
+file=/run/supervisor.sock
+
+[supervisord]
+logfile=/var/log/supervisord.log
+logfile_maxbytes=1MB
+logfile_backups=2
+nodaemon=false
+loglevel=info
+pidfile=/run/supervisord.pid
+
+[rpcinterface:supervisor]
+supervisor.rpcinterface_factory = supervisor.rpcinterface:make_main_rpcinterface
+
+[supervisorctl]
+serverurl=unix:///run/supervisor.sock
+SUPEREOF
+
     # Remove server files if any
     rm -rf "$ANKBASE/opt/ank" 2>/dev/null
 
     # Verify
     if [ -e "$ANKBASE/usr/sbin/sshd" ] && [ -e "$ANKBASE/bin/bash" ]; then
-        echo "ank-alpinebase built successfully (openssh, bash, busybox, shadow)"
+        echo "ank-alpinebase built successfully (openssh, bash, busybox, shadow, supervisor)"
         return 0
     else
         echo "ERROR: ank-alpinebase build incomplete"
@@ -522,7 +543,7 @@ cmd_start() {
     local SSH_PORT=$(grep -o '"ssh_port":[^,]*' "$CONFIG" | cut -d: -f2 | tr -d ' ')
     local IP=$(grep -o '"ip_address":[^,]*' "$CONFIG" | cut -d'"' -f4)
 
-    echo "Starting container: $NAME (mode: $MODE)"
+    echo "Starting container: $NAME (mode: $MODE, port: $SSH_PORT)"
 
     # Find shell
     local SHELL=""
@@ -530,6 +551,7 @@ cmd_start() {
         [ -e "$ROOTFS$sh" ] || [ -L "$ROOTFS$sh" ] && { SHELL="$sh"; break; }
     done
     [ -z "$SHELL" ] && SHELL="/bin/sh"
+    echo "  Shell: $SHELL"
 
     # Fallback: if isolated mode but netns missing, degrade
     if [ "$MODE" = "isolated" ]; then
@@ -550,6 +572,7 @@ cmd_start() {
     # Set root password before starting sshd
     local ROOT_PASS=$(grep -o '"root_password":"[^"]*"' "$CONFIG" 2>/dev/null | cut -d'"' -f4)
     if [ -n "$ROOT_PASS" ]; then
+        echo "  Setting root password..."
         [ -e "$ROOTFS/dev/null" ] || mknod "$ROOTFS/dev/null" c 1 3 2>/dev/null
         [ -e "$ROOTFS/dev/urandom" ] || mknod "$ROOTFS/dev/urandom" c 1 9 2>/dev/null
         # Set password via shadow directly (most reliable)
@@ -562,8 +585,12 @@ cmd_start() {
         fi
         if [ -n "$ENC_PASS" ] && [ -f "$ROOTFS/etc/shadow" ]; then
             sed -i "s|^root:[^:]*:|root:${ENC_PASS}:|" "$ROOTFS/etc/shadow" 2>/dev/null
+            echo "  Password set via shadow"
         elif [ -f "$ROOTFS/usr/bin/chpasswd" ]; then
             echo "root:$ROOT_PASS" | chroot "$ROOTFS" /usr/bin/chpasswd 2>/dev/null
+            echo "  Password set via chpasswd"
+        else
+            echo "  WARN: Could not set password (no shadow or chpasswd)"
         fi
     fi
 
@@ -581,6 +608,7 @@ cmd_start() {
         trap "" HUP PIPE
         _ank_exit=0
         trap "_ank_exit=1" TERM INT
+        echo "[init] Mounting filesystems..."
         mkdir -p /dev/pts /dev/shm /run/sshd 2>/dev/null
         mount -t proc proc /proc 2>/dev/null
         mount -t sysfs sysfs /sys 2>/dev/null
@@ -593,26 +621,46 @@ cmd_start() {
             chmod 666 "/dev/$n" 2>/dev/null
         done
         mount -t devpts devpts /dev/pts 2>/dev/null || true
+        echo "[init] Filesystems mounted"
         hostname CONTAINER_NAME_PLACEHOLDER 2>/dev/null
         cd /root 2>/dev/null || cd /
+        echo "[init] Starting sshd on port CONTAINER_SSHD_PORT..."
         if [ -x /usr/sbin/sshd ]; then
             ssh-keygen -A 2>/dev/null
             /usr/sbin/sshd -D -p CONTAINER_SSHD_PORT -o PasswordAuthentication=yes -o PermitRootLogin=yes -o PidFile=/run/sshd.pid -e 2>/dev/null &
             _sshd_pid=$!
+            echo "[init] sshd started (PID: $_sshd_pid)"
+        else
+            echo "[init] WARN: sshd not found"
+        fi
+        if [ -x /usr/bin/supervisord ]; then
+            echo "[init] Starting supervisor..."
+            /usr/bin/supervisord -c /etc/supervisord.conf 2>/dev/null &
+            _super_pid=$!
+            echo "[init] supervisor started (PID: $_super_pid)"
         fi
         if [ -f /etc/ank/service ]; then
             _svc=$(cat /etc/ank/service 2>/dev/null)
+            echo "[init] Starting service: $_svc"
             case "$_svc" in
                 nginx)  mkdir -p /run/nginx 2>/dev/null; nginx 2>/dev/null & ;;
                 apache) httpd -D FOREGROUND 2>/dev/null & ;;
                 php)    php -S 0.0.0.0:8080 -t /var/www/php 2>/dev/null & ;;
                 node)   cd /var/www/app 2>/dev/null; node server.js 2>/dev/null & ;;
                 python) cd /var/www/app 2>/dev/null; python3 server.py 2>/dev/null & ;;
+                *)      echo "[init] Unknown service: $_svc" ;;
             esac
         fi
+        echo "[init] Container ready"
         while [ "$_ank_exit" = "0" ]; do
             if [ -n "$_sshd_pid" ] && ! kill -0 "$_sshd_pid" 2>/dev/null; then
+                echo "[init] sshd died, exiting..."
                 break
+            fi
+            if [ -n "$_super_pid" ] && ! kill -0 "$_super_pid" 2>/dev/null; then
+                echo "[init] supervisord died, restarting..."
+                /usr/bin/supervisord -c /etc/supervisord.conf 2>/dev/null &
+                _super_pid=$!
             fi
             /bin/busybox sleep 5 2>/dev/null || /bin/sleep 5 2>/dev/null || true
         done
@@ -720,6 +768,7 @@ cmd_stop() {
     echo "Stopping container: $NAME"
 
     # === Phase 1: Kill ALL processes running inside this chroot ===
+    echo "  Scanning for processes..."
     # Find PIDs by checking /proc/*/root symlink target
     local CHROOT_PIDS=""
     for pid_dir in /proc/[0-9]*; do
@@ -749,6 +798,7 @@ cmd_stop() {
 
     # Kill the main PID tree first
     if [ -n "$PID" ] && [ "$PID" != "null" ]; then
+        echo "  Stopping main process (PID: $PID)..."
         kill -TERM "$PID" 2>/dev/null
         # Also kill all children recursively
         for child in $(ps -o pid= --ppid "$PID" 2>/dev/null); do
@@ -759,9 +809,11 @@ cmd_stop() {
     sleep 1
 
     # Force kill everything found inside the chroot
+    local KILL_COUNT=0
     for cpid in $CHROOT_PIDS; do
-        kill -9 "$cpid" 2>/dev/null
+        kill -9 "$cpid" 2>/dev/null && KILL_COUNT=$((KILL_COUNT+1))
     done
+    [ $KILL_COUNT -gt 0 ] && echo "  Killed $KILL_COUNT stray processes"
 
     # Kill by name patterns (catch stragglers)
     pkill -9 -f "sshd.*PidFile.*${NAME}" 2>/dev/null
@@ -773,9 +825,11 @@ cmd_stop() {
             kill -9 "$cpid" 2>/dev/null
         done < "/sys/fs/cgroup/ank/$NAME/cgroup.procs" 2>/dev/null
     fi
+    echo "  All processes stopped"
 
     # === Phase 2: Unmount ALL chroot mounts ===
     if [ "$MODE" != "lite" ]; then
+        echo "  Unmounting filesystems..."
         # Unmount in reverse order of what init script mounts
         umount "$ROOTFS/dev/pts" 2>/dev/null
         umount "$ROOTFS/dev/shm" 2>/dev/null
@@ -787,6 +841,7 @@ cmd_stop() {
         umount -l "$ROOTFS/dev" 2>/dev/null
         umount -l "$ROOTFS/proc" 2>/dev/null
         umount -l "$ROOTFS/sys" 2>/dev/null
+        echo "  Filesystems unmounted"
     fi
 
     # === Phase 3: Remove port forwarding ===

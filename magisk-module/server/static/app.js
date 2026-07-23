@@ -100,6 +100,26 @@ function customModal(title, fields) {
         const origField = document.getElementById('input-field');
         origField.style.display = 'none';
         const customFields = fields.map(f => {
+            if (f.type === 'password') {
+                const wrap = document.createElement('div');
+                wrap.className = 'input-group';
+                wrap.style.cssText = 'margin-bottom:8px;';
+                const input = document.createElement('input');
+                input.type = 'password';
+                input.id = f.id;
+                input.value = f.value || '';
+                input.placeholder = f.label;
+                input.style.cssText = 'width:100%;padding:10px;padding-right:36px;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);font-size:14px;';
+                input.className = 'custom-modal-field';
+                const eye = document.createElement('i');
+                eye.className = 'bi bi-eye pass-toggle';
+                eye.style.cssText = 'position:absolute;right:12px;top:50%;transform:translateY(-50%);cursor:pointer;color:var(--text-muted);font-size:15px;pointer-events:auto;';
+                eye.onclick = () => { if (input.type === 'password') { input.type = 'text'; eye.className = 'bi bi-eye-slash pass-toggle'; } else { input.type = 'password'; eye.className = 'bi bi-eye pass-toggle'; } };
+                wrap.appendChild(input);
+                wrap.appendChild(eye);
+                container.appendChild(wrap);
+                return input;
+            }
             const input = document.createElement('input');
             input.type = f.type || 'text';
             input.id = f.id;
@@ -241,6 +261,11 @@ function fmtUptime(sec) {
 function esc(s) {
     if (!s) return '';
     return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+function togglePass(el) {
+    const input = el.parentElement.querySelector('input');
+    if (input.type === 'password') { input.type = 'text'; el.className = 'bi bi-eye-slash pass-toggle'; }
+    else { input.type = 'password'; el.className = 'bi bi-eye pass-toggle'; }
 }
 
 async function loadAll() {
@@ -674,7 +699,8 @@ async function showContainerDetail(name) {
 
         showModal('detail-modal');
 
-        if (isBuilding) {
+        // Real-time log polling for transient states
+        if (isBuilding || isFailed || c.status === 'starting' || c.status === 'stopping') {
             let pollAttempt = 0;
             const logEl = document.getElementById('detail-log-output');
             const pollBuilding = setInterval(async () => {
@@ -689,7 +715,7 @@ async function showContainerDetail(name) {
                     }
                     // Check status
                     const updated = await api('GET', `/containers/${name}`);
-                    if (updated.status !== 'building' && updated.status !== 'starting') {
+                    if (updated.status !== 'building' && updated.status !== 'starting' && updated.status !== 'stopping') {
                         clearInterval(pollBuilding);
                         loadAll();
                         showContainerDetail(name);
@@ -973,7 +999,7 @@ async function deployTemplate(id, name, baseReady) {
     if (!baseReady) { toast('Download the Alpine base image first (Pull Alpine)', 'warning'); return; }
     const result = await customModal('Deploy ' + name, [
         { id: 'tpl-name', label: 'Container name:', type: 'text', value: name.toLowerCase().replace(/\s+/g, '-') },
-        { id: 'tpl-pass', label: 'Root password:', type: 'password', value: 'admin123' }
+        { id: 'tpl-pass', label: 'Root password (default: admin123):', type: 'password', value: 'admin123' }
     ]);
     if (!result) return;
     const containerName = result['tpl-name'];

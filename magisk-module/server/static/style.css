@@ -134,6 +134,9 @@ button, input, select, textarea { font-family: inherit; }
 }
 .input-group input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
 .input-group input::placeholder { color: var(--text-muted); }
+.input-group .pass-toggle { position: absolute; right: 12px; left: auto; pointer-events: auto; cursor: pointer; color: var(--text-muted); font-size: 15px; }
+.input-group .pass-toggle:hover { color: var(--text); }
+.form-hint { font-size: 11px; color: var(--text-muted); margin-top: 3px; display: block; }
 
 /* Buttons */
 .btn {

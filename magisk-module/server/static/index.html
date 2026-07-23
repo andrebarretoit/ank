@@ -322,7 +322,13 @@ EXPOSE 8080</textarea>
                     <div class="form-group"><label>Name</label><input type="text" id="container-name" placeholder="my-container" required></div>
                     <div class="form-group"><label>Image</label><select id="container-image"></select></div>
                     <div class="form-row">
-                        <div class="form-group"><label>Root Password</label><input type="password" id="container-root-password" placeholder="min 4 chars" required minlength="4"></div>
+                        <div class="form-group"><label>Root Password</label>
+                            <div class="input-group">
+                                <input type="password" id="container-root-password" placeholder="default: admin123" value="admin123" required minlength="4">
+                                <i class="bi bi-eye pass-toggle" onclick="togglePass(this)"></i>
+                            </div>
+                            <span class="form-hint">Default: admin123</span>
+                        </div>
                         <div class="form-group"><label>SSH Port</label><input type="number" id="container-ssh-port" placeholder="auto" min="1024" max="65535"></div>
                     </div>
                     <div class="form-row">
