@@ -2053,12 +2053,8 @@ small{color:#334155}
             return
 
         # Use ank-alpinebase (pre-built with openssh/bash/busybox)
+        # container.sh will lazy-build it if missing
         base_img = os.path.join(IMAGES_DIR, "ank-alpinebase")
-        if not os.path.isdir(base_img):
-            base_img = os.path.join(IMAGES_DIR, "alpine-3.20")
-            if not os.path.isdir(base_img):
-                self.send_error(400, "Base image not found. Reinstall the module.")
-                return
 
         root_password = data.get("root_password", "admin123")
 

@@ -17,6 +17,104 @@ get_mode() {
     sh "$SCRIPTS_DIR/detect.sh" check 2>/dev/null
 }
 
+# ============================================================
+# Lazy build ank-alpinebase if missing (streams output to stdout)
+# ============================================================
+_ensure_ankbase() {
+    local ANKBASE="$IMAGES_DIR/ank-alpinebase"
+    local ALPINE="$IMAGES_DIR/alpine-3.20"
+
+    # Already exists? Check for /bin/sh or /bin/busybox
+    if [ -e "$ANKBASE/bin/sh" ] || [ -L "$ANKBASE/bin/sh" ] || [ -e "$ANKBASE/bin/busybox" ]; then
+        return 0
+    fi
+
+    echo "ank-alpinebase not found, building..."
+
+    # Need alpine-3.20 as source
+    if [ ! -e "$ALPINE/bin/sh" ] && [ ! -L "$ALPINE/bin/sh" ] && [ ! -e "$ALPINE/bin/busybox" ]; then
+        echo "alpine-3.20 not found, downloading..."
+        sh "$SCRIPTS_DIR/download-rootfs.sh" 3.20
+        if [ ! -e "$ALPINE/bin/sh" ] && [ ! -L "$ALPINE/bin/sh" ]; then
+            echo "ERROR: Failed to download Alpine base image"
+            return 1
+        fi
+    fi
+
+    echo "Creating ank-alpinebase from alpine-3.20..."
+    cp -a "$ALPINE" "$ANKBASE" 2>/dev/null
+    if [ $? -ne 0 ]; then
+        echo "ERROR: Failed to copy alpine-3.20"
+        return 1
+    fi
+
+    # Setup DNS
+    echo "nameserver 8.8.8.8" > "$ANKBASE/etc/resolv.conf" 2>/dev/null
+    echo "nameserver 8.8.4.4" >> "$ANKBASE/etc/resolv.conf" 2>/dev/null
+    echo "127.0.0.1 localhost" > "$ANKBASE/etc/hosts" 2>/dev/null
+
+    # Ensure /dev exists for apk
+    mkdir -p "$ANKBASE/dev" 2>/dev/null
+    [ -e "$ANKBASE/dev/null" ] || mknod "$ANKBASE/dev/null" c 1 3 2>/dev/null
+    [ -e "$ANKBASE/dev/urandom" ] || mknod "$ANKBASE/dev/urandom" c 1 9 2>/dev/null
+
+    # Install packages (stream output)
+    echo "Installing openssh, bash, busybox, shadow..."
+    mount -t proc proc "$ANKBASE/proc" 2>/dev/null
+    chroot "$ANKBASE" /sbin/apk add --no-cache busybox bash shadow openssh 2>&1
+    local RC=$?
+    umount "$ANKBASE/proc" 2>/dev/null
+
+    if [ $RC -ne 0 ]; then
+        echo "ERROR: apk install failed (rc=$RC)"
+        echo "Cleaning up failed ank-alpinebase..."
+        rm -rf "$ANKBASE"
+        return 1
+    fi
+
+    # Setup busybox symlinks
+    chroot "$ANKBASE" /bin/busybox --install -s /bin 2>/dev/null
+
+    # Set root shell to bash
+    sed -i 's|^root:[^:]*:[^:]*:[^:]*:[^:]*:[^:]*:.*|root:x:0:0:root:/root:/bin/bash|' "$ANKBASE/etc/passwd" 2>/dev/null
+
+    # Configure sshd
+    mkdir -p "$ANKBASE/etc/ssh" "$ANKBASE/run/sshd" 2>/dev/null
+    cat > "$ANKBASE/etc/ssh/sshd_config" << 'SSHEOF'
+Port 22
+ListenAddress 0.0.0.0
+PermitRootLogin yes
+PasswordAuthentication yes
+ChallengeResponseAuthentication no
+X11Forwarding no
+AllowTcpForwarding no
+PidFile /run/sshd.pid
+Subsystem sftp internal-sftp
+SSHEOF
+
+    # Generate SSH host keys
+    chroot "$ANKBASE" /usr/bin/ssh-keygen -A 2>/dev/null || true
+
+    # SSH dir
+    mkdir -p "$ANKBASE/root/.ssh" 2>/dev/null
+    chmod 700 "$ANKBASE/root/.ssh" 2>/dev/null
+    touch "$ANKBASE/root/.ssh/authorized_keys" 2>/dev/null
+    chmod 600 "$ANKBASE/root/.ssh/authorized_keys" 2>/dev/null
+
+    # Remove server files if any
+    rm -rf "$ANKBASE/opt/ank" 2>/dev/null
+
+    # Verify
+    if [ -e "$ANKBASE/usr/sbin/sshd" ] && [ -e "$ANKBASE/bin/bash" ]; then
+        echo "ank-alpinebase built successfully (openssh, bash, busybox, shadow)"
+        return 0
+    else
+        echo "ERROR: ank-alpinebase build incomplete"
+        rm -rf "$ANKBASE"
+        return 1
+    fi
+}
+
 # Setup default content + service marker for template images
 _setup_template_service() {
     local DIR="$1"
@@ -168,6 +266,15 @@ cmd_create() {
 
     # FROM alias: alpine-3.20 -> ank-alpinebase (clean alpine has no openssh)
     [ "$IMAGE" = "alpine-3.20" ] && IMAGE="ank-alpinebase"
+
+    # Lazy build ank-alpinebase if missing
+    if [ "$IMAGE" = "ank-alpinebase" ]; then
+        _ensure_ankbase
+        if [ $? -ne 0 ]; then
+            echo "ERROR: Failed to build ank-alpinebase"
+            exit 1
+        fi
+    fi
 
     if [ -d "$CONTAINER_DIR/merged" ] && [ -f "$CONTAINER_DIR/config.json" ]; then
         # Only fail if already fully created (has merged/ dir)
