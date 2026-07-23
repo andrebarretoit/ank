@@ -150,11 +150,28 @@ extract_rootfs() {
     mkdir -p "$DEST"
     local TMPDIR="$ANK_DIR/.extract_tmp"
     rm -rf "$TMPDIR" && mkdir -p "$TMPDIR"
-    cd "$TMPDIR" && tar xzf "$TARBALL" 2>>"$LOG_FILE"; cd /
+    cd "$TMPDIR" && tar xzf "$TARBALL" 2>>"$LOG_FILE"; local TAR_RC=$?; cd /
+    if [ $TAR_RC -ne 0 ]; then
+        log WARN "tar extraction failed (rc=$TAR_RC)"
+        return 1
+    fi
     rm -rf "$DEST"/*; mkdir -p "$DEST"
-    for item in "$TMPDIR"/*; do
-        [ -e "$item" ] && mv "$item" "$DEST/"
-    done
+    # Check if tar extracted with a single top-level directory (nested)
+    local ITEMS=$(ls "$TMPDIR" 2>/dev/null)
+    local COUNT=$(echo "$ITEMS" | wc -l)
+    if [ "$COUNT" -eq 1 ] && [ -d "$TMPDIR/$ITEMS" ]; then
+        # Single directory inside - move its CONTENTS, not the directory itself
+        for item in "$TMPDIR/$ITEMS"/*; do
+            [ -e "$item" ] && mv "$item" "$DEST/"
+        done
+        for item in "$TMPDIR/$ITEMS"/.*; do
+            [ -e "$item" ] && [ "$(basename "$item")" != "." ] && [ "$(basename "$item")" != ".." ] && mv "$item" "$DEST/"
+        done
+    else
+        for item in "$TMPDIR"/*; do
+            [ -e "$item" ] && mv "$item" "$DEST/"
+        done
+    fi
     rm -rf "$TMPDIR"
     [ -f "$DEST/bin/sh" ] || [ -L "$DEST/bin/sh" ] || [ -f "$DEST/bin/busybox" ]
 }
@@ -306,6 +323,12 @@ ANKBASE="$ANK_DIR/images/ank-alpinebase"
 if [ ! -d "$ANKBASE/bin" ]; then
     IMG_DIR="$ANK_DIR/images/$BASE_IMAGE"
     if [ -d "$IMG_DIR" ]; then
+        # Verify the image has /sbin/apk
+        if [ ! -f "$IMG_DIR/sbin/apk" ] && [ ! -L "$IMG_DIR/sbin/apk" ]; then
+            log WARN "Container base image missing /sbin/apk, re-extracting..."
+            rm -rf "$IMG_DIR"
+            extract_rootfs "$ALPINE_CACHE" "$IMG_DIR" 2>>"$LOG_FILE"
+        fi
         cp -a "$IMG_DIR" "$ANKBASE"
         echo "nameserver 8.8.8.8" > "$ANKBASE/etc/resolv.conf"
         echo "nameserver 8.8.4.4" >> "$ANKBASE/etc/resolv.conf"
@@ -314,7 +337,9 @@ if [ ! -d "$ANKBASE/bin" ]; then
         chroot "$ANKBASE" /sbin/apk add --no-cache busybox bash shadow openssh openssl s6 2>>"$LOG_FILE"
         RET=$?
         umount "$ANKBASE/proc" 2>/dev/null
-        if [ $RET -eq 0 ]; then
+        if [ $RET -ne 0 ]; then
+            log WARN "ank-alpinebase apk install failed (rc=$RET), containers will install packages individually"
+        else
             chroot "$ANKBASE" /bin/busybox --install -s /bin 2>/dev/null
             sed -i 's|^root:[^:]*:[^:]*:[^:]*:[^:]*:[^:]*:.*|root:x:0:0:root:/root:/bin/bash|' "$ANKBASE/etc/passwd" 2>/dev/null
             mkdir -p "$ANKBASE/etc/ssh" "$ANKBASE/run/sshd"
@@ -337,8 +362,6 @@ SSHEOF
             mkdir -p "$ANKBASE/etc/s6/services"
             rm -rf "$ANKBASE/opt/ank" 2>/dev/null
             log OK "ank-alpinebase built (openssh, bash, busybox, shadow, s6)"
-        else
-            log WARN "ank-alpinebase apk install failed, containers will install packages individually"
         fi
     fi
 else
