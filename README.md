@@ -334,8 +334,6 @@ ank/
 | Versao | Status | Download |
 |--------|--------|----------|
 | v2.0.0 | **Ultima** | [ank-v2.0.0.zip](https://github.com/andrebarretoit/ank/releases/download/v2.0.0/ank-v2.0.0.zip) |
-| v1.0.22a | Estavel | [ank-v1.0.22a.zip](https://github.com/andrebarretoit/ank/releases/download/v1.0.22a/ank-v1.0.22a.zip) |
-| v0.1 | Estavel | [ank-v0.1.zip](https://github.com/andrebarretoit/ank/releases/download/v0.1/ank-v0.1.zip) |
 
 ---
 
@@ -691,8 +689,6 @@ ank/
 | Version | Status | Download |
 |---------|--------|----------|
 | v2.0.0 | **Latest** | [ank-v2.0.0.zip](https://github.com/andrebarretoit/ank/releases/download/v2.0.0/ank-v2.0.0.zip) |
-| v1.0.22a | Stable | [ank-v1.0.22a.zip](https://github.com/andrebarretoit/ank/releases/download/v1.0.22a/ank-v1.0.22a.zip) |
-| v0.1 | Stable | [ank-v0.1.zip](https://github.com/andrebarretoit/ank/releases/download/v0.1/ank-v0.1.zip) |
 
 ---
 
