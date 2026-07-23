@@ -222,16 +222,16 @@ log INFO "Mode: $MODE (chroot=$CHROOT netns=$NETNS pidns=$PIDNS overlay=$OVERLAY
 # --- STEP 2: Find or build ankcore tarball ---
 log STEP "2/4 > Rootfs + Python3..."
 
-# Try to locate tarball: inside ZIP > on sdcard
-ANKCORE="$MODPATH/ankcore-${ARCH_NAME}.tar.gz"
-if [ ! -s "$ANKCORE" ]; then
-    ANKCORE="/sdcard/Download/ankcore-${ARCH_NAME}.tar.gz"
-fi
+# Tarball is always inside the ZIP at ankfs/
+ANKCORE="$MODPATH/ankfs/ankcore-${ARCH_NAME}.tar.gz"
 if [ ! -s "$ANKCORE" ]; then
     log INFO "Extracting tarball from ZIP..."
     unzip -o "$ZIPFILE" -d "$MODPATH" >>"$LOG_FILE" 2>&1
     rm -rf "$MODPATH/META-INF"
-    ANKCORE="$MODPATH/ankcore-${ARCH_NAME}.tar.gz"
+    ANKCORE="$MODPATH/ankfs/ankcore-${ARCH_NAME}.tar.gz"
+fi
+if [ ! -s "$ANKCORE" ]; then
+    die "ankcore tarball not found in ZIP"
 fi
 TARBALL_FOUND=0
 [ -s "$ANKCORE" ] && TARBALL_FOUND=1
