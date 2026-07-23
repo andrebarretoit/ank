@@ -1906,7 +1906,7 @@ small{color:#334155}
                 for f, c in [("etc/resolv.conf", "nameserver 8.8.8.8\nnameserver 8.8.4.4\n"),
                              ("etc/hosts", "127.0.0.1 localhost\n")]:
                     with open(os.path.join(ankbase, f), "w") as fh: fh.write(c)
-                subprocess.run(["su", "-c", f"mount -t proc proc {ankbase}/proc 2>/dev/null; chroot {ankbase} /sbin/apk add --no-cache busybox bash shadow openssh s6 2>&1; umount {ankbase}/proc 2>/dev/null"], capture_output=True, timeout=120)
+                subprocess.run(["su", "-c", f"mount -t proc proc {ankbase}/proc 2>/dev/null; chroot {ankbase} /sbin/apk add --no-cache busybox bash shadow openssh openssl s6 2>&1; umount {ankbase}/proc 2>/dev/null"], capture_output=True, timeout=120)
                 subprocess.run(["su", "-c", f"chroot {ankbase} /bin/busybox --install -s /bin 2>/dev/null"], capture_output=True, timeout=10)
                 # sshd_config
                 os.makedirs(os.path.join(ankbase, "etc/ssh"), exist_ok=True)

@@ -311,7 +311,7 @@ if [ ! -d "$ANKBASE/bin" ]; then
         echo "nameserver 8.8.4.4" >> "$ANKBASE/etc/resolv.conf"
         echo "127.0.0.1 localhost" > "$ANKBASE/etc/hosts"
         mount -t proc proc "$ANKBASE/proc" 2>/dev/null
-        chroot "$ANKBASE" /sbin/apk add --no-cache busybox bash shadow openssh s6 2>>"$LOG_FILE"
+        chroot "$ANKBASE" /sbin/apk add --no-cache busybox bash shadow openssh openssl s6 2>>"$LOG_FILE"
         RET=$?
         umount "$ANKBASE/proc" 2>/dev/null
         if [ $RET -eq 0 ]; then

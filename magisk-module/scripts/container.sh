@@ -59,9 +59,9 @@ _ensure_ankbase() {
     [ -e "$ANKBASE/dev/urandom" ] || mknod "$ANKBASE/dev/urandom" c 1 9 2>/dev/null
 
     # Install packages (stream output)
-    echo "Installing openssh, bash, busybox, shadow, s6..."
+    echo "Installing openssh, bash, busybox, shadow, openssl, s6..."
     mount -t proc proc "$ANKBASE/proc" 2>/dev/null
-    chroot "$ANKBASE" /sbin/apk add --no-cache busybox bash shadow openssh s6 2>&1
+    chroot "$ANKBASE" /sbin/apk add --no-cache busybox bash shadow openssh openssl s6 2>&1
     local RC=$?
     umount "$ANKBASE/proc" 2>/dev/null
 
@@ -409,6 +409,8 @@ cmd_create() {
     mkdir -p "$ROOTFS/dev" 2>/dev/null
     [ -e "$ROOTFS/dev/null" ] || mknod "$ROOTFS/dev/null" c 1 3 2>/dev/null
     [ -e "$ROOTFS/dev/urandom" ] || mknod "$ROOTFS/dev/urandom" c 1 9 2>/dev/null
+    # Mount proc for chroot operations
+    mount -t proc proc "$ROOTFS/proc" 2>/dev/null
     # Set root password via shadow file directly
     if [ -n "$ROOT_PASS" ]; then
         local ENC_PASS=""
@@ -424,15 +426,18 @@ cmd_create() {
         elif [ -f "$ROOTFS/usr/bin/chpasswd" ]; then
             echo "root:$ROOT_PASS" | chroot "$ROOTFS" /usr/bin/chpasswd 2>/dev/null
             echo "Password set via chpasswd"
+        else
+            echo "WARN: Could not set password (no shadow or chpasswd)"
         fi
     fi
+    umount "$ROOTFS/proc" 2>/dev/null
     echo "Container ready: $NAME"
 
     # Create config with SSH info
     cat > "$CONTAINER_DIR/config.json" << CFGEOF
 {
   "name": "$NAME",
-  "status": "stopped",
+  "status": "building",
   "image": "$IMAGE",
   "mode": "$MODE",
   "autostart": false,
@@ -561,6 +566,7 @@ cmd_start() {
         echo "  Setting root password..."
         [ -e "$ROOTFS/dev/null" ] || mknod "$ROOTFS/dev/null" c 1 3 2>/dev/null
         [ -e "$ROOTFS/dev/urandom" ] || mknod "$ROOTFS/dev/urandom" c 1 9 2>/dev/null
+        mount -t proc proc "$ROOTFS/proc" 2>/dev/null
         # Set password via shadow directly (most reliable)
         local ENC_PASS=""
         ENC_PASS=$(chroot "$ROOTFS" /usr/bin/openssl passwd -1 "$ROOT_PASS" 2>/dev/null)
@@ -578,6 +584,7 @@ cmd_start() {
         else
             echo "  WARN: Could not set password (no shadow or chpasswd)"
         fi
+        umount "$ROOTFS/proc" 2>/dev/null
     fi
 
     # Init script: setup dev, start sshd as PID 1
