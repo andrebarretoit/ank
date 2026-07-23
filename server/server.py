@@ -816,17 +816,6 @@ small{color:#334155}
                 return
             accept = _ws_accept_key(ws_key)
             log(f"WS_SHELL: upgrade from {self.client_address[0]}")
-            # CRITICAL: close rfile/wfile to release the socket from
-            # BaseHTTPRequestHandler's BufferedReader/BufferedWriter
-            # so raw socket recv/sendall work without interference
-            try:
-                self.rfile.close()
-            except Exception:
-                pass
-            try:
-                self.wfile.close()
-            except Exception:
-                pass
             rsock = self.request
             resp = (
                 b"HTTP/1.1 101 Switching Protocols\r\n"

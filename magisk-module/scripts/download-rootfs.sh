@@ -30,28 +30,15 @@ fi
 
 mkdir -p "$IMAGES_DIR" "$ANK_DIR/cache"
 
-# Check for pre-built tarball from install
-PREBUILT="$ANK_DIR/cache/ankcore-v*-${ARCH_NAME}.tar.gz"
-for tarball in $PREBUILT; do
-    if [ -f "$tarball" ]; then
-        echo "Using cached rootfs: $tarball"
-        mkdir -p "$ROOTFS"
-        TMPDIR="$ANK_DIR/.extract_tmp"
-        rm -rf "$TMPDIR"
-        mkdir -p "$TMPDIR"
-        cd "$TMPDIR" && tar xzf "$tarball" 2>/dev/null
-        cd /
-        rm -rf "$ROOTFS"/*
-        for item in "$TMPDIR"/*; do
-            [ -e "$item" ] && mv "$item" "$ROOTFS/"
-        done
-        rm -rf "$TMPDIR"
-        if [ -f "$ROOTFS/usr/bin/sh" ]; then
-            echo "Rootfs extracted from cache"
-            exit 0
-        fi
+# Check cached Alpine minirootfs
+if [ -s "$TARBALL" ]; then
+    HEAD=$(dd if="$TARBALL" bs=1 count=2 2>/dev/null | od -A n -t x1 | tr -d ' ')
+    if [ "$HEAD" = "1f8b" ]; then
+        echo "Using cached Alpine tarball"
+    else
+        rm -f "$TARBALL"
     fi
-done
+fi
 
 # Download Alpine minirootfs
 echo "Downloading Alpine v${VERSION} for ${ARCH_NAME}..."

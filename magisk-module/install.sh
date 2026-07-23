@@ -5,6 +5,7 @@ ANKFS="$ANK_DIR/ankfs"
 ANK_SDCARD="/sdcard/AndroidKonteiner"
 LOG_FILE="$ANK_DIR/logs/install.log"
 REPO="http://dl-cdn.alpinelinux.org/alpine/v3.20"
+BASE_IMAGE="alpine-3.20"
 
 init_log() {
     mkdir -p "$ANK_DIR/logs"
@@ -26,21 +27,16 @@ die() {
 }
 
 cleanup() {
-    # Kill server
     pkill -f "ld-musl.*python3.*server.py" 2>/dev/null
-    # Kill ALL container init processes (they hold mount points)
     for cpid in $(pgrep -f "sh.*_ank_exit" 2>/dev/null); do
         kill -TERM "$cpid" 2>/dev/null
     done
-    # Also kill any sshd inside containers
     for cpid in $(pgrep -f "sshd.*PidFile" 2>/dev/null); do
         kill -TERM "$cpid" 2>/dev/null
     done
     sleep 1
-    # Force kill anything remaining
     pkill -9 -f "sh.*_ank_exit" 2>/dev/null
     pkill -9 -f "sshd.*PidFile" 2>/dev/null
-    # Unmount all container filesystems
     for c in "$ANK_DIR/containers"/*/; do
         [ -d "$c" ] || continue
         umount "$c/merged/proc" 2>/dev/null
@@ -55,7 +51,7 @@ cleanup() {
     umount "$ANKFS/dev/shm" 2>/dev/null
     umount "$ANKFS/dev" 2>/dev/null
     umount "$ANKFS/sys" 2>/dev/null
-    rm -rf "$ANKFS" "$ANK_DIR/containers" "$ANK_DIR/core" "$ANK_DIR/images" "$ANK_DIR/config.json"
+    rm -rf "$ANKFS" "$ANK_DIR/containers" "$ANK_DIR/core" "$ANK_DIR/config.json"
     mkdir -p "$ANK_DIR/logs" "$ANK_DIR/cache"
 }
 
@@ -71,6 +67,58 @@ detect_arch() {
     esac
 }
 
+find_dl_tool() {
+    DL=""
+    command -v wget >/dev/null 2>&1 && DL="wget -q -O"
+    if [ -z "$DL" ]; then
+        command -v curl >/dev/null 2>&1 && DL="curl -sL -o"
+    fi
+    if [ -z "$DL" ]; then
+        [ -f /system/bin/toybox ] && /system/bin/toybox wget --help >/dev/null 2>&1 && DL="/system/bin/toybox wget -q -O"
+    fi
+    [ -z "$DL" ] && return 1
+    return 0
+}
+
+download_alpine() {
+    local OUT_TAR="$1"
+    find_dl_tool || die "No download tool (wget/curl)"
+    for VER in "3.20.2" "3.20.1" "3.20.0" "3.19.1"; do
+        local URL="https://dl-cdn.alpinelinux.org/alpine/v3.20/releases/${ARCH_NAME}/alpine-minirootfs-${VER}-${ARCH_NAME}.tar.gz"
+        log INFO "Downloading Alpine ${VER} ${ARCH_NAME}..."
+        rm -f "$OUT_TAR"
+        $DL "$OUT_TAR" "$URL" 2>>"$LOG_FILE"
+        if [ -s "$OUT_TAR" ]; then
+            local FSIZE=$(stat -c%s "$OUT_TAR" 2>/dev/null || echo 0)
+            if [ "$FSIZE" -gt 100000 ]; then
+                local HEAD=$(dd if="$OUT_TAR" bs=1 count=2 2>/dev/null | od -A n -t x1 | tr -d ' ')
+                if [ "$HEAD" = "1f8b" ]; then
+                    log OK "Alpine ${VER} downloaded (${FSIZE} bytes)"
+                    return 0
+                fi
+            fi
+            log WARN "Invalid download for ${VER} (${FSIZE} bytes), trying next..."
+            rm -f "$OUT_TAR"
+        fi
+    done
+    return 1
+}
+
+extract_rootfs() {
+    local TARBALL="$1"
+    local DEST="$2"
+    mkdir -p "$DEST"
+    local TMPDIR="$ANK_DIR/.extract_tmp"
+    rm -rf "$TMPDIR" && mkdir -p "$TMPDIR"
+    cd "$TMPDIR" && tar xzf "$TARBALL" 2>>"$LOG_FILE"; cd /
+    rm -rf "$DEST"/*; mkdir -p "$DEST"
+    for item in "$TMPDIR"/*; do
+        [ -e "$item" ] && mv "$item" "$DEST/"
+    done
+    rm -rf "$TMPDIR"
+    [ -f "$DEST/bin/sh" ] || [ -L "$DEST/bin/sh" ] || [ -f "$DEST/bin/busybox" ]
+}
+
 # ============================================================
 # MAIN
 # ============================================================
@@ -79,7 +127,6 @@ mkdir -p "$ANK_DIR/logs" "$ANK_DIR/cache"
 init_log
 detect_arch
 
-# Detect mode > tiered by available capabilities
 NETNS=0; PIDNS=0; OVERLAY=0; CHROOT=0; CGROUPS=0
 command -v chroot >/dev/null 2>&1 && CHROOT=1
 ip netns add _ank_test 2>/dev/null && { ip netns del _ank_test 2>/dev/null; NETNS=1; }
@@ -87,11 +134,6 @@ unshare --pid --fork /bin/true 2>/dev/null && PIDNS=1
 cat /proc/filesystems 2>/dev/null | grep -q overlay && OVERLAY=1
 [ -d /sys/fs/cgroup/ank ] 2>/dev/null || { mkdir -p /sys/fs/cgroup/ank 2>/dev/null && CGROUPS=1; }
 
-# Tier selection:
-#   isolated      = netns + pidns + chroot + overlay (Tier X)
-#   shared_network = pidns + chroot + overlay, no netns (Tier Y)
-#   shared_host   = chroot only (Tier Z)
-#   native_host   = nothing (Tier W)
 if [ "$NETNS" -eq 1 ] && [ "$PIDNS" -eq 1 ] && [ "$CHROOT" -eq 1 ]; then
     MODE="isolated"
 elif [ "$PIDNS" -eq 1 ] && [ "$CHROOT" -eq 1 ]; then
@@ -113,149 +155,116 @@ log STEP "1/4 > Clean..."
 cleanup
 log OK "Done"
 
-# Write mode file AFTER cleanup (cleanup no longer deletes it)
+# Write mode file
 mkdir -p "$ANK_DIR"
 cat > "$ANK_DIR/mode" << MODEEOF
 {"mode":"$MODE","chroot":$CHROOT,"netns":$NETNS,"pidns":$PIDNS,"overlay":$OVERLAY,"cgroups":$CGROUPS}
 MODEEOF
 log INFO "Mode: $MODE (chroot=$CHROOT netns=$NETNS pidns=$PIDNS overlay=$OVERLAY cgroups=$CGROUPS)"
 
-# --- STEP 2+3: Rootfs + Python3 (pre-built ankcore) ---
+# --- STEP 2: Find or build ankcore tarball ---
 log STEP "2/4 > Rootfs + Python3..."
 
+# Try to locate tarball: inside ZIP > on sdcard
 ANKCORE="$MODPATH/ankcore-${ARCH_NAME}.tar.gz"
 if [ ! -s "$ANKCORE" ]; then
     ANKCORE="/sdcard/Download/ankcore-${ARCH_NAME}.tar.gz"
 fi
 if [ ! -s "$ANKCORE" ]; then
-    # Extract from ZIP directly
     log INFO "Extracting tarball from ZIP..."
     unzip -o "$ZIPFILE" -d "$MODPATH" >>"$LOG_FILE" 2>&1
     rm -rf "$MODPATH/META-INF"
     ANKCORE="$MODPATH/ankcore-${ARCH_NAME}.tar.gz"
 fi
+TARBALL_FOUND=0
+[ -s "$ANKCORE" ] && TARBALL_FOUND=1
 
-# Build rootfs from scratch if tarball not found
-if [ ! -s "$ANKCORE" ]; then
-    log WARN "ankcore tarball not found â€” building from scratch..."
-    BUILDROOT="$ANK_DIR/cache/buildroot"
-    rm -rf "$BUILDROOT"
-    mkdir -p "$BUILDROOT" "$ANK_DIR/cache"
+# Shared Alpine tarball cache (used for both ankfs build-from-scratch AND container image)
+ALPINE_CACHE="$ANK_DIR/cache/alpine-minirootfs-${ARCH_NAME}.tar.gz"
 
-    # Determine Alpine arch
-    case "$ARCH_NAME" in
-        aarch64) ALPINE_ARCH="aarch64" ;;
-        armv7) ALPINE_ARCH="armv7" ;;
-        x86_64) ALPINE_ARCH="x86_64" ;;
-        *) ALPINE_ARCH="$ARCH_NAME" ;;
-    esac
-
-    # Find available download tool
-    DL=""
-    command -v wget >/dev/null 2>&1 && DL="wget -q -O"
-    if [ -z "$DL" ]; then
-        command -v curl >/dev/null 2>&1 && DL="curl -sL -o"
-    fi
-    # Android toybox wget (no HTTPS usually, but try)
-    if [ -z "$DL" ]; then
-        [ -f /system/bin/toybox ] && /system/bin/toybox wget --help >/dev/null 2>&1 && DL="/system/bin/toybox wget -q -O"
-    fi
-    [ -z "$DL" ] && die "No download tool found (wget/curl). InstallBusybox first."
-
-    # Try multiple Alpine versions
-    ALPINE_TAR="$ANK_DIR/cache/alpine-minirootfs.tar.gz"
-    OK=0
-    for VER in "3.20.2" "3.20.1" "3.20.0" "3.19.1" "3.19.0"; do
-        ALPINE_URL="https://dl-cdn.alpinelinux.org/alpine/v3.20/releases/${ALPINE_ARCH}/alpine-minirootfs-${VER}-${ALPINE_ARCH}.tar.gz"
-        log INFO "Trying Alpine ${VER} ${ALPINE_ARCH}..."
-        rm -f "$ALPINE_TAR"
-        $DL "$ALPINE_TAR" "$ALPINE_URL" 2>>"$LOG_FILE"
-        # Validate: file must be >100KB and start with valid gzip magic
-        if [ -s "$ALPINE_TAR" ]; then
-            FSIZE=$(stat -c%s "$ALPINE_TAR" 2>/dev/null || echo 0)
-            if [ "$FSIZE" -gt 100000 ]; then
-                # Check gzip magic (1f 8b)
-                HEAD=$(dd if="$ALPINE_TAR" bs=1 count=2 2>/dev/null | od -A n -t x1 | tr -d ' ')
-                if [ "$HEAD" = "1f8b" ]; then
-                    log OK "Alpine ${VER} downloaded (${FSIZE} bytes)"
-                    OK=1
-                    break
-                fi
-            fi
-            log WARN "Invalid download for ${VER} (${FSIZE} bytes), trying next..."
-            rm -f "$ALPINE_TAR"
-        fi
-    done
-    [ "$OK" -eq 0 ] && die "Failed to download Alpine minirootfs for ${ALPINE_ARCH}"
-
-    # Extract minirootfs
-    rm -rf "$BUILDROOT"
-    mkdir -p "$BUILDROOT"
-    cd "$BUILDROOT" && tar xzf "$ALPINE_TAR" 2>>"$LOG_FILE"
-    if [ $? -ne 0 ] || [ ! -f "$BUILDROOT/bin/sh" ]; then
-        cd /
-        rm -rf "$BUILDROOT"
-        die "Failed to extract Alpine minirootfs (tar error or missing /bin/sh)"
-    fi
-    cd /
-    log OK "Alpine minirootfs extracted"
-
-    # Setup DNS
-    mkdir -p "$BUILDROOT/etc"
-    echo "nameserver 8.8.8.8" > "$BUILDROOT/etc/resolv.conf"
-    echo "nameserver 8.8.4.4" >> "$BUILDROOT/etc/resolv.conf"
-    echo "127.0.0.1 localhost" > "$BUILDROOT/etc/hosts"
-
-    # Setup apk repos
-    mkdir -p "$BUILDROOT/etc/apk"
-    echo "https://dl-cdn.alpinelinux.org/alpine/v3.20/main" > "$BUILDROOT/etc/apk/repositories"
-    echo "https://dl-cdn.alpinelinux.org/alpine/v3.20/community" >> "$BUILDROOT/etc/apk/repositories"
-
-    # Install packages inside chroot (mount /proc first for apk)
-    log INFO "Installing python3, openssl, openssh in chroot..."
-    mount -t proc proc "$BUILDROOT/proc" 2>/dev/null
-    chroot "$BUILDROOT" /bin/sh -c "apk update && apk add --no-cache python3 openssl openssh bash busybox" 2>>"$LOG_FILE"
-    RET=$?
-    umount "$BUILDROOT/proc" 2>/dev/null
-    [ $RET -ne 0 ] && die "Failed to install packages in chroot"
-    log OK "Packages installed"
-
-    # Setup busybox symlinks
-    if [ -f "$BUILDROOT/usr/bin/busybox" ]; then
-        for cmd in sh bash ls cat cp rm mkdir mount umount chmod chown sed awk grep find tar gzip ps kill su id; do
-            [ ! -f "$BUILDROOT/bin/$cmd" ] && ln -sf /usr/bin/busybox "$BUILDROOT/bin/$cmd" 2>/dev/null
-        done
-    fi
-
-    # Ensure /bin/sh exists
-    [ ! -f "$BUILDROOT/bin/sh" ] && ln -sf /bin/busybox "$BUILDROOT/bin/sh" 2>/dev/null
-    [ ! -f "$BUILDROOT/bin/sh" ] && die "/bin/sh not found after chroot setup"
-
-    # Package as ankcore tarball
-    log INFO "Packaging ankcore tarball..."
-    cd "$BUILDROOT" && tar czf "$ANK_DIR/cache/ankcore-${ARCH_NAME}.tar.gz" . 2>>"$LOG_FILE"; cd /
-    ANKCORE="$ANK_DIR/cache/ankcore-${ARCH_NAME}.tar.gz"
-    [ ! -s "$ANKCORE" ] && die "Failed to package ankcore tarball"
-    log OK "ankcore built from scratch ($(stat -c%s "$ANKCORE" 2>/dev/null || echo 0) bytes)"
-
-    # Use buildroot directly as ankfs (already extracted)
-    rm -rf "$ANKFS"
-    mv "$BUILDROOT" "$ANKFS"
-else
-    log INFO "ankcore: $(stat -c%s "$ANKCORE" 2>/dev/null || echo 0) bytes"
-
-    # Extract pre-built rootfs
+if [ "$TARBALL_FOUND" -eq 1 ]; then
+    # ===== PATH A: Tarball exists -> extract as ankfs =====
+    log INFO "ankcore tarball found: $(stat -c%s "$ANKCORE" 2>/dev/null || echo 0) bytes"
     rm -rf "$ANKFS"
     mkdir -p "$ANKFS"
     cd "$ANKFS" && tar xzf "$ANKCORE" 2>>"$LOG_FILE"; cd /
     log OK "ankcore extracted"
+
+    # Ensure container base image exists (download if needed)
+    IMG_DIR="$ANK_DIR/images/$BASE_IMAGE"
+    if [ ! -e "$IMG_DIR/bin/sh" ] && [ ! -e "$IMG_DIR/bin/busybox" ]; then
+        log INFO "Container base image not found, downloading..."
+        if [ ! -s "$ALPINE_CACHE" ]; then
+            download_alpine "$ALPINE_CACHE" || die "Alpine download failed"
+        fi
+        extract_rootfs "$ALPINE_CACHE" "$IMG_DIR" || die "Failed to extract container base image"
+        # Configure repos + DNS on image
+        mkdir -p "$IMG_DIR/etc/apk" "$IMG_DIR/var/cache/apk"
+        echo "http://dl-cdn.alpinelinux.org/alpine/v3.20/main" > "$IMG_DIR/etc/apk/repositories"
+        echo "http://dl-cdn.alpinelinux.org/alpine/v3.20/community" >> "$IMG_DIR/etc/apk/repositories"
+        echo "nameserver 8.8.8.8" > "$IMG_DIR/etc/resolv.conf"
+        echo "nameserver 8.8.4.4" >> "$IMG_DIR/etc/resolv.conf"
+        echo "127.0.0.1 localhost" > "$IMG_DIR/etc/hosts"
+        log OK "Container base image ready"
+    fi
+else
+    # ===== PATH B: No tarball -> build ankfs from scratch + save image =====
+    log WARN "ankcore tarball not found, building from scratch..."
+
+    # Download Alpine minirootfs
+    if [ ! -s "$ALPINE_CACHE" ]; then
+        download_alpine "$ALPINE_CACHE" || die "Alpine download failed"
+    fi
+
+    # Build ankfs from Alpine
+    BUILDROOT="$ANK_DIR/cache/buildroot"
+    rm -rf "$BUILDROOT"
+    extract_rootfs "$ALPINE_CACHE" "$BUILDROOT" || die "Failed to extract Alpine for ankfs"
+
+    # Setup DNS + repos
+    mkdir -p "$BUILDROOT/etc" "$BUILDROOT/etc/apk" "$BUILDROOT/var/cache/apk"
+    echo "nameserver 8.8.8.8" > "$BUILDROOT/etc/resolv.conf"
+    echo "nameserver 8.8.4.4" >> "$BUILDROOT/etc/resolv.conf"
+    echo "127.0.0.1 localhost" > "$BUILDROOT/etc/hosts"
+    echo "https://dl-cdn.alpinelinux.org/alpine/v3.20/main" > "$BUILDROOT/etc/apk/repositories"
+    echo "https://dl-cdn.alpinelinux.org/alpine/v3.20/community" >> "$BUILDROOT/etc/apk/repositories"
+
+    # Install python3 + deps in ankfs
+    log INFO "Installing python3, openssl, openssh in chroot..."
+    mount -t proc proc "$BUILDROOT/proc" 2>/dev/null
+    chroot "$BUILDROOT" /bin/sh -c "apk update && apk add --no-cache python3 openssl openssh bash busybox shadow" 2>>"$LOG_FILE"
+    RET=$?
+    umount "$BUILDROOT/proc" 2>/dev/null
+    [ $RET -ne 0 ] && die "Failed to install packages in chroot"
+
+    # Setup busybox symlinks
+    if [ -f "$BUILDROOT/bin/busybox" ]; then
+        chroot "$BUILDROOT" /bin/busybox --install -s /bin 2>/dev/null
+    fi
+    [ ! -f "$BUILDROOT/bin/sh" ] && ln -sf /bin/busybox "$BUILDROOT/bin/sh" 2>/dev/null
+
+    # Save as ankfs
+    rm -rf "$ANKFS"
+    mv "$BUILDROOT" "$ANKFS"
+    log OK "ankfs built from scratch"
+
+    # Save clean Alpine as container base image (same download, no packages installed)
+    IMG_DIR="$ANK_DIR/images/$BASE_IMAGE"
+    extract_rootfs "$ALPINE_CACHE" "$IMG_DIR" || die "Failed to extract container base image"
+    mkdir -p "$IMG_DIR/etc/apk" "$IMG_DIR/var/cache/apk"
+    echo "http://dl-cdn.alpinelinux.org/alpine/v3.20/main" > "$IMG_DIR/etc/apk/repositories"
+    echo "http://dl-cdn.alpinelinux.org/alpine/v3.20/community" >> "$IMG_DIR/etc/apk/repositories"
+    echo "nameserver 8.8.8.8" > "$IMG_DIR/etc/resolv.conf"
+    echo "nameserver 8.8.4.4" >> "$IMG_DIR/etc/resolv.conf"
+    echo "127.0.0.1 localhost" > "$IMG_DIR/etc/hosts"
+    log OK "Container base image saved"
 fi
 
-# Verify python3 exists
-[ ! -f "$ANKFS/usr/bin/python3" ] && die "python3 not found in ankcore"
+# --- Verify python3 in ankfs ---
+[ ! -f "$ANKFS/usr/bin/python3" ] && die "python3 not found in ankfs"
 log OK "python3 installed"
 
-# Create common system users needed by services (nginx, sshd, etc.)
+# System users in ankfs
 for u in nginx nobody; do
     grep -q "^${u}:" "$ANKFS/etc/passwd" 2>/dev/null || \
         echo "${u}:x:100:65534::/dev/null:/sbin/nologin" >> "$ANKFS/etc/passwd"
@@ -266,73 +275,54 @@ for g in nginx; do
 done
 log OK "system users created"
 
-# Ensure DNS is available for chroot apk operations (BEFORE any chroot)
+# DNS in ankfs
 mkdir -p "$ANKFS/etc"
 echo "nameserver 8.8.8.8" > "$ANKFS/etc/resolv.conf"
 echo "nameserver 8.8.4.4" >> "$ANKFS/etc/resolv.conf"
 echo "127.0.0.1 localhost" > "$ANKFS/etc/hosts"
 
-# Install openssh in rootfs for container SSH access
-log STEP "Installing openssh..."
+# --- STEP 3: openssh in ankfs ---
+log STEP "3/4 > openssh..."
 if [ -f "$ANKFS/usr/bin/apk" ]; then
-    chroot "$ANKFS" /usr/bin/apk add --no-cache openssh openssl 2>>"$LOG_FILE" || log WARN "openssh/openssl install failed (non-fatal)"
-    # Configure sshd
+    chroot "$ANKFS" /usr/bin/apk add --no-cache openssh openssl 2>>"$LOG_FILE" || log WARN "openssh install failed (non-fatal)"
     if [ -d "$ANKFS/etc/ssh" ]; then
-        # PermitRootLogin yes, PasswordAuthentication yes
         sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin yes/' "$ANKFS/etc/ssh/sshd_config" 2>/dev/null
         sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication yes/' "$ANKFS/etc/ssh/sshd_config" 2>/dev/null
-        # Disable password login for ssh key only (we want password)
         sed -i 's/^#\?ChallengeResponseAuthentication.*/ChallengeResponseAuthentication no/' "$ANKFS/etc/ssh/sshd_config" 2>/dev/null
-        # Generate host keys if missing
+        sed -i '/^UsePAM/d' "$ANKFS/etc/ssh/sshd_config" 2>/dev/null
         [ ! -f "$ANKFS/etc/ssh/ssh_host_rsa_key" ] && \
             chroot "$ANKFS" /usr/bin/ssh-keygen -A 2>>"$LOG_FILE" || true
-        # Allow root login via ssh
-        echo "PermitRootLogin yes" >> "$ANKFS/etc/ssh/sshd_config" 2>/dev/null
-        echo "PasswordAuthentication yes" >> "$ANKFS/etc/ssh/sshd_config" 2>/dev/null
-        echo "UsePAM no" >> "$ANKFS/etc/ssh/sshd_config" 2>/dev/null
-        # Ensure sshd can run (create empty authorized_keys for root)
-        mkdir -p "$ANKFS/root/.ssh" 2>/dev/null
-        chmod 700 "$ANKFS/root/.ssh" 2>/dev/null
-        touch "$ANKFS/root/.ssh/authorized_keys" 2>/dev/null
-        chmod 600 "$ANKFS/root/.ssh/authorized_keys" 2>/dev/null
-        # Create /run/sshd for pid file
-        mkdir -p "$ANKFS/run/sshd" 2>/dev/null
+        mkdir -p "$ANKFS/root/.ssh"
+        chmod 700 "$ANKFS/root/.ssh"
+        touch "$ANKFS/root/.ssh/authorized_keys"
+        chmod 600 "$ANKFS/root/.ssh/authorized_keys"
+        mkdir -p "$ANKFS/run/sshd"
         log OK "openssh configured"
     fi
 fi
 
-# Copy clean rootfs as container image
-log INFO "Copying rootfs as container image..."
-mkdir -p "$ANK_DIR/images/alpine-3.20"
-cd "$ANKFS" && tar xzf "$ANKCORE" -C "$ANK_DIR/images/alpine-3.20" 2>>"$LOG_FILE"; cd /
-# Create system users in container image too
-for u in nginx nobody; do
-    grep -q "^${u}:" "$ANK_DIR/images/alpine-3.20/etc/passwd" 2>/dev/null || \
-        echo "${u}:x:100:65534::/dev/null:/sbin/nologin" >> "$ANK_DIR/images/alpine-3.20/etc/passwd"
-done
-for g in nginx; do
-    grep -q "^${g}:" "$ANK_DIR/images/alpine-3.20/etc/group" 2>/dev/null || \
-        echo "${g}:x:100:" >> "$ANK_DIR/images/alpine-3.20/etc/group"
-done
-# Copy openssh config + host keys to image
-if [ -f "$ANKFS/usr/sbin/sshd" ]; then
-    cp "$ANKFS/usr/sbin/sshd" "$ANK_DIR/images/alpine-3.20/usr/sbin/sshd" 2>/dev/null
-    cp "$ANKFS/usr/bin/ssh" "$ANK_DIR/images/alpine-3.20/usr/bin/ssh" 2>/dev/null
-    cp "$ANKFS/usr/bin/ssh-keygen" "$ANK_DIR/images/alpine-3.20/usr/bin/ssh-keygen" 2>/dev/null
-    mkdir -p "$ANK_DIR/images/alpine-3.20/etc/ssh" 2>/dev/null
-    cp "$ANKFS/etc/ssh/"* "$ANK_DIR/images/alpine-3.20/etc/ssh/" 2>/dev/null
-    mkdir -p "$ANK_DIR/images/alpine-3.20/root/.ssh" 2>/dev/null
-    chmod 700 "$ANK_DIR/images/alpine-3.20/root/.ssh" 2>/dev/null
-    touch "$ANK_DIR/images/alpine-3.20/root/.ssh/authorized_keys" 2>/dev/null
-    chmod 600 "$ANK_DIR/images/alpine-3.20/root/.ssh/authorized_keys" 2>/dev/null
-    mkdir -p "$ANK_DIR/images/alpine-3.20/run/sshd" 2>/dev/null
-    # Copy necessary libs
+# Copy openssh binaries + libs to container base image
+IMG_DIR="$ANK_DIR/images/$BASE_IMAGE"
+if [ -f "$ANKFS/usr/sbin/sshd" ] && [ -d "$IMG_DIR" ]; then
+    mkdir -p "$IMG_DIR/usr/sbin" "$IMG_DIR/usr/bin" "$IMG_DIR/usr/lib"
+    cp "$ANKFS/usr/sbin/sshd" "$IMG_DIR/usr/sbin/sshd" 2>/dev/null
+    cp "$ANKFS/usr/bin/ssh" "$IMG_DIR/usr/bin/ssh" 2>/dev/null
+    cp "$ANKFS/usr/bin/ssh-keygen" "$IMG_DIR/usr/bin/ssh-keygen" 2>/dev/null
+    mkdir -p "$IMG_DIR/etc/ssh"
+    [ -d "$ANKFS/etc/ssh" ] && cp "$ANKFS/etc/ssh/"* "$IMG_DIR/etc/ssh/" 2>/dev/null
+    mkdir -p "$IMG_DIR/root/.ssh"
+    chmod 700 "$IMG_DIR/root/.ssh"
+    touch "$IMG_DIR/root/.ssh/authorized_keys"
+    chmod 600 "$IMG_DIR/root/.ssh/authorized_keys"
+    mkdir -p "$IMG_DIR/run/sshd"
     for lib in "$ANKFS/usr/lib/"libcrypto*.so* "$ANKFS/usr/lib/"libssl*.so* "$ANKFS/lib/"libz*.so* "$ANKFS/lib/"libc*.so* "$ANKFS/lib/"libutil*.so* "$ANKFS/lib/"libpthread*.so*; do
-        [ -e "$lib" ] && cp "$lib" "$ANK_DIR/images/alpine-3.20/usr/lib/" 2>/dev/null
+        [ -e "$lib" ] && cp "$lib" "$IMG_DIR/usr/lib/" 2>/dev/null
     done
-    log OK "openssh copied to image"
+    log OK "openssh copied to container image"
 fi
-log OK "alpine-3.20 image ready"
+# Security: ensure no server files in container image
+rm -rf "$IMG_DIR/opt/ank" 2>/dev/null
+log OK "$BASE_IMAGE image ready"
 
 # --- STEP 4: Server + scripts ---
 log STEP "4/4 > Server..."

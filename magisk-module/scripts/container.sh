@@ -166,9 +166,16 @@ cmd_create() {
     local CONTAINER_DIR="$CONTAINERS_DIR/$NAME"
     local MODE=$(get_mode)
 
-    if [ -d "$CONTAINER_DIR" ]; then
-        echo "ERROR: Container '$NAME' already exists"
-        exit 1
+    if [ -d "$CONTAINER_DIR/merged" ] && [ -f "$CONTAINER_DIR/config.json" ]; then
+        # Only fail if already fully created (has merged/ dir)
+        # If only config.json exists (status=building), allow retry
+        local EXISTING_STATUS=$(grep -o '"status": *"[^"]*"' "$CONTAINER_DIR/config.json" 2>/dev/null | head -1 | cut -d'"' -f4)
+        if [ "$EXISTING_STATUS" != "building" ] && [ "$EXISTING_STATUS" != "failed" ]; then
+            echo "ERROR: Container '$NAME' already exists"
+            exit 1
+        fi
+        echo "Retrying creation of '$NAME'..."
+        rm -rf "$CONTAINER_DIR"
     fi
 
     local BASE_DIR="$IMAGES_DIR/$IMAGE"
@@ -286,8 +293,9 @@ cmd_create() {
     [ -e "$ROOTFS/dev/null" ] || mknod "$ROOTFS/dev/null" c 1 3 2>/dev/null
     [ -e "$ROOTFS/dev/urandom" ] || mknod "$ROOTFS/dev/urandom" c 1 9 2>/dev/null
     # Install busybox, bash, shadow, openssh
-    chroot "$ROOTFS" /sbin/apk add --no-cache busybox bash shadow openssh 2>/dev/null
-    if [ $? -eq 0 ] || true; then
+    chroot "$ROOTFS" /sbin/apk add --no-cache busybox bash shadow openssh 2>&1
+    local APK_RC=$?
+    if [ -f "$ROOTFS/bin/busybox" ] && [ -f "$ROOTFS/usr/sbin/sshd" ]; then
         # Install busybox applets
         chroot "$ROOTFS" /bin/busybox --install -s /bin 2>/dev/null
         # Set /bin/bash as root shell
@@ -303,7 +311,6 @@ ListenAddress 0.0.0.0
 PermitRootLogin yes
 PasswordAuthentication yes
 ChallengeResponseAuthentication no
-UsePAM no
 X11Forwarding no
 AllowTcpForwarding no
 PidFile /run/sshd.pid
@@ -311,9 +318,14 @@ Subsystem sftp internal-sftp
 SSHEOF
         # Set root password via shadow file directly (more reliable than chpasswd)
         local ENC_PASS=""
-        for op in "$ROOTFS/usr/bin/openssl" "$ROOTFS/usr/sbin/openssl"; do
-            [ -f "$op" ] && ENC_PASS=$("$op" passwd -1 "$ROOT_PASS" 2>/dev/null) && break
-        done
+        # Try openssl INSIDE chroot first
+        ENC_PASS=$(chroot "$ROOTFS" /usr/bin/openssl passwd -1 "$ROOT_PASS" 2>/dev/null)
+        if [ -z "$ENC_PASS" ]; then
+            # Fallback: try openssl from host with chroot libs
+            for op in "$ROOTFS/usr/bin/openssl" "$ROOTFS/usr/sbin/openssl"; do
+                [ -f "$op" ] && ENC_PASS=$(LD_LIBRARY_PATH="$ROOTFS/usr/lib:$ROOTFS/lib" "$op" passwd -1 "$ROOT_PASS" 2>/dev/null) && break
+            done
+        fi
         if [ -n "$ENC_PASS" ] && [ -f "$ROOTFS/etc/shadow" ]; then
             sed -i "s|^root:[^:]*:|root:${ENC_PASS}:|" "$ROOTFS/etc/shadow" 2>/dev/null
             echo "Password set via shadow"
@@ -459,9 +471,12 @@ cmd_start() {
         [ -e "$ROOTFS/dev/urandom" ] || mknod "$ROOTFS/dev/urandom" c 1 9 2>/dev/null
         # Set password via shadow directly (most reliable)
         local ENC_PASS=""
-        for op in "$ROOTFS/usr/bin/openssl" "$ROOTFS/usr/sbin/openssl"; do
-            [ -f "$op" ] && ENC_PASS=$("$op" passwd -1 "$ROOT_PASS" 2>/dev/null) && break
-        done
+        ENC_PASS=$(chroot "$ROOTFS" /usr/bin/openssl passwd -1 "$ROOT_PASS" 2>/dev/null)
+        if [ -z "$ENC_PASS" ]; then
+            for op in "$ROOTFS/usr/bin/openssl" "$ROOTFS/usr/sbin/openssl"; do
+                [ -f "$op" ] && ENC_PASS=$(LD_LIBRARY_PATH="$ROOTFS/usr/lib:$ROOTFS/lib" "$op" passwd -1 "$ROOT_PASS" 2>/dev/null) && break
+            done
+        fi
         if [ -n "$ENC_PASS" ] && [ -f "$ROOTFS/etc/shadow" ]; then
             sed -i "s|^root:[^:]*:|root:${ENC_PASS}:|" "$ROOTFS/etc/shadow" 2>/dev/null
         elif [ -f "$ROOTFS/usr/bin/chpasswd" ]; then
@@ -479,11 +494,11 @@ cmd_start() {
     fi
 
     CONTAINER_INIT='
+        export PATH=/bin:/sbin:/usr/bin:/usr/sbin
         trap "" HUP PIPE
         _ank_exit=0
         trap "_ank_exit=1" TERM INT
-        export PATH=/bin:/sbin:/usr/bin:/usr/sbin
-        mkdir -p /dev/pts /dev/shm 2>/dev/null
+        mkdir -p /dev/pts /dev/shm /run/sshd 2>/dev/null
         mount -t proc proc /proc 2>/dev/null
         mount -t sysfs sysfs /sys 2>/dev/null
         mount -t devtmpfs devtmpfs /dev 2>/dev/null || true
@@ -497,47 +512,26 @@ cmd_start() {
         mount -t devpts devpts /dev/pts 2>/dev/null || true
         hostname CONTAINER_NAME_PLACEHOLDER 2>/dev/null
         cd /root 2>/dev/null || cd /
-        mkdir -p /run/sshd 2>/dev/null
         if [ -x /usr/sbin/sshd ]; then
             ssh-keygen -A 2>/dev/null
             /usr/sbin/sshd -D -p CONTAINER_SSHD_PORT -o PasswordAuthentication=yes -o PermitRootLogin=yes -o PidFile=/run/sshd.pid -e 2>/dev/null &
             _sshd_pid=$!
-            sleep 1
-            if kill -0 $_sshd_pid 2>/dev/null; then
-                echo "sshd started on port CONTAINER_SSHD_PORT (PID: $_sshd_pid)"
-            fi
         fi
         if [ -f /etc/ank/service ]; then
             _svc=$(cat /etc/ank/service 2>/dev/null)
             case "$_svc" in
-                nginx)
-                    mkdir -p /run/nginx 2>/dev/null
-                    nginx 2>/dev/null &
-                    echo "nginx started"
-                    ;;
-                apache)
-                    httpd -D FOREGROUND 2>/dev/null &
-                    echo "apache started"
-                    ;;
-                php)
-                    php -S 0.0.0.0:8080 -t /var/www/php 2>/dev/null &
-                    echo "php started on :8080"
-                    ;;
-                node)
-                    cd /var/www/app 2>/dev/null
-                    node server.js 2>/dev/null &
-                    echo "node started on :3000"
-                    ;;
-                python)
-                    cd /var/www/app 2>/dev/null
-                    python3 server.py 2>/dev/null &
-                    echo "python started on :5000"
-                    ;;
+                nginx)  mkdir -p /run/nginx 2>/dev/null; nginx 2>/dev/null & ;;
+                apache) httpd -D FOREGROUND 2>/dev/null & ;;
+                php)    php -S 0.0.0.0:8080 -t /var/www/php 2>/dev/null & ;;
+                node)   cd /var/www/app 2>/dev/null; node server.js 2>/dev/null & ;;
+                python) cd /var/www/app 2>/dev/null; python3 server.py 2>/dev/null & ;;
             esac
         fi
         while [ "$_ank_exit" = "0" ]; do
-            sleep 3600 &
-            wait $! 2>/dev/null
+            if [ -n "$_sshd_pid" ] && ! kill -0 "$_sshd_pid" 2>/dev/null; then
+                break
+            fi
+            /bin/busybox sleep 5 2>/dev/null || /bin/sleep 5 2>/dev/null || true
         done
     '
 
@@ -562,14 +556,15 @@ cmd_start() {
         nohup "$PROOT_BIN" -0 -r "$ROOTFS" \
             "$SHELL" -c "$CONTAINER_INIT" </dev/null >/dev/null 2>&1 &
     else
-        nohup chroot "$ROOTFS" "$SHELL" -c "$CONTAINER_INIT" </dev/null >/dev/null 2>&1 &
+        nohup chroot "$ROOTFS" "$SHELL" -c "$CONTAINER_INIT" </dev/null >"$ANK_DIR/logs/${NAME}.log" 2>&1 &
     fi
 
     local PID=$!
 
-    sleep 1
+    sleep 2
     if ! kill -0 "$PID" 2>/dev/null; then
         echo "ERROR: Container process died immediately after start"
+        [ -f "$ANK_DIR/logs/${NAME}.log" ] && tail -5 "$ANK_DIR/logs/${NAME}.log" 2>/dev/null
         sed -i "s/\"status\": \"[^\"]*\"/\"status\": \"stopped\"/" "$CONFIG"
         sed -i "s/\"pid\": [^,]*/\"pid\": null/" "$CONFIG"
         exit 1
