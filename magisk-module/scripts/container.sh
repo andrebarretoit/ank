@@ -632,20 +632,81 @@ cmd_stop() {
     local PID=$(grep -o '"pid": [^,]*' "$CONFIG" | cut -d' ' -f2)
     local SSH_PORT=$(grep -o '"ssh_port":[^,]*' "$CONFIG" | cut -d: -f2 | tr -d ' ')
     local IP=$(grep -o '"ip_address":[^,]*' "$CONFIG" | cut -d'"' -f4)
+    local ROOTFS="$CONTAINER_DIR/merged"
 
     echo "Stopping container: $NAME"
 
+    # === Phase 1: Kill ALL processes running inside this chroot ===
+    # Find PIDs by checking /proc/*/root symlink target
+    local CHROOT_PIDS=""
+    for pid_dir in /proc/[0-9]*; do
+        local pid=$(basename "$pid_dir")
+        local root_link=$(readlink "$pid_dir/root" 2>/dev/null)
+        if [ "$root_link" = "$ROOTFS" ] || [ "$root_link" = "/" ]; then
+            # Check if process's cwd or exe is inside our rootfs
+            local exe=$(readlink "$pid_dir/exe" 2>/dev/null)
+            local cwd=$(readlink "$pid_dir/cwd" 2>/dev/null)
+            case "$exe" in
+                ${ROOTFS}/*) CHROOT_PIDS="$CHROOT_PIDS $pid" ;;
+            esac
+            case "$cwd" in
+                ${ROOTFS}/*) CHROOT_PIDS="$CHROOT_PIDS $pid" ;;
+            esac
+        fi
+    done
+
+    # Also find via cmdline (sshd, nginx, node, python, etc.)
+    for pid_dir in /proc/[0-9]*; do
+        local pid=$(basename "$pid_dir")
+        local cmdline=$(cat "$pid_dir/cmdline" 2>/dev/null | tr '\0' ' ')
+        case "$cmdline" in
+            *${ROOTFS}*|*"sshd -D"*|*"sshd -e"*) CHROOT_PIDS="$CHROOT_PIDS $pid" ;;
+        esac
+    done
+
+    # Kill the main PID tree first
     if [ -n "$PID" ] && [ "$PID" != "null" ]; then
         kill -TERM "$PID" 2>/dev/null
-        sleep 1
-        kill -9 "$PID" 2>/dev/null
-        local CHILDREN=$(ps -o pid= --ppid "$PID" 2>/dev/null)
-        for child in $CHILDREN; do
-            kill -9 "$child" 2>/dev/null
+        # Also kill all children recursively
+        for child in $(ps -o pid= --ppid "$PID" 2>/dev/null); do
+            kill -TERM "$child" 2>/dev/null
         done
     fi
 
-    # Remove SSH port forwarding (only for isolated mode)
+    sleep 1
+
+    # Force kill everything found inside the chroot
+    for cpid in $CHROOT_PIDS; do
+        kill -9 "$cpid" 2>/dev/null
+    done
+
+    # Kill by name patterns (catch stragglers)
+    pkill -9 -f "sshd.*PidFile.*${NAME}" 2>/dev/null
+    pkill -9 -f "sshd.*-p.*${SSH_PORT}" 2>/dev/null
+
+    # Final check - kill any remaining in cgroup
+    if [ -d "/sys/fs/cgroup/ank/$NAME" ]; then
+        while read -r cpid; do
+            kill -9 "$cpid" 2>/dev/null
+        done < "/sys/fs/cgroup/ank/$NAME/cgroup.procs" 2>/dev/null
+    fi
+
+    # === Phase 2: Unmount ALL chroot mounts ===
+    if [ "$MODE" != "lite" ]; then
+        # Unmount in reverse order of what init script mounts
+        umount "$ROOTFS/dev/pts" 2>/dev/null
+        umount "$ROOTFS/dev/shm" 2>/dev/null
+        umount "$ROOTFS/dev" 2>/dev/null
+        umount "$ROOTFS/proc" 2>/dev/null
+        umount "$ROOTFS/sys" 2>/dev/null
+        # Lazy unmount if still busy
+        umount -l "$ROOTFS/dev/pts" 2>/dev/null
+        umount -l "$ROOTFS/dev" 2>/dev/null
+        umount -l "$ROOTFS/proc" 2>/dev/null
+        umount -l "$ROOTFS/sys" 2>/dev/null
+    fi
+
+    # === Phase 3: Remove port forwarding ===
     if [ -n "$SSH_PORT" ] && [ "$SSH_PORT" != "null" ] && [ "$IP" != "none" ] && [ -n "$IP" ]; then
         local MODE=$(get_mode)
         if [ "$MODE" = "isolated" ]; then
@@ -669,14 +730,6 @@ cmd_stop() {
         fi
     fi
 
-    # Unmount
-    if [ "$MODE" != "lite" ]; then
-        local ROOTFS="$CONTAINER_DIR/merged"
-        umount "$ROOTFS/proc" 2>/dev/null
-        umount "$ROOTFS/sys" 2>/dev/null
-        umount "$ROOTFS/dev" 2>/dev/null
-    fi
-
     sed -i "s/\"status\": \"[^\"]*\"/\"status\": \"stopped\"/" "$CONFIG"
     sed -i "s/\"pid\": [^,]*/\"pid\": null/" "$CONFIG"
 
@@ -698,41 +751,46 @@ cmd_delete() {
 
     local CONFIG="$CONTAINER_DIR/config.json"
     local STATUS=""
-    local PID=""
-    local SSH_PORT=""
-    local IP=""
     if [ -f "$CONFIG" ]; then
         STATUS=$(grep -o '"status": *"[^"]*"' "$CONFIG" | cut -d'"' -f4)
-        PID=$(grep -o '"pid": [^,]*' "$CONFIG" | cut -d' ' -f2)
-        SSH_PORT=$(grep -o '"ssh_port":[^,]*' "$CONFIG" | cut -d: -f2 | tr -d ' ')
-        IP=$(grep -o '"ip_address":[^,]*' "$CONFIG" | cut -d'"' -f4)
     fi
 
-    if [ "$STATUS" = "running" ] || [ "$STATUS" = "starting" ] || [ "$STATUS" = "stopping" ]; then
-        cmd_stop "$NAME"
+    if [ "$STATUS" = "running" ] || [ "$STATUS" = "starting" ]; then
+        echo "ERROR: Container '$NAME' is $STATUS. Stop it first."
+        exit 1
     fi
 
     echo "Deleting container: $NAME"
 
-    if [ -n "$PID" ] && [ "$PID" != "null" ]; then
-        kill -9 "$PID" 2>/dev/null
-        local CHILDREN=$(ps -o pid= --ppid "$PID" 2>/dev/null)
-        for child in $CHILDREN; do
-            kill -9 "$child" 2>/dev/null
-        done
-        local CGROUP="/sys/fs/cgroup/ank/$NAME"
-        if [ -d "$CGROUP" ]; then
-            for cpid in $(ls "$CGROUP" 2>/dev/null); do
-                kill -9 "$cpid" 2>/dev/null
-            done
-        fi
-    fi
+    # Kill ANY stray processes (should be stopped, but just in case)
+    local ROOTFS="$CONTAINER_DIR/merged"
+    for pid_dir in /proc/[0-9]*; do
+        local pid=$(basename "$pid_dir")
+        local exe=$(readlink "$pid_dir/exe" 2>/dev/null)
+        local cwd=$(readlink "$pid_dir/cwd" 2>/dev/null)
+        case "$exe" in ${ROOTFS}/*) kill -9 "$pid" 2>/dev/null ;; esac
+        case "$cwd" in ${ROOTFS}/*) kill -9 "$pid" 2>/dev/null ;; esac
+    done
+    local SSH_PORT=$(grep -o '"ssh_port":[^,]*' "$CONFIG" 2>/dev/null | cut -d: -f2 | tr -d ' ')
+    [ -n "$SSH_PORT" ] && pkill -9 -f "sshd.*-p.*${SSH_PORT}" 2>/dev/null
 
-    local SSHD_PID=$(pgrep -f "sshd.*$NAME" 2>/dev/null)
-    if [ -n "$SSHD_PID" ]; then
-        kill -9 $SSHD_PID 2>/dev/null
-    fi
+    # Unmount everything
+    umount "$ROOTFS/dev/pts" 2>/dev/null
+    umount "$ROOTFS/dev/shm" 2>/dev/null
+    umount "$ROOTFS/dev" 2>/dev/null
+    umount "$ROOTFS/proc" 2>/dev/null
+    umount "$ROOTFS/sys" 2>/dev/null
+    umount "$ROOTFS/run" 2>/dev/null
+    umount "$ROOTFS/tmp" 2>/dev/null
+    umount -l "$ROOTFS/dev/pts" 2>/dev/null
+    umount -l "$ROOTFS/dev" 2>/dev/null
+    umount -l "$ROOTFS/proc" 2>/dev/null
+    umount -l "$ROOTFS/sys" 2>/dev/null
+    umount "$CONTAINER_DIR/merged" 2>/dev/null
+    umount -l "$CONTAINER_DIR/merged" 2>/dev/null
 
+    # Clean iptables
+    local IP=$(grep -o '"ip_address":[^,]*' "$CONFIG" 2>/dev/null | cut -d'"' -f4)
     if [ -n "$SSH_PORT" ] && [ "$SSH_PORT" != "null" ] && [ -n "$IP" ] && [ "$IP" != "none" ]; then
         local MODE=$(get_mode)
         if [ "$MODE" = "isolated" ]; then
@@ -758,26 +816,18 @@ cmd_delete() {
         fi
     fi
 
+    # Destroy network
     local MODE=$(get_mode)
     if [ "$MODE" = "isolated" ]; then
-        sh "$SCRIPTS_DIR/network.sh" destroy "$NAME"
+        sh "$SCRIPTS_DIR/network.sh" destroy "$NAME" 2>/dev/null
     else
-        sh "$SCRIPTS_DIR/network.sh" destroy_compat "$NAME"
+        sh "$SCRIPTS_DIR/network.sh" destroy_compat "$NAME" 2>/dev/null
     fi
 
-    local ROOTFS="$CONTAINER_DIR/merged"
-    umount "$ROOTFS/proc" 2>/dev/null
-    umount "$ROOTFS/sys" 2>/dev/null
-    umount "$ROOTFS/dev" 2>/dev/null
-    umount "$ROOTFS/dev/pts" 2>/dev/null
-    umount "$ROOTFS/dev/shm" 2>/dev/null
-    umount "$ROOTFS/run" 2>/dev/null
-    umount "$ROOTFS/tmp" 2>/dev/null
-    umount -l "$ROOTFS" 2>/dev/null
-    umount "$CONTAINER_DIR/merged" 2>/dev/null
-    umount -l "$CONTAINER_DIR/merged" 2>/dev/null
-
+    # Remove cgroup
     rmdir "/sys/fs/cgroup/ank/$NAME" 2>/dev/null
+
+    # Delete everything
     rm -rf "$CONTAINER_DIR"
 
     echo "Container '$NAME' deleted"

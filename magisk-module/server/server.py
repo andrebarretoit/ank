@@ -1982,6 +1982,9 @@ small{color:#334155}
                     if r.returncode != 0:
                         log(f"WARNING: apk install output: {r.stderr[-500:] if r.stderr else r.stdout[-500:]}")
 
+                _chroot('mkdir -p /etc/ank')
+                _write_file(os.path.join(merged, 'etc/ank/service'), template_id)
+
                 if template_id == "nginx":
                     static_dir = template["static_path"]
                     _chroot(f'mkdir -p {static_dir} /run/nginx')
