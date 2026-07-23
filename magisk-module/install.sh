@@ -300,6 +300,50 @@ else
     log OK "Container base image saved"
 fi
 
+# --- STEP 2.5: Build ank-alpinebase (pre-built container base with openssh/bash/busybox) ---
+log STEP "2.5/4 > Building ank-alpinebase..."
+ANKBASE="$ANK_DIR/images/ank-alpinebase"
+if [ ! -d "$ANKBASE/bin" ]; then
+    IMG_DIR="$ANK_DIR/images/$BASE_IMAGE"
+    if [ -d "$IMG_DIR" ]; then
+        cp -a "$IMG_DIR" "$ANKBASE"
+        echo "nameserver 8.8.8.8" > "$ANKBASE/etc/resolv.conf"
+        echo "nameserver 8.8.4.4" >> "$ANKBASE/etc/resolv.conf"
+        echo "127.0.0.1 localhost" > "$ANKBASE/etc/hosts"
+        mount -t proc proc "$ANKBASE/proc" 2>/dev/null
+        chroot "$ANKBASE" /sbin/apk add --no-cache busybox bash shadow openssh 2>>"$LOG_FILE"
+        RET=$?
+        umount "$ANKBASE/proc" 2>/dev/null
+        if [ $RET -eq 0 ]; then
+            chroot "$ANKBASE" /bin/busybox --install -s /bin 2>/dev/null
+            sed -i 's|^root:[^:]*:[^:]*:[^:]*:[^:]*:[^:]*:.*|root:x:0:0:root:/root:/bin/bash|' "$ANKBASE/etc/passwd" 2>/dev/null
+            mkdir -p "$ANKBASE/etc/ssh" "$ANKBASE/run/sshd"
+            cat > "$ANKBASE/etc/ssh/sshd_config" << 'SSHEOF'
+Port 22
+ListenAddress 0.0.0.0
+PermitRootLogin yes
+PasswordAuthentication yes
+ChallengeResponseAuthentication no
+X11Forwarding no
+AllowTcpForwarding no
+PidFile /run/sshd.pid
+Subsystem sftp internal-sftp
+SSHEOF
+            chroot "$ANKBASE" /usr/bin/ssh-keygen -A 2>>"$LOG_FILE" || true
+            mkdir -p "$ANKBASE/root/.ssh"
+            chmod 700 "$ANKBASE/root/.ssh"
+            touch "$ANKBASE/root/.ssh/authorized_keys"
+            chmod 600 "$ANKBASE/root/.ssh/authorized_keys"
+            rm -rf "$ANKBASE/opt/ank" 2>/dev/null
+            log OK "ank-alpinebase built (openssh, bash, busybox, shadow)"
+        else
+            log WARN "ank-alpinebase apk install failed, containers will install packages individually"
+        fi
+    fi
+else
+    log OK "ank-alpinebase already exists"
+fi
+
 # --- Verify python3 in ankfs ---
 [ ! -f "$ANKFS/usr/bin/python3" ] && die "python3 not found in ankfs"
 log OK "python3 installed"

@@ -213,6 +213,54 @@ def run_script(script, *args):
     except Exception as e:
         return str(e), 1
 
+def run_script_streaming(script, log_path, timeout=300, *args):
+    """Run script with real-time output streaming to log file. Returns returncode."""
+    script_path = os.path.join(SCRIPTS_DIR, script)
+    cmd_parts = ["/system/bin/sh", script_path] + list(args)
+    cmd_str = " ".join(f"'{a}'" for a in cmd_parts)
+    proc = None
+    try:
+        with open(log_path, "w") as lf:
+            if os.geteuid() != 0:
+                proc = subprocess.Popen(
+                    ["su", "-c", cmd_str],
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                    text=True, bufsize=1
+                )
+            else:
+                proc = subprocess.Popen(
+                    cmd_parts,
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                    text=True, bufsize=1
+                )
+            for line in proc.stdout:
+                lf.write(line)
+                lf.flush()
+            proc.wait(timeout=timeout)
+            rc = proc.returncode
+            if rc != 0:
+                lf.write(f"ERROR: script exited with code {rc}\n")
+                lf.flush()
+            return rc
+    except subprocess.TimeoutExpired:
+        if proc:
+            try: proc.kill()
+            except Exception: pass
+        try:
+            with open(log_path, "a") as lf:
+                lf.write("ERROR: script timed out\n")
+        except Exception: pass
+        return 1
+    except Exception as e:
+        if proc:
+            try: proc.kill()
+            except Exception: pass
+        try:
+            with open(log_path, "a") as lf:
+                lf.write(f"ERROR: {e}\n")
+        except Exception: pass
+        return 1
+
 def get_container_stats(name):
     cgroup = f"/sys/fs/cgroup/ank/{name}"
     if not os.path.isdir(cgroup):
@@ -1202,7 +1250,10 @@ small{color:#334155}
             self.send_error(409, f"Container '{name}' already exists")
             return
 
-        image = data.get("image", "alpine-3.20")
+        image = data.get("image", "ank-alpinebase")
+        # FROM alias: alpine-3.20 -> ank-alpinebase
+        if image == "alpine-3.20":
+            image = "ank-alpinebase"
         root_password = data.get("root_password", "")
         if not root_password:
             self.send_error(400, "Root password required")
@@ -1246,13 +1297,11 @@ small{color:#334155}
                 with open(log_path, "w") as lf:
                     lf.write(f"Creating container '{name}' (image: {image})...\n")
                     lf.flush()
-                output, code = run_script("container.sh", "create", name, image, root_password, str(ssh_port), pkgs)
-                with open(log_path, "a") as lf:
-                    lf.write(output + "\n")
+                rc = run_script_streaming("container.sh", log_path, 300, "create", name, image, root_password, str(ssh_port), pkgs)
                 cfg = load_container_config(name)
                 if cfg:
-                    if code != 0:
-                        log(f"ERROR: create {name}: {output}")
+                    if rc != 0:
+                        log(f"ERROR: create {name} (rc={rc})")
                         cfg["status"] = "failed"
                     else:
                         log(f"Container {name} created")
@@ -1352,6 +1401,61 @@ small{color:#334155}
         if not config:
             self.send_error(404, f"Container '{name}' not found")
             return
+        status = config.get("status", "stopped")
+
+        # If failed: rebuild (delete + recreate with same params)
+        if status == "failed":
+            def do_rebuild():
+                try:
+                    log(f"Rebuilding failed container: {name}")
+                    log_path = os.path.join(ANK_DIR, "logs", f"{name}.log")
+                    with open(log_path, "w") as lf:
+                        lf.write(f"Rebuilding container '{name}'...\n")
+                        lf.flush()
+
+                    # Save original params before delete
+                    img = config.get("image", "ank-alpinebase")
+                    rpass = config.get("root_password", "admin123")
+                    sport = config.get("ssh_port", 2200)
+                    tpl = config.get("template")
+                    tpl_name = config.get("template_name")
+
+                    # Delete the failed container
+                    run_script("container.sh", "delete", name)
+
+                    # Recreate
+                    pkgs = ""
+                    if tpl:
+                        for t in self.IMAGE_TEMPLATES:
+                            if t["id"] == tpl:
+                                pkgs = " ".join(t.get("packages", []))
+                                break
+
+                    rc = run_script_streaming("container.sh", log_path, 300, "create", name, img, str(rpass), str(sport), pkgs)
+
+                    cfg = load_container_config(name)
+                    if cfg:
+                        if rc != 0:
+                            log(f"ERROR: rebuild {name} failed (rc={rc})")
+                            cfg["status"] = "failed"
+                        else:
+                            log(f"Container {name} rebuilt")
+                            cfg["status"] = "stopped"
+                            if tpl:
+                                cfg["template"] = tpl
+                                cfg["template_name"] = tpl_name
+                        save_container_config(name, cfg)
+                except Exception as e:
+                    log(f"ERROR: rebuild thread {name}: {e}")
+                    cfg = load_container_config(name)
+                    if cfg:
+                        cfg["status"] = "failed"
+                        save_container_config(name, cfg)
+            threading.Thread(target=do_rebuild, daemon=True).start()
+            self.send_json({"message": f"Container '{name}' rebuilding"})
+            return
+
+        # Normal restart: stop + start
         def do_restart():
             try:
                 config["status"] = "stopping"
@@ -1787,6 +1891,45 @@ small{color:#334155}
         if code != 0:
             self.send_error(500, f"Failed to pull image: {output}")
             return
+        # Build ank-alpinebase from alpine if not exists
+        ankbase = os.path.join(IMAGES_DIR, "ank-alpinebase")
+        alpine = os.path.join(IMAGES_DIR, f"alpine-{version}")
+        if not os.path.isdir(ankbase) and os.path.isdir(alpine):
+            try:
+                import shutil
+                shutil.copytree(alpine, ankbase)
+                # Install openssh/bash/busybox/shadow in ank-alpinebase
+                for d in ("etc/apk", "var/cache/apk"):
+                    os.makedirs(os.path.join(ankbase, d), exist_ok=True)
+                for f, c in [("etc/resolv.conf", "nameserver 8.8.8.8\nnameserver 8.8.4.4\n"),
+                             ("etc/hosts", "127.0.0.1 localhost\n")]:
+                    with open(os.path.join(ankbase, f), "w") as fh: fh.write(c)
+                subprocess.run(["su", "-c", f"mount -t proc proc {ankbase}/proc 2>/dev/null; chroot {ankbase} /sbin/apk add --no-cache busybox bash shadow openssh 2>&1; umount {ankbase}/proc 2>/dev/null"], capture_output=True, timeout=120)
+                subprocess.run(["su", "-c", f"chroot {ankbase} /bin/busybox --install -s /bin 2>/dev/null"], capture_output=True, timeout=10)
+                # sshd_config
+                os.makedirs(os.path.join(ankbase, "etc/ssh"), exist_ok=True)
+                os.makedirs(os.path.join(ankbase, "run/sshd"), exist_ok=True)
+                with open(os.path.join(ankbase, "etc/ssh/sshd_config"), "w") as fh:
+                    fh.write("Port 22\nListenAddress 0.0.0.0\nPermitRootLogin yes\nPasswordAuthentication yes\nChallengeResponseAuthentication no\nX11Forwarding no\nAllowTcpForwarding no\nPidFile /run/sshd.pid\nSubsystem sftp internal-sftp\n")
+                subprocess.run(["su", "-c", f"chroot {ankbase} /usr/bin/ssh-keygen -A 2>/dev/null"], capture_output=True, timeout=10)
+                # Root shell
+                import re
+                pw = os.path.join(ankbase, "etc/passwd")
+                if os.path.isfile(pw):
+                    with open(pw) as fh: content = fh.read()
+                    content = re.sub(r"^root:[^:]*:[^:]*:[^:]*:[^:]*:[^:]*:.*", "root:x:0:0:root:/root:/bin/bash", content, count=1, flags=re.MULTILINE)
+                    with open(pw, "w") as fh: fh.write(content)
+                # SSH dir
+                os.makedirs(os.path.join(ankbase, "root/.ssh"), exist_ok=True)
+                os.chmod(os.path.join(ankbase, "root/.ssh"), 0o700)
+                open(os.path.join(ankbase, "root/.ssh/authorized_keys"), "w").close()
+                os.chmod(os.path.join(ankbase, "root/.ssh/authorized_keys"), 0o600)
+                # Remove server files
+                import shutil as _shutil
+                _shutil.rmtree(os.path.join(ankbase, "opt/ank"), ignore_errors=True)
+                log(f"ank-alpinebase built from alpine-{version}")
+            except Exception as e:
+                log(f"WARNING: failed to build ank-alpinebase: {e}")
         self.send_json({"message": f"Image 'alpine-{version}' downloaded"})
 
     # ============================================================
@@ -1880,7 +2023,9 @@ small{color:#334155}
 
     def api_image_templates(self):
         templates = []
-        alpine_ready = os.path.isdir(os.path.join(IMAGES_DIR, "alpine-3.20")) and os.path.lexists(os.path.join(IMAGES_DIR, "alpine-3.20", "bin/sh"))
+        alpine_ready = os.path.isdir(os.path.join(IMAGES_DIR, "ank-alpinebase")) and os.path.lexists(os.path.join(IMAGES_DIR, "ank-alpinebase", "bin/sh"))
+        if not alpine_ready:
+            alpine_ready = os.path.isdir(os.path.join(IMAGES_DIR, "alpine-3.20")) and os.path.lexists(os.path.join(IMAGES_DIR, "alpine-3.20", "bin/sh"))
         for t in self.IMAGE_TEMPLATES:
             tpl = dict(t)
             if t["category"] == "base":
@@ -1907,10 +2052,13 @@ small{color:#334155}
             self.send_error(404, f"Template '{template_id}' not found")
             return
 
-        base_img = os.path.join(IMAGES_DIR, "alpine-3.20")
+        # Use ank-alpinebase (pre-built with openssh/bash/busybox)
+        base_img = os.path.join(IMAGES_DIR, "ank-alpinebase")
         if not os.path.isdir(base_img):
-            self.send_error(400, "Base alpine-3.20 image not found. Reinstall the module.")
-            return
+            base_img = os.path.join(IMAGES_DIR, "alpine-3.20")
+            if not os.path.isdir(base_img):
+                self.send_error(400, "Base image not found. Reinstall the module.")
+                return
 
         root_password = data.get("root_password", "admin123")
 
@@ -1921,7 +2069,7 @@ small{color:#334155}
         stub_config = {
             "name": container_name,
             "status": "building",
-            "image": "alpine-3.20",
+            "image": "ank-alpinebase",
             "mode": get_mode().get("mode", "shared_host"),
             "autostart": False,
             "ip_address": "",
@@ -1946,10 +2094,19 @@ small{color:#334155}
 
                 ssh_port = self._find_free_port(2200)
                 pkgs = " ".join(template.get("packages", []))
-                output, code = run_script("container.sh", "create", container_name, "alpine-3.20", str(root_password), str(ssh_port), pkgs)
-                with open(log_path, "a") as lf:
-                    lf.write(output + "\n")
-                    lf.flush()
+
+                # Stream container creation output to log in real-time
+                rc = run_script_streaming("container.sh", log_path, 300, "create", container_name, "ank-alpinebase", str(root_password), str(ssh_port), pkgs)
+
+                if rc != 0:
+                    log(f"ERROR: container create failed for {container_name} (rc={rc})")
+                    cfg = load_container_config(container_name)
+                    if cfg:
+                        cfg["status"] = "failed"
+                        save_container_config(container_name, cfg)
+                    with open(log_path, "a") as lf:
+                        lf.write(f"ERROR: container creation failed (exit code {rc})\n")
+                    return
 
                 merged = os.path.join(CONTAINERS_DIR, container_name, "merged")
 
@@ -1975,12 +2132,24 @@ small{color:#334155}
                     config["ssh_port"] = ssh_port
                     save_container_config(container_name, config)
 
+                # Stream package installation to log
                 if template.get("packages"):
                     pkg_list = " ".join(template["packages"])
                     log(f"Installing packages: {pkg_list} in {container_name}")
+                    with open(log_path, "a") as lf:
+                        lf.write(f"Installing packages: {pkg_list}...\n")
+                        lf.flush()
                     r = _chroot(f"apk update && apk add --allow-untrusted {pkg_list}", timeout=120)
+                    with open(log_path, "a") as lf:
+                        if r.stdout:
+                            lf.write(r.stdout + "\n")
+                        if r.stderr:
+                            lf.write(r.stderr + "\n")
+                        lf.flush()
                     if r.returncode != 0:
-                        log(f"WARNING: apk install output: {r.stderr[-500:] if r.stderr else r.stdout[-500:]}")
+                        log(f"WARNING: apk install failed for {container_name}")
+                        with open(log_path, "a") as lf:
+                            lf.write(f"WARNING: some packages may have failed\n")
 
                 _chroot('mkdir -p /etc/ank')
                 _write_file(os.path.join(merged, 'etc/ank/service'), template_id)
@@ -1990,32 +2159,27 @@ small{color:#334155}
                     _chroot(f'mkdir -p {static_dir} /run/nginx')
                     _write_file(os.path.join(merged, static_dir.lstrip('/'), 'index.html'), ANK_NGINX_HTML)
                     _write_file(os.path.join(merged, 'etc/nginx/nginx.conf'), ANK_NGINX_CONF)
-                    _chroot('nginx -g "daemon off;" &')
 
                 elif template_id == "apache":
                     static_dir = template["static_path"]
                     _chroot(f'mkdir -p {static_dir}')
                     _write_file(os.path.join(merged, static_dir.lstrip('/'), 'index.html'), ANK_APACHE_HTML)
-                    _chroot('httpd -f -p 8080 -h /var/www/localhost/htdocs &')
 
                 elif template_id == "php":
                     php_dir = "/var/www/php"
                     _chroot(f'mkdir -p {php_dir}')
                     _write_file(os.path.join(merged, php_dir.lstrip('/'), 'index.php'), ANK_PHP_INDEX)
-                    _chroot(f'cd {php_dir} && php82 -S 0.0.0.0:8080 &')
 
                 elif template_id == "node":
                     node_dir = "/var/www/app"
                     _chroot(f'mkdir -p {node_dir}')
                     _write_file(os.path.join(merged, node_dir.lstrip('/'), 'server.js'), ANK_NODE_SERVER)
                     _write_file(os.path.join(merged, node_dir.lstrip('/'), 'package.json'), '{"name":"ank-node-app","version":"1.0.0","main":"server.js"}')
-                    _chroot(f'cd {node_dir} && node server.js &')
 
                 elif template_id == "python":
                     py_dir = "/var/www/app"
                     _chroot(f'mkdir -p {py_dir}')
                     _write_file(os.path.join(merged, py_dir.lstrip('/'), 'server.py'), ANK_PYTHON_SERVER)
-                    _chroot(f'cd {py_dir} && python3 server.py &')
 
                 cfg = load_container_config(container_name)
                 if cfg:
@@ -2083,6 +2247,10 @@ small{color:#334155}
             self.send_error(400, "Ankfile must have a FROM instruction")
             return
 
+        # FROM alias: alpine-3.20 -> ank-alpinebase
+        if base_image == "alpine-3.20":
+            base_image = "ank-alpinebase"
+
         if not root_password:
             root_password = "ank123"
 
@@ -2120,10 +2288,17 @@ small{color:#334155}
                         pkgs = " ".join(t.get("packages", []))
                         break
 
-                output, code = run_script("container.sh", "create", container_name, base_image, root_password, str(ssh_port), pkgs)
-                with open(log_path, "a") as lf:
-                    lf.write(output + "\n")
-                    lf.flush()
+                rc = run_script_streaming("container.sh", log_path, 300, "create", container_name, base_image, root_password, str(ssh_port), pkgs)
+
+                if rc != 0:
+                    log(f"ERROR: container create failed for {container_name} (rc={rc})")
+                    cfg = load_container_config(container_name)
+                    if cfg:
+                        cfg["status"] = "failed"
+                        save_container_config(container_name, cfg)
+                    with open(log_path, "a") as lf:
+                        lf.write(f"ERROR: container creation failed (exit code {rc})\n")
+                    return
 
                 merged = os.path.join(CONTAINERS_DIR, container_name, "merged")
 
@@ -2140,7 +2315,14 @@ small{color:#334155}
                     log(f"Ankfile RUN: {cmd}")
                     with open(log_path, "a") as lf:
                         lf.write(f"RUN: {cmd}\n")
+                        lf.flush()
                     r = _chroot(cmd, timeout=120)
+                    with open(log_path, "a") as lf:
+                        if r.stdout:
+                            lf.write(r.stdout + "\n")
+                        if r.stderr:
+                            lf.write(r.stderr + "\n")
+                        lf.flush()
                     if r.returncode != 0:
                         log(f"Ankfile RUN failed: {r.stderr[-300:]}")
                         with open(log_path, "a") as lf:

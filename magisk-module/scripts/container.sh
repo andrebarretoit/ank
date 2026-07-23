@@ -159,12 +159,15 @@ PYTHPY
 # ============================================================
 cmd_create() {
     local NAME="$1"
-    local IMAGE="${2:-alpine-3.20}"
+    local IMAGE="${2:-ank-alpinebase}"
     local ROOT_PASS="${3:-}"
     local SSH_PORT="${4:-}"
     local PKGS="${5:-}"
     local CONTAINER_DIR="$CONTAINERS_DIR/$NAME"
     local MODE=$(get_mode)
+
+    # FROM alias: alpine-3.20 -> ank-alpinebase (clean alpine has no openssh)
+    [ "$IMAGE" = "alpine-3.20" ] && IMAGE="ank-alpinebase"
 
     if [ -d "$CONTAINER_DIR/merged" ] && [ -f "$CONTAINER_DIR/config.json" ]; then
         # Only fail if already fully created (has merged/ dir)
@@ -180,12 +183,12 @@ cmd_create() {
 
     local BASE_DIR="$IMAGES_DIR/$IMAGE"
 
-    # If image doesn't exist but has packages, build it from alpine-3.20
+    # If image doesn't exist but has packages, build it from ank-alpinebase
     if [ ! -d "$BASE_DIR" ] && [ -n "$PKGS" ]; then
-        local ALPINE="$IMAGES_DIR/alpine-3.20"
-        if [ -d "$ALPINE" ]; then
-            echo "Building image '$IMAGE' from alpine-3.20 (packages: $PKGS)..."
-            cp -a "$ALPINE" "$BASE_DIR" 2>/dev/null
+        local ANKBASE="$IMAGES_DIR/ank-alpinebase"
+        if [ -d "$ANKBASE" ]; then
+            echo "Building image '$IMAGE' from ank-alpinebase (packages: $PKGS)..."
+            cp -a "$ANKBASE" "$BASE_DIR" 2>/dev/null
             if [ $? -eq 0 ]; then
                 mkdir -p "$BASE_DIR/etc" 2>/dev/null
                 echo "nameserver 8.8.8.8" > "$BASE_DIR/etc/resolv.conf" 2>/dev/null
@@ -199,9 +202,9 @@ cmd_create() {
                 else
                     echo "WARN: Some packages may have failed for '$IMAGE'"
                 fi
-            else
-                echo "WARN: Failed to build image '$IMAGE', using base alpine"
-                BASE_DIR="$ALPINE"
+                else
+                    echo "WARN: Failed to build image '$IMAGE', using ank-alpinebase"
+                    BASE_DIR="$ANKBASE"
             fi
         fi
     fi
@@ -281,47 +284,22 @@ cmd_create() {
     # Setup cgroups
     sh "$SCRIPTS_DIR/resources.sh" setup "$NAME" 268435456 50 2>/dev/null
 
-    # Install openssh in container
+    # Setup rootfs (ank-alpinebase already has openssh/bash/busybox/shadow)
     local ROOTFS="$CONTAINER_DIR/merged"
-    echo "Installing openssh in container..."
+    echo "Setting up container: $NAME..."
     # Ensure DNS works inside chroot
     mkdir -p "$ROOTFS/etc" 2>/dev/null
     echo "nameserver 8.8.8.8" > "$ROOTFS/etc/resolv.conf" 2>/dev/null
     echo "nameserver 8.8.4.4" >> "$ROOTFS/etc/resolv.conf" 2>/dev/null
-    # Ensure /dev/null exists for apk
+    # Ensure /dev/null exists
     mkdir -p "$ROOTFS/dev" 2>/dev/null
     [ -e "$ROOTFS/dev/null" ] || mknod "$ROOTFS/dev/null" c 1 3 2>/dev/null
     [ -e "$ROOTFS/dev/urandom" ] || mknod "$ROOTFS/dev/urandom" c 1 9 2>/dev/null
-    # Install busybox, bash, shadow, openssh
-    chroot "$ROOTFS" /sbin/apk add --no-cache busybox bash shadow openssh 2>&1
-    local APK_RC=$?
-    if [ -f "$ROOTFS/bin/busybox" ] && [ -f "$ROOTFS/usr/sbin/sshd" ]; then
-        # Install busybox applets
-        chroot "$ROOTFS" /bin/busybox --install -s /bin 2>/dev/null
-        # Set /bin/bash as root shell
-        if [ -f "$ROOTFS/etc/passwd" ]; then
-            sed -i 's|^root:[^:]*:[^:]*:[^:]*:[^:]*:[^:]*:.*|root:x:0:0:root:/root:/bin/bash|' "$ROOTFS/etc/passwd" 2>/dev/null
-        fi
-        # Write CLEAN sshd_config (no grep hacks - busybox grep can't handle it)
-        mkdir -p "$ROOTFS/etc/ssh" 2>/dev/null
-        mkdir -p "$ROOTFS/run/sshd" 2>/dev/null
-        cat > "$ROOTFS/etc/ssh/sshd_config" << 'SSHEOF'
-Port 22
-ListenAddress 0.0.0.0
-PermitRootLogin yes
-PasswordAuthentication yes
-ChallengeResponseAuthentication no
-X11Forwarding no
-AllowTcpForwarding no
-PidFile /run/sshd.pid
-Subsystem sftp internal-sftp
-SSHEOF
-        # Set root password via shadow file directly (more reliable than chpasswd)
+    # Set root password via shadow file directly
+    if [ -n "$ROOT_PASS" ]; then
         local ENC_PASS=""
-        # Try openssl INSIDE chroot first
         ENC_PASS=$(chroot "$ROOTFS" /usr/bin/openssl passwd -1 "$ROOT_PASS" 2>/dev/null)
         if [ -z "$ENC_PASS" ]; then
-            # Fallback: try openssl from host with chroot libs
             for op in "$ROOTFS/usr/bin/openssl" "$ROOTFS/usr/sbin/openssl"; do
                 [ -f "$op" ] && ENC_PASS=$(LD_LIBRARY_PATH="$ROOTFS/usr/lib:$ROOTFS/lib" "$op" passwd -1 "$ROOT_PASS" 2>/dev/null) && break
             done
@@ -333,10 +311,8 @@ SSHEOF
             echo "root:$ROOT_PASS" | chroot "$ROOTFS" /usr/bin/chpasswd 2>/dev/null
             echo "Password set via chpasswd"
         fi
-        # Generate host keys
-        chroot "$ROOTFS" /usr/bin/ssh-keygen -A 2>/dev/null
-        echo "busybox, bash, openssh installed"
     fi
+    echo "Container ready: $NAME"
 
     # Create config with SSH info
     cat > "$CONTAINER_DIR/config.json" << CFGEOF
