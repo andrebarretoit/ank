@@ -383,6 +383,34 @@ http {
     }
 }"""
 
+APACHE_HTTPD_CONF = """ServerRoot "/var/www"
+Listen 80
+PidFile /run/apache2/httpd.pid
+ServerAdmin admin@localhost
+ServerName localhost
+
+LoadModule mpm_prefork_module modules/mod_mpm_prefork.so
+LoadModule authz_core_module modules/mod_authz_core.so
+LoadModule authz_host_module modules/mod_authz_host.so
+LoadModule dir_module modules/mod_dir.so
+LoadModule mime_module modules/mod_mime.so
+LoadModule log_config_module modules/mod_log_config.so
+LoadModule unixd_module modules/mod_unixd.so
+
+TypesConfig /etc/mime.types
+DirectoryIndex index.html index.htm
+ErrorLog /dev/stderr
+LogFormat "%h %l %u %t \\"%r\\" %>s %b" common
+CustomLog /dev/stdout common
+
+<Directory "/var/www/localhost/htdocs">
+    Require all granted
+    Options Indexes FollowSymLinks
+</Directory>
+
+DocumentRoot "/var/www/localhost/htdocs"
+"""
+
 ANK_PHP_INDEX = """<?php
 $html = '<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>ANK - PHP</title>';
 $html .= '<style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:-apple-system,sans-serif;background:#0f172a;color:#e2e8f0;min-height:100vh;display:flex;align-items:center;justify-content:center}.card{background:#1e293b;border-radius:16px;padding:48px;max-width:480px;width:90%;text-align:center;box-shadow:0 25px 50px rgba(0,0,0,.4)}.logo{font-size:48px;font-weight:800;background:linear-gradient(135deg,#777BB4,#a855f7);-webkit-background-clip:text;-webkit-text-fill-color:transparent;margin-bottom:8px}.sub{color:#94a3b8;font-size:14px;margin-bottom:24px}.badge{display:inline-block;background:rgba(34,197,94,.15);color:#22c55e;padding:6px 16px;border-radius:20px;font-size:13px;font-weight:600}.footer{margin-top:32px;color:#475569;font-size:12px}.footer a{color:#777BB4;text-decoration:none}</style>';
@@ -919,6 +947,14 @@ small{color:#334155}
                 return
             # Accept WebSocket — send 101 on raw socket
             accept = _ws_accept_key(ws_key)
+            try:
+                self.rfile.close()
+            except Exception:
+                pass
+            try:
+                self.wfile.close()
+            except Exception:
+                pass
             rsock = self.request
             resp = (
                 b"HTTP/1.1 101 Switching Protocols\r\n"
@@ -1631,18 +1667,20 @@ small{color:#334155}
 
     def _file_info(self, full_path, rel_path):
         try:
-            st = os.stat(full_path)
+            st = os.lstat(full_path)
             is_dir = os.path.isdir(full_path)
+            is_link = os.path.islink(full_path)
             return {
                 "name": os.path.basename(rel_path),
                 "path": "/" + rel_path,
-                "type": "directory" if is_dir else "file",
+                "type": "directory" if is_dir else "symlink" if is_link else "file",
                 "size": st.st_size if not is_dir else 0,
                 "modified": int(st.st_mtime),
                 "permissions": oct(st.st_mode)[-3:]
             }
-        except Exception:
-            return None
+        except Exception as e:
+            return {"name": os.path.basename(rel_path), "path": "/" + rel_path, "type": "file", "size": 0, "modified": 0, "permissions": "???"
+            }
 
     def api_files_list(self, name, qs):
         merged, config = self._get_merged_path(name)
@@ -2173,8 +2211,9 @@ small{color:#334155}
 
                 elif template_id == "apache":
                     static_dir = template["static_path"]
-                    _chroot(f'mkdir -p {static_dir}')
+                    _chroot(f'mkdir -p {static_dir} /run/apache2')
                     _write_file(os.path.join(merged, static_dir.lstrip('/'), 'index.html'), ANK_APACHE_HTML)
+                    _write_file(os.path.join(merged, 'etc/apache2/httpd.conf'), APACHE_HTTPD_CONF)
 
                 elif template_id == "php":
                     php_dir = "/var/www/php"

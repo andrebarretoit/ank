@@ -340,15 +340,25 @@ cmd_create() {
         exit 1
     fi
 
-    # Check if port is already in use by another container
-    for cfg in "$CONTAINERS_DIR"/*/config.json; do
-        [ -f "$cfg" ] || continue
-        local existing_port=$(grep -o '"ssh_port":[^,]*' "$cfg" 2>/dev/null | cut -d: -f2 | tr -d ' ')
-        if [ "$existing_port" = "$SSH_PORT" ]; then
-            echo "ERROR: Port $SSH_PORT already used by another container"
-            exit 1
-        fi
+    # Check if port is already in use by another container, auto-increment
+    local ORIG_PORT="$SSH_PORT"
+    while true; do
+        local PORT_IN_USE=0
+        for cfg in "$CONTAINERS_DIR"/*/config.json; do
+            [ -f "$cfg" ] || continue
+            local existing_port=$(grep -o '"ssh_port":[^,]*' "$cfg" 2>/dev/null | cut -d: -f2 | tr -d ' ')
+            if [ "$existing_port" = "$SSH_PORT" ]; then
+                PORT_IN_USE=1
+                break
+            fi
+        done
+        [ "$PORT_IN_USE" -eq 0 ] && break
+        SSH_PORT=$((SSH_PORT + 1))
+        [ "$SSH_PORT" -gt 65000 ] && SSH_PORT="$ORIG_PORT" && break
     done
+    if [ "$SSH_PORT" != "$ORIG_PORT" ]; then
+        echo "WARN: Port $ORIG_PORT in use, using $SSH_PORT instead"
+    fi
 
     echo "Creating container: $NAME (mode: $MODE, port: $SSH_PORT)"
 
@@ -631,7 +641,7 @@ cmd_start() {
             echo "[init] Starting service: $_svc"
             case "$_svc" in
                 nginx)  mkdir -p /run/nginx 2>/dev/null; nginx 2>/dev/null & ;;
-                apache) httpd -D FOREGROUND 2>/dev/null & ;;
+                apache) httpd -f /etc/apache2/httpd.conf -D FOREGROUND 2>/dev/null & ;;
                 php)    php -S 0.0.0.0:8080 -t /var/www/php 2>/dev/null & ;;
                 node)   cd /var/www/app 2>/dev/null; node server.js 2>/dev/null & ;;
                 python) cd /var/www/app 2>/dev/null; python3 server.py 2>/dev/null & ;;

@@ -27,6 +27,26 @@ async function api(method, path, body = null) {
     return data;
 }
 
+function copySshCmd() {
+    const el = document.getElementById('ssh-hint-cmd');
+    if (!el) return;
+    const text = el.textContent;
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(() => toast('Copied!', 'success')).catch(() => fallbackCopy(text));
+    } else {
+        fallbackCopy(text);
+    }
+    function fallbackCopy(t) {
+        const ta = document.createElement('textarea');
+        ta.value = t;
+        ta.style.cssText = 'position:fixed;opacity:0';
+        document.body.appendChild(ta);
+        ta.select();
+        try { document.execCommand('copy'); toast('Copied!', 'success'); } catch(e) { toast('Copy failed', 'error'); }
+        ta.remove();
+    }
+}
+
 function toast(msg, type = 'info') {
     const c = document.getElementById('toast-container');
     const el = document.createElement('div');
