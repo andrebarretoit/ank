@@ -1234,8 +1234,19 @@ small{color:#334155}
         log_path = os.path.join(ANK_DIR, "logs", f"{name}.log")
         logs = ""
         if os.path.exists(log_path):
-            with open(log_path, "r") as f:
-                logs = f.read()
+            with open(log_path, "rb") as f:
+                f.seek(0, 2)
+                size = f.tell()
+                if size > 8192:
+                    f.seek(-8192, 2)
+                    f.read(1)
+                    logs = f.read().decode("utf-8", errors="replace")
+                    nl = logs.find("\n")
+                    if nl >= 0:
+                        logs = logs[nl+1:]
+                else:
+                    f.seek(0)
+                    logs = f.read().decode("utf-8", errors="replace")
         self.send_json({"logs": logs})
 
     def api_create_container(self, data):
