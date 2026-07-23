@@ -59,9 +59,9 @@ _ensure_ankbase() {
     [ -e "$ANKBASE/dev/urandom" ] || mknod "$ANKBASE/dev/urandom" c 1 9 2>/dev/null
 
     # Install packages (stream output)
-    echo "Installing openssh, bash, busybox, shadow, supervisor..."
+    echo "Installing openssh, bash, busybox, shadow, s6..."
     mount -t proc proc "$ANKBASE/proc" 2>/dev/null
-    chroot "$ANKBASE" /sbin/apk add --no-cache busybox bash shadow openssh supervisor 2>&1
+    chroot "$ANKBASE" /sbin/apk add --no-cache busybox bash shadow openssh s6 2>&1
     local RC=$?
     umount "$ANKBASE/proc" 2>/dev/null
 
@@ -101,33 +101,19 @@ SSHEOF
     touch "$ANKBASE/root/.ssh/authorized_keys" 2>/dev/null
     chmod 600 "$ANKBASE/root/.ssh/authorized_keys" 2>/dev/null
 
-    # Create default supervisord.conf
-    mkdir -p "$ANKBASE/etc/supervisor/conf.d"
-    cat > "$ANKBASE/etc/supervisord.conf" << 'SUPEREOF'
-[unix_http_server]
-file=/run/supervisor.sock
+    # Create s6 service directory structure
+    mkdir -p "$ANKBASE/etc/s6-overlay/s6-rc.d"
+    mkdir -p "$ANKBASE/etc/s6-overlay/scripts"
 
-[supervisord]
-logfile=/var/log/supervisord.log
-logfile_maxbytes=1MB
-logfile_backups=2
-nodaemon=false
-loglevel=info
-pidfile=/run/supervisord.pid
-
-[rpcinterface:supervisor]
-supervisor.rpcinterface_factory = supervisor.rpcinterface:make_main_rpcinterface
-
-[supervisorctl]
-serverurl=unix:///run/supervisor.sock
-SUPEREOF
+    # Create default empty services dir
+    mkdir -p "$ANKBASE/etc/s6/services"
 
     # Remove server files if any
     rm -rf "$ANKBASE/opt/ank" 2>/dev/null
 
     # Verify
     if [ -e "$ANKBASE/usr/sbin/sshd" ] && [ -e "$ANKBASE/bin/bash" ]; then
-        echo "ank-alpinebase built successfully (openssh, bash, busybox, shadow, supervisor)"
+        echo "ank-alpinebase built successfully (openssh, bash, busybox, shadow, s6)"
         return 0
     else
         echo "ERROR: ank-alpinebase build incomplete"
@@ -633,12 +619,6 @@ cmd_start() {
         else
             echo "[init] WARN: sshd not found"
         fi
-        if [ -x /usr/bin/supervisord ]; then
-            echo "[init] Starting supervisor..."
-            /usr/bin/supervisord -c /etc/supervisord.conf 2>/dev/null &
-            _super_pid=$!
-            echo "[init] supervisor started (PID: $_super_pid)"
-        fi
         if [ -f /etc/ank/service ]; then
             _svc=$(cat /etc/ank/service 2>/dev/null)
             echo "[init] Starting service: $_svc"
@@ -656,11 +636,6 @@ cmd_start() {
             if [ -n "$_sshd_pid" ] && ! kill -0 "$_sshd_pid" 2>/dev/null; then
                 echo "[init] sshd died, exiting..."
                 break
-            fi
-            if [ -n "$_super_pid" ] && ! kill -0 "$_super_pid" 2>/dev/null; then
-                echo "[init] supervisord died, restarting..."
-                /usr/bin/supervisord -c /etc/supervisord.conf 2>/dev/null &
-                _super_pid=$!
             fi
             /bin/busybox sleep 5 2>/dev/null || /bin/sleep 5 2>/dev/null || true
         done

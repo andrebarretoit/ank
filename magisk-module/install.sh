@@ -311,7 +311,7 @@ if [ ! -d "$ANKBASE/bin" ]; then
         echo "nameserver 8.8.4.4" >> "$ANKBASE/etc/resolv.conf"
         echo "127.0.0.1 localhost" > "$ANKBASE/etc/hosts"
         mount -t proc proc "$ANKBASE/proc" 2>/dev/null
-        chroot "$ANKBASE" /sbin/apk add --no-cache busybox bash shadow openssh supervisor 2>>"$LOG_FILE"
+        chroot "$ANKBASE" /sbin/apk add --no-cache busybox bash shadow openssh s6 2>>"$LOG_FILE"
         RET=$?
         umount "$ANKBASE/proc" 2>/dev/null
         if [ $RET -eq 0 ]; then
@@ -334,27 +334,9 @@ SSHEOF
             chmod 700 "$ANKBASE/root/.ssh"
             touch "$ANKBASE/root/.ssh/authorized_keys"
             chmod 600 "$ANKBASE/root/.ssh/authorized_keys"
-            mkdir -p "$ANKBASE/etc/supervisor/conf.d"
-            cat > "$ANKBASE/etc/supervisord.conf" << 'SUPEREOF'
-[unix_http_server]
-file=/run/supervisor.sock
-
-[supervisord]
-logfile=/var/log/supervisord.log
-logfile_maxbytes=1MB
-logfile_backups=2
-nodaemon=false
-loglevel=info
-pidfile=/run/supervisord.pid
-
-[rpcinterface:supervisor]
-supervisor.rpcinterface_factory = supervisor.rpcinterface:make_main_rpcinterface
-
-[supervisorctl]
-serverurl=unix:///run/supervisor.sock
-SUPEREOF
+            mkdir -p "$ANKBASE/etc/s6/services"
             rm -rf "$ANKBASE/opt/ank" 2>/dev/null
-            log OK "ank-alpinebase built (openssh, bash, busybox, shadow, supervisor)"
+            log OK "ank-alpinebase built (openssh, bash, busybox, shadow, s6)"
         else
             log WARN "ank-alpinebase apk install failed, containers will install packages individually"
         fi

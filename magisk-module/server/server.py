@@ -1906,7 +1906,7 @@ small{color:#334155}
                 for f, c in [("etc/resolv.conf", "nameserver 8.8.8.8\nnameserver 8.8.4.4\n"),
                              ("etc/hosts", "127.0.0.1 localhost\n")]:
                     with open(os.path.join(ankbase, f), "w") as fh: fh.write(c)
-                subprocess.run(["su", "-c", f"mount -t proc proc {ankbase}/proc 2>/dev/null; chroot {ankbase} /sbin/apk add --no-cache busybox bash shadow openssh supervisor 2>&1; umount {ankbase}/proc 2>/dev/null"], capture_output=True, timeout=120)
+                subprocess.run(["su", "-c", f"mount -t proc proc {ankbase}/proc 2>/dev/null; chroot {ankbase} /sbin/apk add --no-cache busybox bash shadow openssh s6 2>&1; umount {ankbase}/proc 2>/dev/null"], capture_output=True, timeout=120)
                 subprocess.run(["su", "-c", f"chroot {ankbase} /bin/busybox --install -s /bin 2>/dev/null"], capture_output=True, timeout=10)
                 # sshd_config
                 os.makedirs(os.path.join(ankbase, "etc/ssh"), exist_ok=True)
@@ -1914,10 +1914,8 @@ small{color:#334155}
                 with open(os.path.join(ankbase, "etc/ssh/sshd_config"), "w") as fh:
                     fh.write("Port 22\nListenAddress 0.0.0.0\nPermitRootLogin yes\nPasswordAuthentication yes\nChallengeResponseAuthentication no\nX11Forwarding no\nAllowTcpForwarding no\nPidFile /run/sshd.pid\nSubsystem sftp internal-sftp\n")
                 subprocess.run(["su", "-c", f"chroot {ankbase} /usr/bin/ssh-keygen -A 2>/dev/null"], capture_output=True, timeout=10)
-                # supervisord.conf
-                os.makedirs(os.path.join(ankbase, "etc/supervisor/conf.d"), exist_ok=True)
-                with open(os.path.join(ankbase, "etc/supervisord.conf"), "w") as fh:
-                    fh.write("[unix_http_server]\nfile=/run/supervisor.sock\n\n[supervisord]\nlogfile=/var/log/supervisord.log\nlogfile_maxbytes=1MB\nlogfile_backups=2\nnodaemon=false\nloglevel=info\npidfile=/run/supervisord.pid\n\n[rpcinterface:supervisor]\nsupervisor.rpcinterface_factory = supervisor.rpcinterface:make_main_rpcinterface\n\n[supervisorctl]\nserverurl=unix:///run/supervisor.sock\n")
+                # s6 services dir
+                os.makedirs(os.path.join(ankbase, "etc/s6/services"), exist_ok=True)
                 # Root shell
                 import re
                 pw = os.path.join(ankbase, "etc/passwd")
