@@ -27,31 +27,71 @@ die() {
 }
 
 cleanup() {
-    pkill -f "ld-musl.*python3.*server.py" 2>/dev/null
-    for cpid in $(pgrep -f "sh.*_ank_exit" 2>/dev/null); do
-        kill -TERM "$cpid" 2>/dev/null
-    done
-    for cpid in $(pgrep -f "sshd.*PidFile" 2>/dev/null); do
-        kill -TERM "$cpid" 2>/dev/null
-    done
-    sleep 1
-    pkill -9 -f "sh.*_ank_exit" 2>/dev/null
-    pkill -9 -f "sshd.*PidFile" 2>/dev/null
+    # Kill ANK server
+    pkill -9 -f "ld-musl.*python3.*server.py" 2>/dev/null
+    pkill -9 -f "ld-musl.*server.py" 2>/dev/null
+
+    # Kill ALL processes inside ALL container chroots
     for c in "$ANK_DIR/containers"/*/; do
         [ -d "$c" ] || continue
-        umount "$c/merged/proc" 2>/dev/null
-        umount "$c/merged/dev/pts" 2>/dev/null
-        umount "$c/merged/dev/shm" 2>/dev/null
-        umount "$c/merged/dev" 2>/dev/null
-        umount "$c/merged/sys" 2>/dev/null
-        umount "$c/merged" 2>/dev/null
+        local rootfs="$c/merged"
+        for pid_dir in /proc/[0-9]*; do
+            local pid=$(basename "$pid_dir")
+            local exe=$(readlink "$pid_dir/exe" 2>/dev/null)
+            local cwd_path=$(readlink "$pid_dir/cwd" 2>/dev/null)
+            case "$exe" in ${rootfs}/*) kill -9 "$pid" 2>/dev/null ;; esac
+            case "$cwd_path" in ${rootfs}/*) kill -9 "$pid" 2>/dev/null ;; esac
+        done
     done
-    umount "$ANKFS/proc" 2>/dev/null
-    umount "$ANKFS/dev/pts" 2>/dev/null
-    umount "$ANKFS/dev/shm" 2>/dev/null
-    umount "$ANKFS/dev" 2>/dev/null
-    umount "$ANKFS/sys" 2>/dev/null
-    rm -rf "$ANKFS" "$ANK_DIR/containers" "$ANK_DIR/core" "$ANK_DIR/config.json"
+
+    # Also kill container init shells and sshd globally
+    for cpid in $(pgrep -f "sh.*_ank_exit" 2>/dev/null); do kill -9 "$cpid" 2>/dev/null; done
+    pkill -9 -f "sshd.*PidFile" 2>/dev/null
+    pkill -9 -f "sshd.*-p.*22[0-9][0-9]" 2>/dev/null
+
+    sleep 1
+
+    # Unmount ALL container chroot mounts
+    for c in "$ANK_DIR/containers"/*/; do
+        [ -d "$c" ] || continue
+        local rootfs="$c/merged"
+        for m in dev/pts dev/shm dev proc sys run tmp; do
+            umount "$rootfs/$m" 2>/dev/null
+            umount -l "$rootfs/$m" 2>/dev/null
+        done
+        umount "$rootfs" 2>/dev/null
+        umount -l "$rootfs" 2>/dev/null
+    done
+
+    # Unmount ankfs mounts
+    for m in dev/pts dev/shm dev proc sys run tmp; do
+        umount "$ANKFS/$m" 2>/dev/null
+        umount -l "$ANKFS/$m" 2>/dev/null
+    done
+
+    # Clean iptables
+    iptables -t nat -S 2>/dev/null | grep -i "ank" | sed 's/-A/-D/g' | while read rule; do
+        iptables -t nat $rule 2>/dev/null
+    done
+    iptables -S 2>/dev/null | grep -i "ank" | sed 's/-A/-D/g' | while read rule; do
+        iptables $rule 2>/dev/null
+    done
+
+    # Clean network
+    ip link set ank0 down 2>/dev/null
+    ip link delete ank0 2>/dev/null
+    ip netns list 2>/dev/null | grep -i "netns_\|ank" | cut -d' ' -f1 | while read ns; do
+        ip netns delete "$ns" 2>/dev/null
+    done
+
+    # Clean cgroups
+    rm -rf "/sys/fs/cgroup/ank" 2>/dev/null
+
+    # Remove ALL ANK data (fresh start)
+    rm -rf "$ANK_DIR"
+    rm -rf "/sdcard/AndroidKonteiner"
+
+    # Recreate base dirs
     mkdir -p "$ANK_DIR/logs" "$ANK_DIR/cache"
 }
 
