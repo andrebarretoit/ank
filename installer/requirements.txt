@@ -1,0 +1,3 @@
+customtkinter
+adbutils
+PySide6

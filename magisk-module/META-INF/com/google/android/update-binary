@@ -1,0 +1,68 @@
+#!/sbin/sh
+
+#################
+# Initialization
+#################
+
+umask 022
+
+OUTFD=$2
+ZIPFILE=$3
+
+#########################
+# Load Magisk functions
+#########################
+
+[ -f /data/adb/magisk/util_functions.sh ] || {
+  echo "ui_print ****************************************" >> /proc/self/fd/$OUTFD
+  echo "ui_print   Magisk v20.4+ required!              " >> /proc/self/fd/$OUTFD
+  echo "ui_print ****************************************" >> /proc/self/fd/$OUTFD
+  echo "ui_print " >> /proc/self/fd/$OUTFD
+  exit 1
+}
+
+. /data/adb/magisk/util_functions.sh
+
+[ $MAGISK_VER_CODE -lt 20400 ] && {
+  echo "ui_print ****************************************" >> /proc/self/fd/$OUTFD
+  echo "ui_print   Magisk v20.4+ required!              " >> /proc/self/fd/$OUTFD
+  echo "ui_print ****************************************" >> /proc/self/fd/$OUTFD
+  echo "ui_print " >> /proc/self/fd/$OUTFD
+  exit 1
+}
+
+#########################
+# Extract files manually
+#########################
+
+# install_module sometimes doesn't extract properly
+# So we extract manually to MODPATH before calling it
+
+mkdir -p $MODPATH
+unzip -o "$ZIPFILE" -d $MODPATH >/dev/null 2>&1
+rm -rf $MODPATH/META-INF
+
+#########################
+# Set permissions
+#########################
+
+set_perm() {
+  chown $2:$3 $1
+  chmod $4 $1
+}
+
+set_perm $MODPATH/action.sh 0 0 0755
+set_perm $MODPATH/service.sh 0 0 0755
+set_perm $MODPATH/post-fs-data.sh 0 0 0755
+[ -f $MODPATH/service.d/ank.sh ] && set_perm $MODPATH/service.d/ank.sh 0 0 0755
+for f in $MODPATH/scripts/*.sh; do
+  [ -f "$f" ] && set_perm "$f" 0 0 0755
+done
+
+#########################
+# Run install.sh
+#########################
+
+SKIPUNZIP=1
+install_module
+exit 0

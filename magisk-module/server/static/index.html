@@ -1,0 +1,558 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1">
+    <meta name="theme-color" content="#0b0d13">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="description" content="ANK — Android Konteiner. Engine de contêineres para Android.">
+    <title>ANK · Android Konteiner</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>📦</text></svg>">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css">
+    <link rel="stylesheet" href="style.css">
+    <script>
+    // Apply saved theme immediately (before paint) to avoid flash of wrong theme
+    (function() {
+        try {
+            var saved = localStorage.getItem('ank_theme');
+            var theme = saved || (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+            document.documentElement.setAttribute('data-theme', theme);
+        } catch (e) {}
+    })();
+    </script>
+</head>
+<body>
+    <!-- Login -->
+    <div id="login-screen" class="screen">
+        <div class="login-wrapper">
+            <div class="login-topbar">
+                <button type="button" class="icon-toggle" id="theme-toggle-login" title="Toggle theme"><i class="bi bi-sun"></i><i class="bi bi-moon-stars"></i></button>
+            </div>
+            <div class="login-card">
+                <div class="login-logo">
+                    <div class="mark"><i class="bi bi-box-seam" style="font-size:28px;color:#fff"></i></div>
+                    <h1>ANK</h1>
+                    <p>Android Konteiner</p>
+                </div>
+                <form id="login-form">
+                    <div class="input-group">
+                        <i class="bi bi-person"></i>
+                        <input type="text" id="username-input" placeholder="Username" autocomplete="username" required>
+                    </div>
+                    <div class="input-group">
+                        <i class="bi bi-lock"></i>
+                        <input type="password" id="password-input" placeholder="Password" autocomplete="current-password" required>
+                    </div>
+                    <button type="submit" class="btn btn-primary btn-block"><i class="bi bi-box-arrow-in-right"></i> Login</button>
+                    <p id="login-error" class="error"></p>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- App -->
+    <div id="app-screen" class="screen hidden">
+        <div class="sidebar-backdrop" id="sidebar-backdrop"></div>
+        <div class="mobile-topbar" id="mobile-topbar">
+            <button type="button" class="icon-toggle" id="drawer-open-btn" title="Menu"><i class="bi bi-list"></i></button>
+            <div class="mt-brand"><div class="mark"><i class="bi bi-box-seam" style="font-size:16px;color:#fff"></i></div>ANK</div>
+            <button type="button" class="icon-toggle" id="theme-toggle-mobile" title="Toggle theme"><i class="bi bi-sun"></i><i class="bi bi-moon-stars"></i></button>
+        </div>
+        <aside class="sidebar" id="sidebar">
+            <div class="sidebar-brand"><div class="mark"><i class="bi bi-box-seam" style="font-size:18px;color:#fff"></i></div><span>ANK</span></div>
+            <nav class="sidebar-nav">
+                <a href="#" class="nav-item active" data-tab="dashboard"><i class="bi bi-speedometer2"></i><span>Dashboard</span></a>
+                <a href="#" class="nav-item" data-tab="containers"><i class="bi bi-grid-3x3-gap"></i><span>Containers</span></a>
+                <a href="#" class="nav-item" data-tab="images"><i class="bi bi-hdd-stack"></i><span>Images</span></a>
+                <a href="#" class="nav-item" data-tab="networks"><i class="bi bi-hdd-network"></i><span>Networks</span></a>
+                <a href="#" class="nav-item" data-tab="logs"><i class="bi bi-journal-text"></i><span>Logs</span></a>
+                <a href="#" class="nav-item" data-tab="shell"><i class="bi bi-terminal"></i><span>Shell</span></a>
+                <a href="#" class="nav-item" data-tab="settings"><i class="bi bi-gear"></i><span>Settings</span></a>
+            </nav>
+            <div class="sidebar-footer">
+                <div class="sidebar-toggles">
+                    <button type="button" class="icon-toggle" id="theme-toggle-desktop" title="Toggle theme"><i class="bi bi-sun"></i><i class="bi bi-moon-stars"></i></button>
+                </div>
+                <div class="system-info">
+                    <span class="version-badge" id="version">v2.0.0</span>
+                    <span class="mode-badge" id="mode-badge">compat</span>
+                </div>
+                <button id="sidebar-expand" class="btn btn-ghost btn-sm sidebar-expand-btn"><i class="bi bi-chevron-double-right"></i></button>
+                <button id="logout-btn" class="btn btn-ghost btn-sm logout-btn"><i class="bi bi-box-arrow-left"></i> <span>Logout</span></button>
+            </div>
+        </aside>
+
+        <main class="content">
+            <!-- Dashboard -->
+            <section id="tab-dashboard" class="tab active">
+                <div class="page-header"><h2><i class="bi bi-speedometer2"></i> Dashboard</h2></div>
+                <div id="mode-notice" class="compat-warning hidden">
+                    <i class="bi bi-info-circle-fill"></i>
+                    <div><strong id="mode-notice-title"></strong> — <span id="mode-notice-body"></span></div>
+                </div>
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <div class="stat-icon running"><i class="bi bi-play-circle"></i></div>
+                        <div class="stat-body"><span class="stat-value" id="stat-running">0</span><span class="stat-label">Running</span></div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-icon stopped"><i class="bi bi-stop-circle"></i></div>
+                        <div class="stat-body"><span class="stat-value" id="stat-stopped">0</span><span class="stat-label">Stopped</span></div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-icon total"><i class="bi bi-grid-3x3-gap"></i></div>
+                        <div class="stat-body"><span class="stat-value" id="stat-total">0</span><span class="stat-label">Total</span></div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-icon image"><i class="bi bi-hdd-stack"></i></div>
+                        <div class="stat-body"><span class="stat-value" id="stat-images">0</span><span class="stat-label">Images</span></div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-icon uptime"><i class="bi bi-clock-history"></i></div>
+                        <div class="stat-body"><span class="stat-value" id="stat-uptime">-</span><span class="stat-label">Uptime</span></div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-icon cpu"><i class="bi bi-cpu"></i></div>
+                        <div class="stat-body"><span class="stat-value" id="stat-cpu">-</span><span class="stat-label"><span id="stat-cpu-cores"></span>CPU</span></div>
+                    </div>
+                </div>
+                <div class="card">
+                    <div class="card-header"><h3><i class="bi bi-hdd-stack"></i> System Info</h3></div>
+                    <div class="card-body">
+                        <div class="info-grid">
+                            <div class="info-item"><span class="info-label">Device</span><span id="info-device">-</span></div>
+                            <div class="info-item"><span class="info-label">Kernel</span><span id="info-kernel">-</span></div>
+                            <div class="info-item"><span class="info-label">Memory</span><span id="info-memory">-</span></div>
+                            <div class="info-item"><span class="info-label">Subnet</span><span id="info-subnet">-</span></div>
+                            <div class="info-item"><span class="info-label">Battery</span><span id="info-battery">-</span></div>
+                        </div>
+                    </div>
+                </div>
+                <div class="card" style="margin-top:16px;">
+                    <div class="card-header"><h3><i class="bi bi-grid-3x3-gap"></i> Containers</h3></div>
+                    <div class="card-body" id="dashboard-containers"></div>
+                </div>
+            </section>
+
+            <!-- Containers -->
+            <section id="tab-containers" class="tab">
+                <div class="page-header">
+                    <h2><i class="bi bi-grid-3x3-gap"></i> Containers</h2>
+                    <button id="create-btn" class="btn btn-primary"><i class="bi bi-plus-lg"></i> New Container</button>
+                </div>
+                <div id="containers-list" class="container-list">
+                    <div class="empty-state"><i class="bi bi-box-seam" style="font-size:48px;color:var(--text-muted)"></i><p>No containers yet</p></div>
+                </div>
+            </section>
+
+            <!-- Images -->
+            <section id="tab-images" class="tab">
+                <div class="page-header">
+                    <h2><i class="bi bi-hdd-stack"></i> Images</h2>
+                    <button id="pull-btn" class="btn btn-primary"><i class="bi bi-cloud-download"></i> Pull Alpine</button>
+                </div>
+                <div class="card" style="margin-bottom:16px;">
+                    <div class="card-header"><h3><i class="bi bi-lightning-charge"></i> Quick Deploy</h3></div>
+                    <div class="card-body">
+                        <p style="font-size:13px;color:var(--text-muted);margin-bottom:12px;">One-click containers — pick a template, name it, deploy.</p>
+                        <div id="templates-grid" class="templates-grid"></div>
+                    </div>
+                </div>
+                <div class="card" style="margin-bottom:16px;border:1px solid var(--accent)">
+                    <div class="card-header"><h3><i class="bi bi-file-earmark-code"></i> Ankfile Build</h3></div>
+                    <div class="card-body">
+                        <p style="font-size:13px;color:var(--text-muted);margin-bottom:12px;">Build custom images from an Ankfile (like Dockerfile). Write or paste your Ankfile below.</p>
+                        <div class="form-group"><label>Container Name</label><input type="text" id="ankfile-name" placeholder="my-app" value="ank-build"></div>
+                        <div class="form-group">
+                            <label>Ankfile</label>
+                            <textarea id="ankfile-content" style="width:100%;height:160px;background:#0d1117;color:#c9d1d9;border:1px solid #30363d;border-radius:6px;padding:10px;font-family:'JetBrains Mono',monospace;font-size:12px;resize:vertical" placeholder="# Example Ankfile&#10;FROM alpine-3.20&#10;PASSWD ank123&#10;RUN apk add --allow-untrusted sqlite nginx&#10;EXPOSE 8080&#10;WORKDIR /app">FROM alpine-3.20
+PASSWD ank123
+RUN apk add --allow-untrusted nginx
+RUN mkdir -p /var/www/html
+RUN echo "&lt;h1&gt;Custom ANK Image&lt;/h1&gt;" > /var/www/html/index.html
+EXPOSE 8080</textarea>
+                        </div>
+                        <button type="button" class="btn btn-primary" id="ankfile-build-btn"><i class="bi bi-hammer"></i> Build</button>
+                        <button type="button" class="btn btn-ghost" id="ankfile-example-btn" style="margin-left:8px"><i class="bi bi-filetype-json"></i> Load Example (Cloudreve)</button>
+                    </div>
+                </div>
+                <div class="card">
+                    <div class="card-header"><h3><i class="bi bi-hdd-stack"></i> Downloaded Images</h3></div>
+                    <div class="card-body">
+                        <div id="images-list" class="image-list">
+                            <div class="empty-state"><i class="bi bi-hdd-stack"></i><p>No images available</p></div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Networks -->
+            <section id="tab-networks" class="tab">
+                <div class="page-header">
+                    <h2><i class="bi bi-hdd-network"></i> Networks</h2>
+                    <button id="network-config-btn" class="btn btn-primary"><i class="bi bi-gear"></i> Configure Network</button>
+                </div>
+                <div id="networks-list"></div>
+                <div id="network-info-panel"></div>
+            </section>
+
+            <!-- Logs -->
+            <section id="tab-logs" class="tab">
+                <div class="page-header">
+                    <h2><i class="bi bi-terminal"></i> Logs</h2>
+                    <div style="display:flex;gap:8px;">
+                        <select id="log-filter" class="btn btn-ghost btn-sm">
+                            <option value="all">All logs</option>
+                            <option value="server">Server</option>
+                            <option value="container">Containers</option>
+                        </select>
+                        <button id="logs-pause-btn" class="btn btn-ghost btn-sm"><i class="bi bi-pause-fill"></i> Pause</button>
+                        <button id="logs-clear-btn" class="btn btn-ghost btn-sm"><i class="bi bi-trash3"></i> Clear</button>
+                        <button id="logs-refresh-btn" class="btn btn-ghost btn-sm"><i class="bi bi-arrow-clockwise"></i> Refresh</button>
+                    </div>
+                </div>
+                <div class="log-viewer" id="log-viewer">
+                    <div class="empty-state"><i class="bi bi-terminal"></i><p>No logs yet</p></div>
+                </div>
+            </section>
+
+            <!-- Shell -->
+            <section id="tab-shell" class="tab">
+                <div class="page-header">
+                    <h2><i class="bi bi-terminal"></i> Core Shell</h2>
+                    <div style="display:flex;gap:8px;">
+                        <button id="shell-clear-btn" class="btn btn-ghost btn-sm"><i class="bi bi-trash3"></i> Clear</button>
+                    </div>
+                </div>
+                <div id="core-terminal" style="width:100%;height:100%;min-height:400px"></div>
+            </section>
+
+            <!-- Settings -->
+            <section id="tab-settings" class="tab">
+                <div class="page-header"><h2><i class="bi bi-gear"></i> Settings</h2></div>
+                <div class="settings-grid">
+                    <div class="card">
+                        <div class="card-header"><h3><i class="bi bi-person-gear"></i> Account</h3></div>
+                        <div class="card-body">
+                            <form id="password-form">
+                                <div class="form-group"><label>Current Password</label><input type="password" id="current-password" required></div>
+                                <div class="form-group"><label>New Username</label><input type="text" id="new-username" autocomplete="off"></div>
+                                <div class="form-group"><label>New Password</label><input type="password" id="new-password" minlength="6"></div>
+                                <button type="submit" class="btn btn-primary"><i class="bi bi-check-lg"></i> Save</button>
+                            </form>
+                        </div>
+                    </div>
+                    <div class="card">
+                        <div class="card-header"><h3><i class="bi bi-hdd-network"></i> Panel</h3></div>
+                        <div class="card-body">
+                            <form id="panel-settings-form">
+                                <div class="form-group">
+                                    <label>Bind Address</label>
+                                    <select id="setting-bind">
+                                        <option value="0.0.0.0">0.0.0.0 (all interfaces)</option>
+                                        <option value="127.0.0.1">127.0.0.1 (localhost only)</option>
+                                    </select>
+                                </div>
+                                <div class="form-group">
+                                    <label>Auto-Refresh Interval</label>
+                                    <select id="setting-refresh">
+                                        <option value="5">5 seconds</option>
+                                        <option value="10" selected>10 seconds</option>
+                                        <option value="30">30 seconds</option>
+                                        <option value="60">60 seconds</option>
+                                        <option value="0">Disabled</option>
+                                    </select>
+                                </div>
+                                <div class="form-group">
+                                    <label class="checkbox-label" style="display:flex;align-items:center;gap:8px;cursor:pointer">
+                                        <input type="checkbox" id="setting-autostart" style="width:18px;height:18px;accent-color:var(--accent)">
+                                        <i class="bi bi-power" style="color:var(--accent)"></i>
+                                        Start server on device boot
+                                    </label>
+                                    <small style="color:var(--text-muted);font-size:11px;margin-top:4px;display:block">Server starts automatically when device powers on (via Magisk service.sh + service.d fallback)</small>
+                                </div>
+                                <button type="submit" class="btn btn-primary"><i class="bi bi-check-lg"></i> Save</button>
+                            </form>
+                        </div>
+                    </div>
+                    <div class="card">
+                        <div class="card-header"><h3><i class="bi bi-info-circle"></i> About</h3></div>
+                        <div class="card-body">
+                            <div class="info-grid">
+                                <div class="info-item"><span class="info-label">Version</span><span>2.0.0</span></div>
+                                <div class="info-item"><span class="info-label">Panel Port</span><span>8001</span></div>
+                                <div class="info-item"><span class="info-label">Credentials</span><span>/sdcard/AndroidKonteiner/CREDENCIAIS.txt</span></div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="card">
+                        <div class="card-header"><h3><i class="bi bi-database"></i> Cache</h3></div>
+                        <div class="card-body">
+                            <div class="info-grid">
+                                <div class="info-item"><span class="info-label">Rootfs Size</span><span id="info-rootfs">-</span></div>
+                                <div class="info-item"><span class="info-label">Containers Data</span><span id="info-containers-size">-</span></div>
+                                <div class="info-item"><span class="info-label">Total Used</span><span id="info-total-size">-</span></div>
+                                <div class="info-item"><span class="info-label">Device Free</span><span id="info-device-free">-</span></div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="card" style="border: 1px solid var(--danger)">
+                        <div class="card-header"><h3 style="color:var(--danger)"><i class="bi bi-exclamation-triangle"></i> Danger Zone</h3></div>
+                        <div class="card-body">
+                            <p style="color:var(--text-secondary);font-size:13px;margin-bottom:12px">Completely remove ANK: all containers, images, configs, network rules, and the ANK directory. This cannot be undone.</p>
+                            <button type="button" class="btn btn-danger" id="uninstall-btn"><i class="bi bi-trash3"></i> Uninstall ANK</button>
+                        </div>
+                    </div>
+                </div>
+            </section>
+            <footer class="app-footer"><span>POWERED BY</span> <a href="https://linkedin.com/in/andrebarretoit" target="_blank" rel="noopener">ANDREBARRETOIT</a></footer>
+        </main>
+    </div>
+
+    <!-- Create Container Modal -->
+    <div id="create-modal" class="modal hidden">
+        <div class="modal-overlay"></div>
+        <div class="modal-content">
+            <div class="modal-header"><h3><i class="bi bi-plus-circle"></i> New Container</h3><button class="modal-close"><i class="bi bi-x-lg"></i></button></div>
+            <form id="create-form">
+                <div class="modal-body">
+                    <div class="form-group"><label>Name</label><input type="text" id="container-name" placeholder="my-container" required></div>
+                    <div class="form-group"><label>Image</label><select id="container-image"></select></div>
+                    <div class="form-row">
+                        <div class="form-group"><label>Root Password</label><input type="password" id="container-root-password" placeholder="min 4 chars" required minlength="4"></div>
+                        <div class="form-group"><label>SSH Port</label><input type="number" id="container-ssh-port" placeholder="auto" min="1024" max="65535"></div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group"><label>Memory Limit</label><select id="mem-limit"><option value="128M">128 MB</option><option value="256M" selected>256 MB</option><option value="512M">512 MB</option><option value="1G">1 GB</option></select></div>
+                        <div class="form-group"><label>CPU %</label><input type="number" id="cpu-limit" value="50" min="1" max="100"></div>
+                    </div>
+                    <div class="form-group"><label class="checkbox-label"><input type="checkbox" id="container-autostart"><i class="bi bi-power"></i> Autostart</label></div>
+                    <div class="form-group">
+                        <label>Network Policies</label>
+                        <div class="checkbox-group">
+                            <label class="checkbox-label"><input type="checkbox" id="policy-p2p"><i class="bi bi-diagram-3"></i> P2P</label>
+                            <label class="checkbox-label"><input type="checkbox" id="policy-host"><i class="bi bi-phone"></i> Host</label>
+                            <label class="checkbox-label"><input type="checkbox" id="policy-internet" checked><i class="bi bi-globe"></i> Internet</label>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-ghost modal-close">Cancel</button>
+                    <button type="submit" class="btn btn-primary"><i class="bi bi-plus-lg"></i> Create</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Detail Modal -->
+    <div id="detail-modal" class="modal hidden">
+        <div class="modal-overlay"></div>
+        <div class="modal-content modal-lg">
+            <div class="modal-header">
+                <h3><i class="bi bi-box-seam" style="font-size:20px;color:var(--accent)"></i> <span id="detail-name">-</span></h3>
+                <div style="display:flex;gap:6px;align-items:center;">
+                    <span id="detail-status" class="status-badge">-</span>
+                    <button class="modal-close"><i class="bi bi-x-lg"></i></button>
+                </div>
+            </div>
+            <div class="modal-tabs">
+                <button class="modal-tab active" data-mtab="overview"><i class="bi bi-info-circle"></i> Overview</button>
+                <button class="modal-tab" data-mtab="settings"><i class="bi bi-gear"></i> Settings</button>
+                <button class="modal-tab" data-mtab="network"><i class="bi bi-hdd-network"></i> Networks</button>
+                <button class="modal-tab" data-mtab="terminal"><i class="bi bi-terminal"></i> Terminal</button>
+                <button class="modal-tab" data-mtab="files"><i class="bi bi-folder2-open"></i> Files</button>
+            </div>
+            <div class="modal-body">
+                <div id="mtab-overview" class="mtab active">
+                    <div class="detail-stats">
+                        <div class="detail-stat"><span class="detail-stat-label">IP Address</span><span id="detail-ip" class="detail-stat-value">-</span></div>
+                        <div class="detail-stat"><span class="detail-stat-label">Image</span><span id="detail-image" class="detail-stat-value">-</span></div>
+                        <div class="detail-stat"><span class="detail-stat-label">Mode</span><span id="detail-mode" class="detail-stat-value">-</span></div>
+                        <div class="detail-stat"><span class="detail-stat-label">PID</span><span id="detail-pid" class="detail-stat-value">-</span></div>
+                        <div class="detail-stat"><span class="detail-stat-label">Memory</span><span id="detail-memory" class="detail-stat-value">-</span></div>
+                        <div class="detail-stat"><span class="detail-stat-label">CPU</span><span id="detail-cpu" class="detail-stat-value">-</span></div>
+                    </div>
+                    <div class="detail-actions">
+                        <button id="detail-start" class="btn btn-success btn-sm"><i class="bi bi-play-fill"></i> Start</button>
+                        <button id="detail-stop" class="btn btn-warning btn-sm"><i class="bi bi-stop-fill"></i> Stop</button>
+                        <button id="detail-restart" class="btn btn-primary btn-sm"><i class="bi bi-arrow-repeat"></i> Restart</button>
+                        <button id="detail-delete" class="btn btn-danger btn-sm"><i class="bi bi-trash3"></i> Delete</button>
+                    </div>
+                    <div id="ssh-hint" class="ssh-hint" style="display:none;">
+                        <div class="ssh-hint-header"><i class="bi bi-terminal"></i> SSH Access</div>
+                        <code id="ssh-hint-cmd" class="ssh-hint-cmd">ssh root@0.0.0.0:0</code>
+                        <button class="btn btn-sm btn-ghost" onclick="navigator.clipboard.writeText(this.previousElementSibling.textContent);toast('Copied!','success')"><i class="bi bi-clipboard"></i></button>
+                    </div>
+                    <div class="detail-logs">
+                        <div class="card-header"><h4><i class="bi bi-journal-text"></i> Logs</h4></div>
+                        <pre id="detail-log-output" class="log-output">No logs available</pre>
+                    </div>
+                </div>
+                <div id="mtab-settings" class="mtab">
+                    <form id="detail-settings-form">
+                        <div class="form-group"><label class="checkbox-label"><input type="checkbox" id="detail-autostart"><i class="bi bi-power"></i> Autostart on boot</label></div>
+                        <div class="form-row">
+                            <div class="form-group"><label>Root Password</label><input type="password" id="detail-root-password" placeholder="min 4 chars" minlength="4"></div>
+                            <div class="form-group"><label>SSH Port</label><input type="number" id="detail-ssh-port" placeholder="auto" min="1024" max="65535" readonly></div>
+                        </div>
+                        <div class="form-row">
+                            <div class="form-group"><label>Memory Limit</label><select id="detail-mem-limit"><option value="128M">128 MB</option><option value="256M">256 MB</option><option value="512M">512 MB</option><option value="1G">1 GB</option></select></div>
+                            <div class="form-group"><label>CPU %</label><input type="number" id="detail-cpu-limit" value="50" min="1" max="100"></div>
+                        </div>
+                        <div class="form-group">
+                            <label>Network Policies</label>
+                            <div class="checkbox-group">
+                                <label class="checkbox-label"><input type="checkbox" id="detail-p2p"><i class="bi bi-diagram-3"></i> P2P</label>
+                                <label class="checkbox-label"><input type="checkbox" id="detail-host"><i class="bi bi-phone"></i> Host Access</label>
+                                <label class="checkbox-label"><input type="checkbox" id="detail-internet"><i class="bi bi-globe"></i> Internet</label>
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <label>Port Mappings</label>
+                            <div id="port-mappings-list"></div>
+                            <button type="button" id="add-port-btn" class="btn btn-ghost btn-sm"><i class="bi bi-plus-lg"></i> Add Port</button>
+                        </div>
+                        <button type="submit" class="btn btn-primary"><i class="bi bi-check-lg"></i> Save</button>
+                    </form>
+                </div>
+                <div id="mtab-network" class="mtab">
+                    <form id="detail-network-form">
+                        <div class="form-group">
+                            <label class="checkbox-label"><input type="checkbox" id="detail-serves-static"><i class="bi bi-globe2"></i> Serves Static Files</label>
+                        </div>
+                        <div class="form-group">
+                            <label>Static Files Path</label>
+                            <input type="text" id="detail-static-path" placeholder="/var/www/html">
+                            <p class="form-hint">Path inside container where static files are served</p>
+                        </div>
+                        <div class="form-group">
+                            <label>Container IP</label>
+                            <input type="text" id="detail-container-ip" placeholder="10.20.30.2" readonly>
+                            <p class="form-hint">IP assigned from the container subnet</p>
+                        </div>
+                        <div class="form-group">
+                            <label>Subnet</label>
+                            <input type="text" id="detail-container-subnet" placeholder="10.20.30.0/24" readonly>
+                            <p class="form-hint">Read-only — configured in global network settings</p>
+                        </div>
+                        <button type="submit" class="btn btn-primary"><i class="bi bi-check-lg"></i> Save Network Settings</button>
+                    </form>
+                </div>
+                <div id="mtab-terminal" class="mtab">
+                    <div id="container-terminal" style="width:100%;height:100%;min-height:400px"></div>
+                </div>
+                <div id="mtab-files" class="mtab">
+                    <div class="file-explorer">
+                        <div class="file-toolbar">
+                            <div id="file-breadcrumbs" class="file-breadcrumbs">
+                                <span class="breadcrumb-item" data-path="/">/</span>
+                            </div>
+                            <div class="file-actions">
+                                <button id="file-btn-new" class="btn btn-sm btn-ghost" title="New File"><i class="bi bi-file-earmark-plus"></i></button>
+                                <button id="file-btn-mkdir" class="btn btn-sm btn-ghost" title="New Folder"><i class="bi bi-folder-plus"></i></button>
+                                <button id="file-btn-upload" class="btn btn-sm btn-ghost" title="Upload"><i class="bi bi-upload"></i></button>
+                                <button id="file-btn-refresh" class="btn btn-sm btn-ghost" title="Refresh"><i class="bi bi-arrow-clockwise"></i></button>
+                            </div>
+                        </div>
+                        <div id="file-list" class="file-list">
+                            <div class="file-empty" data-path="/">Select a container to browse files</div>
+                        </div>
+                        <input type="file" id="file-upload-input" class="hidden" multiple>
+                    </div>
+                    <div id="file-editor" class="file-editor hidden">
+                        <div class="file-editor-header">
+                            <span id="file-editor-name" class="file-editor-name">-</span>
+                            <div class="file-editor-actions">
+                                <button id="file-btn-save" class="btn btn-sm btn-success"><i class="bi bi-check-lg"></i> Save</button>
+                                <button id="file-btn-close-editor" class="btn btn-sm btn-ghost"><i class="bi bi-x-lg"></i> Close</button>
+                            </div>
+                        </div>
+                        <textarea id="file-editor-content" class="file-editor-content" spellcheck="false"></textarea>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Network Config Modal -->
+    <div id="network-modal" class="modal hidden">
+        <div class="modal-overlay"></div>
+        <div class="modal-content">
+            <div class="modal-header"><h3><i class="bi bi-hdd-network"></i> Configure Network</h3><button class="modal-close"><i class="bi bi-x-lg"></i></button></div>
+            <form id="network-form">
+                <div class="modal-body">
+                    <div class="form-group"><label>Bridge Name</label><input type="text" id="net-bridge" value="ank0" required></div>
+                    <div class="form-group"><label>Subnet (CIDR /24)</label><input type="text" id="net-subnet" placeholder="10.20.30.0" required></div>
+                    <div class="form-group"><label>Gateway</label><input type="text" id="net-gateway" placeholder="10.20.30.1" required></div>
+                    <div class="form-group"><label class="checkbox-label"><input type="checkbox" id="net-nat" checked><i class="bi bi-arrow-left-right"></i> Enable NAT (internet access)</label></div>
+                    <p class="form-hint"><i class="bi bi-info-circle"></i> Subnet must not conflict with your LAN. Examples: 192.168.100.0, 10.20.30.0, 172.16.0.0</p>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-ghost modal-close">Cancel</button>
+                    <button type="submit" class="btn btn-primary"><i class="bi bi-check-lg"></i> Apply</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Custom Confirm Modal -->
+    <div id="confirm-modal" class="modal hidden">
+        <div class="modal-overlay"></div>
+        <div class="modal-content modal-sm">
+            <div class="modal-header"><h3 id="confirm-title">Confirm</h3><button class="modal-close"><i class="bi bi-x-lg"></i></button></div>
+            <div class="modal-body"><p id="confirm-message"></p></div>
+            <div class="modal-footer">
+                <button class="btn btn-ghost modal-close" id="confirm-cancel">Cancel</button>
+                <button class="btn btn-danger" id="confirm-ok">Confirm</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Custom Input Modal -->
+    <div id="input-modal" class="modal hidden">
+        <div class="modal-overlay"></div>
+        <div class="modal-content modal-sm">
+            <div class="modal-header"><h3 id="input-title">Input</h3><button class="modal-close"><i class="bi bi-x-lg"></i></button></div>
+            <div class="modal-body">
+                <p id="input-message"></p>
+                <div class="form-group" style="margin-top:12px">
+                    <input type="text" id="input-field" style="width:100%">
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-ghost modal-close" id="input-cancel">Cancel</button>
+                <button class="btn btn-primary" id="input-ok">OK</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Upload Modal -->
+    <div id="upload-modal" class="modal hidden">
+        <div class="modal-overlay"></div>
+        <div class="modal-content">
+            <div class="modal-header"><h3><i class="bi bi-cloud-upload"></i> Upload to <span id="upload-container-name">-</span></h3><button class="modal-close"><i class="bi bi-x-lg"></i></button></div>
+            <div class="modal-body">
+                <div id="upload-drop-area" class="upload-area">
+                    <i class="bi bi-cloud-arrow-up"></i>
+                    <p>Drop files here or click to browse</p>
+                    <p style="font-size:11px;color:var(--text-muted)">HTML, CSS, JS, images, or ZIP (auto-extracts)</p>
+                    <input type="file" id="upload-file-input" multiple accept=".html,.css,.js,.json,.png,.jpg,.svg,.zip,.txt,.md" style="display:none">
+                </div>
+                <div id="upload-result" class="upload-progress"></div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-ghost modal-close">Close</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast -->
+    <div id="toast-container"></div>
+
+    <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
+    <script src="app.js"></script>
+</body>
+</html>

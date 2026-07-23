@@ -1,0 +1,101 @@
+#!/system/bin/sh
+# ============================================================
+# ANK - Download Alpine rootfs
+# Usage: download-rootfs.sh <version>
+# Example: download-rootfs.sh 3.20
+# ============================================================
+
+VERSION="${1:-3.20}"
+ANK_DIR="/data/local/ank"
+ANK_SDCARD="/sdcard/AndroidKonteiner"
+IMAGES_DIR="$ANK_DIR/images"
+ROOTFS="$IMAGES_DIR/alpine-${VERSION}"
+ARCH=$(uname -m)
+
+case "$ARCH" in
+    aarch64|arm64)  ARCH_NAME="aarch64" ;;
+    armv7*|armhf)   ARCH_NAME="armv7" ;;
+    x86_64)         ARCH_NAME="x86_64" ;;
+    *)              ARCH_NAME="$ARCH" ;;
+esac
+
+TARBALL="$ANK_DIR/cache/alpine-minirootfs-${VERSION}-${ARCH_NAME}.tar.gz"
+ALPINE_URL="https://dl-cdn.alpinelinux.org/alpine/v${VERSION}/releases/${ARCH_NAME}/alpine-minirootfs-${VERSION}.0-${ARCH_NAME}.tar.gz"
+
+# Already downloaded?
+if [ -e "$ROOTFS/usr/bin/sh" ] || [ -L "$ROOTFS/usr/bin/sh" ] || [ -e "$ROOTFS/bin/busybox" ] || [ -L "$ROOTFS/bin/busybox" ]; then
+    echo "Image alpine-${VERSION} already exists"
+    exit 0
+fi
+
+mkdir -p "$IMAGES_DIR" "$ANK_DIR/cache"
+
+# Check for pre-built tarball from install
+PREBUILT="$ANK_DIR/cache/ankcore-v*-${ARCH_NAME}.tar.gz"
+for tarball in $PREBUILT; do
+    if [ -f "$tarball" ]; then
+        echo "Using cached rootfs: $tarball"
+        mkdir -p "$ROOTFS"
+        TMPDIR="$ANK_DIR/.extract_tmp"
+        rm -rf "$TMPDIR"
+        mkdir -p "$TMPDIR"
+        cd "$TMPDIR" && tar xzf "$tarball" 2>/dev/null
+        cd /
+        rm -rf "$ROOTFS"/*
+        for item in "$TMPDIR"/*; do
+            [ -e "$item" ] && mv "$item" "$ROOTFS/"
+        done
+        rm -rf "$TMPDIR"
+        if [ -f "$ROOTFS/usr/bin/sh" ]; then
+            echo "Rootfs extracted from cache"
+            exit 0
+        fi
+    fi
+done
+
+# Download Alpine minirootfs
+echo "Downloading Alpine v${VERSION} for ${ARCH_NAME}..."
+
+if command -v curl >/dev/null 2>&1; then
+    curl -L --connect-timeout 15 --max-time 300 -o "$TARBALL" "$ALPINE_URL" 2>&1
+elif command -v wget >/dev/null 2>&1; then
+    wget --timeout=300 -O "$TARBALL" "$ALPINE_URL" 2>&1
+else
+    echo "ERROR: Neither curl nor wget found"
+    exit 1
+fi
+
+if [ ! -f "$TARBALL" ]; then
+    echo "ERROR: Download failed"
+    exit 1
+fi
+
+# Extract
+echo "Extracting..."
+mkdir -p "$ROOTFS"
+TMPDIR="$ANK_DIR/.extract_tmp"
+rm -rf "$TMPDIR"
+mkdir -p "$TMPDIR"
+cd "$TMPDIR" && tar xzf "$TARBALL" 2>/dev/null
+cd /
+rm -rf "$ROOTFS"/*
+for item in "$TMPDIR"/*; do
+    [ -e "$item" ] && mv "$item" "$ROOTFS/"
+done
+rm -rf "$TMPDIR"
+
+# Configure repos + DNS
+mkdir -p "$ROOTFS/etc/apk" "$ROOTFS/var/cache/apk" "$ROOTFS/etc/ssl/certs"
+echo "http://dl-cdn.alpinelinux.org/alpine/v${VERSION}/main" > "$ROOTFS/etc/apk/repositories"
+echo "http://dl-cdn.alpinelinux.org/alpine/v${VERSION}/community" >> "$ROOTFS/etc/apk/repositories"
+echo "nameserver 8.8.8.8" > "$ROOTFS/etc/resolv.conf"
+echo "nameserver 8.8.4.4" >> "$ROOTFS/etc/resolv.conf"
+echo "127.0.0.1 localhost" > "$ROOTFS/etc/hosts"
+
+if [ -e "$ROOTFS/bin/sh" ] || [ -L "$ROOTFS/bin/sh" ] || [ -e "$ROOTFS/bin/busybox" ] || [ -L "$ROOTFS/bin/busybox" ]; then
+    echo "Image 'alpine-${VERSION}' downloaded and extracted"
+    exit 0
+else
+    echo "ERROR: Extraction failed"
+    exit 1
+fi

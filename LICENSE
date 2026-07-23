@@ -1,0 +1,101 @@
+# Android Konteiner Source Available License 1.0 (AKSAL-1.0)
+
+Copyright (c) 2026 André Barreto
+
+Required Notice: Copyright André Barreto — Android Konteiner (ANK)
+GitHub: https://github.com/andrebarretoit/ank
+LinkedIn: https://linkedin.com/in/andrebarretoit
+Website: https://andrebarreto.work
+
+## Definitions
+
+**Software** means the Android Konteiner (ANK) source code, scripts, server code, web panel assets, shell scripts, Magisk module, documentation, configuration files, and any official releases provided by the Licensor, in whole or in part.
+
+**You** means any individual or entity exercising rights under this License.
+
+**Distribution** means providing copies of the Software to third parties, whether for free or for compensation.
+
+**Internal Use** means use of the Software within your own organization for your own operations, where copies of the Software are not delivered to third parties as part of any product or service.
+
+## Acceptance
+
+By using, copying, modifying, or distributing the Software, you agree to be bound by the terms of this License. If you do not agree, you may not use, copy, modify, or distribute the Software.
+
+## Grant of Rights
+
+Subject to the terms of this License, the Licensor grants you a worldwide, royalty-free, non-exclusive license to:
+
+1. **Use** — Run, execute, and operate the Software for any purpose permitted by this License.
+2. **Study** — View and study the source code.
+3. **Modify** — Create derivative works based on the Software for your own internal use. Modified versions may not be distributed to any third party.
+4. **Distribute (Unmodified)** — Share copies of the unmodified Software with others, provided that:
+   - All copies include this license and the Required Notice;
+   - No fee is charged for the Software itself;
+   - The Software is not bundled with other products for sale.
+
+## Patent Grant
+
+The Licensor grants you a non-exclusive, worldwide, royalty-free patent license to make, use, import, and otherwise exercise the rights granted under this License, covering patent claims that the Licensor can license or becomes able to license that would be infringed by the Software.
+
+## Restrictions
+
+You may **NOT**:
+
+1. **Sell the Software** — Distribute the Software as a standalone product, whether modified or unmodified, for monetary compensation.
+2. **Include the Software in products for sale** — Create, manufacture, or sell hardware, appliances, virtual machines, containers, or any other product where copies of the Software are delivered to customers as part of the product, or where the Software is marketed as a feature of the product.
+3. **Distribute modified versions** — Distribute modified, adapted, or derivative versions of the Software to any third party.
+4. **Offer paid access** — Offer the Software as a paid service, subscription, or license where access to the Software itself is the primary benefit.
+5. **Remove attribution** — Remove or alter the Required Notice, copyright notices, or license terms from any copy of the Software.
+
+## Permitted Use
+
+The following uses ARE permitted:
+
+1. **Personal use** — Use the Software on your own devices for any purpose.
+2. **Internal use** — Deploy the Software on company devices, servers, or infrastructure to support business operations. Internal modifications are permitted, provided modified versions are not distributed.
+3. **Services powered by the Software** — Provide services that generate revenue, as long as copies of the Software are not delivered to customers as part of the service.
+4. **Education** — Use the Software in educational courses, tutorials, or materials, even if sold, provided the Software is a tool and not the primary product being sold.
+5. **Evaluation and testing** — Use the Software for testing, evaluation, or proof of concept purposes.
+6. **Unmodified redistribution** — Distribute unmodified copies of the Software freely, provided all copies include this license and the Required Notice.
+
+## Examples
+
+| Scenario                                                                 | Allowed?                                    |
+|--------------------------------------------------------------------------|---------------------------------------------|
+| Run ANK on your personal device                                          | ✅ Yes                                      |
+| Deploy ANK on company servers for internal use                           | ✅ Yes                                      |
+| Run a cloud hosting business that uses ANK internally                    | ✅ Yes                                      |
+| Use ANK as a tool in a paid course or tutorial                           | ✅ Yes                                      |
+| Distribute unmodified copies of ANK freely                               | ✅ Yes (must include this license)          |
+| Modify ANK for internal use (not distributed)                            | ✅ Yes                                      |
+| Sell ANK as a standalone product                                         | ❌ No                                       |
+| Sell a modified version of ANK                                           | ❌ No                                       |
+| Offer "ANK Pro" as a paid upgrade                                        | ❌ No                                       |
+| Sell hardware where ANK is delivered to customers as part of the product | ❌ No                                       |
+| Sell hardware that uses ANK internally (not delivered to customers)      | ✅ Yes                                      |
+| Bundle ANK with another product and charge for the package               | ❌ No                                       |
+| Create and distribute ANK-based images to customers                      | ❌ No                                       |
+
+## Violations and Cure Period
+
+If you are notified in writing that you have violated any term of this License, you have 30 days from the date of notice to come into full compliance. During this period, your rights under this License remain in effect. If you fail to come into full compliance within 30 days, all rights granted under this License terminate automatically.
+
+## Intellectual Property
+
+The Software and all intellectual property rights therein remain the exclusive property of the Licensor. This License does not transfer ownership of any intellectual property.
+
+## Disclaimer of Warranty
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND NONINFRINGEMENT. THE LICENSOR WILL NOT BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT, OR OTHERWISE, ARISING FROM, OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+## Governing Law
+
+This License shall be governed by and construed in accordance with the laws of Brazil, without regard to its conflict of laws provisions.
+
+## Contact
+
+For commercial licensing inquiries, partnership opportunities, or questions about this License:
+
+- GitHub: https://github.com/andrebarretoit
+- LinkedIn: https://linkedin.com/in/andrebarretoit
+- Website: https://andrebarreto.work
