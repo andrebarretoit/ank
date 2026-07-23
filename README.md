@@ -84,7 +84,7 @@ Engine de contêineres ultra-leva para Android — sem compilação, puros scrip
 
 #### Modulo Magisk (Manual)
 
-1. Baixe `ank-v2.0.0.zip` em [Releases](https://github.com/andrebarretoit/ank/releases)
+1. Baixe `ank-magisk.zip` em [Releases](https://github.com/andrebarretoit/ank/releases)
 2. Magisk Manager → Modulos → Instalar do armazenamento → selecione o zip
 3. Reinicie
 4. Abra `http://localhost:8001`
@@ -441,7 +441,7 @@ adb shell su -c "sh /sdcard/AndroidKonteiner/core/cleanup.sh"
 
 #### Magisk Module (Manual)
 
-1. Download `ank-v2.0.0.zip` from [Releases](https://github.com/andrebarretoit/ank/releases)
+1. Download `ank-magisk.zip` from [Releases](https://github.com/andrebarretoit/ank/releases)
 2. Magisk Manager → Modules → Install from storage → select the zip
 3. Reboot
 4. Open `http://localhost:8001`
