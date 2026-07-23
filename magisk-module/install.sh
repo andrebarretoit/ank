@@ -137,7 +137,7 @@ fi
 
 # Build rootfs from scratch if tarball not found
 if [ ! -s "$ANKCORE" ]; then
-    log WARN "ankcore tarball not found — building from scratch..."
+    log WARN "ankcore tarball not found â€” building from scratch..."
     BUILDROOT="$ANK_DIR/cache/buildroot"
     rm -rf "$BUILDROOT"
     mkdir -p "$BUILDROOT" "$ANK_DIR/cache"
