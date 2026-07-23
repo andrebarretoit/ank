@@ -4,7 +4,7 @@ a = Analysis(
     pathex=[],
     binaries=[],
     datas=[
-        ('E:/Ank/installer/ank-magisk.zip', '.'),
+        ('E:/Ank/dist/ank-magisk.zip', '.'),
         ('E:/Ank/ANK.ico', '.'),
     ],
     hiddenimports=['adbutils'],
