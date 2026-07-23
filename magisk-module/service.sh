@@ -70,6 +70,16 @@ fi
 pkill -f "ld-musl-" 2>/dev/null
 sleep 1
 
+# Ensure /dev nodes exist in ankfs for Python/PTY
+mkdir -p "$ROOTFS/dev"
+[ -e "$ROOTFS/dev/null" ] || mknod "$ROOTFS/dev/null" c 1 3 2>/dev/null
+[ -e "$ROOTFS/dev/urandom" ] || mknod "$ROOTFS/dev/urandom" c 1 9 2>/dev/null
+[ -e "$ROOTFS/dev/random" ] || mknod "$ROOTFS/dev/random" c 1 8 2>/dev/null
+[ -e "$ROOTFS/dev/tty" ] || mknod "$ROOTFS/dev/tty" c 5 0 2>/dev/null
+[ -e "$ROOTFS/dev/ptmx" ] || mknod "$ROOTFS/dev/ptmx" c 5 2 2>/dev/null
+[ -e "$ROOTFS/dev/console" ] || mknod "$ROOTFS/dev/console" c 5 1 2>/dev/null
+chmod 666 "$ROOTFS/dev/null" "$ROOTFS/dev/urandom" "$ROOTFS/dev/random" "$ROOTFS/dev/tty" "$ROOTFS/dev/ptmx" "$ROOTFS/dev/console" 2>/dev/null
+
 # Verify Python exists
 if [ ! -f "$ROOTFS/usr/bin/python3" ]; then
     log "ERROR: Python not found at $ROOTFS/usr/bin/python3"

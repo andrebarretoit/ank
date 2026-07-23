@@ -247,6 +247,17 @@ if [ "$TARBALL_FOUND" -eq 1 ]; then
     cd "$ANKFS" && tar xzf "$ANKCORE" 2>>"$LOG_FILE"; cd /
     log OK "ankcore extracted"
 
+    # Ensure /dev nodes exist for Python/PTY (no devtmpfs on kernel 3.10)
+    mkdir -p "$ANKFS/dev"
+    [ -e "$ANKFS/dev/null" ] || mknod "$ANKFS/dev/null" c 1 3 2>/dev/null
+    [ -e "$ANKFS/dev/urandom" ] || mknod "$ANKFS/dev/urandom" c 1 9 2>/dev/null
+    [ -e "$ANKFS/dev/random" ] || mknod "$ANKFS/dev/random" c 1 8 2>/dev/null
+    [ -e "$ANKFS/dev/tty" ] || mknod "$ANKFS/dev/tty" c 5 0 2>/dev/null
+    [ -e "$ANKFS/dev/ptmx" ] || mknod "$ANKFS/dev/ptmx" c 5 2 2>/dev/null
+    [ -e "$ANKFS/dev/console" ] || mknod "$ANKFS/dev/console" c 5 1 2>/dev/null
+    chmod 666 "$ANKFS/dev/null" "$ANKFS/dev/urandom" "$ANKFS/dev/random" "$ANKFS/dev/tty" "$ANKFS/dev/ptmx" "$ANKFS/dev/console" 2>/dev/null
+    log OK "device nodes created"
+
     # Ensure container base image exists (download if needed)
     IMG_DIR="$ANK_DIR/images/$BASE_IMAGE"
     if [ ! -e "$IMG_DIR/bin/sh" ] && [ ! -e "$IMG_DIR/bin/busybox" ]; then
