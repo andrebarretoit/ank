@@ -2670,43 +2670,108 @@ small{color:#334155}
         import threading
         def do_uninstall():
             log("UNINSTALL: Starting complete ANK removal...")
+            # 1. Kill ALL container processes
             try:
                 for name in os.listdir(CONTAINERS_DIR):
                     cdir = os.path.join(CONTAINERS_DIR, name)
                     if os.path.isdir(cdir):
                         config = load_container_config(name)
+                        rootfs = os.path.join(cdir, "merged")
+                        # Kill main PID + children
                         if config and config.get("pid"):
                             try:
                                 os.kill(config["pid"], 9)
                             except OSError:
                                 pass
-                        merged = os.path.join(cdir, "merged")
-                        for m in ["proc", "sys", "dev"]:
-                            subprocess.run(["umount", os.path.join(merged, m)], capture_output=True, timeout=5)
-                        subprocess.run(["umount", merged], capture_output=True, timeout=5)
+                        # Kill ALL processes whose rootfs is our merged dir
+                        for entry in os.listdir("/proc"):
+                            if not entry.isdigit():
+                                continue
+                            try:
+                                exe = os.readlink(f"/proc/{entry}/exe")
+                                if rootfs in exe:
+                                    os.kill(int(entry), 9)
+                            except (OSError, ValueError):
+                                pass
+                        # Unmount ALL chroot mounts
+                        for m in ["dev/pts", "dev/shm", "dev", "proc", "sys", "run", "tmp"]:
+                            subprocess.run(["umount", os.path.join(rootfs, m)], capture_output=True, timeout=5)
+                            subprocess.run(["umount", "-l", os.path.join(rootfs, m)], capture_output=True, timeout=5)
+                        subprocess.run(["umount", rootfs], capture_output=True, timeout=5)
+                        subprocess.run(["umount", "-l", rootfs], capture_output=True, timeout=5)
             except Exception as e:
-                log(f"UNINSTALL: cleanup error: {e}")
+                log(f"UNINSTALL: container cleanup error: {e}")
+
+            # 2. Kill stray sshd/nginx by name
             try:
-                # Only remove ANK-specific iptables rules, not all NAT rules
+                subprocess.run(["pkill", "-9", "-f", "sshd.*PidFile"], capture_output=True, timeout=5)
+                subprocess.run(["pkill", "-9", "-f", "nginx.*ank"], capture_output=True, timeout=5)
+            except Exception:
+                pass
+
+            # 3. Clean iptables
+            try:
                 result = subprocess.run(["iptables", "-t", "nat", "-S"], capture_output=True, text=True, timeout=5)
                 for line in result.stdout.splitlines():
                     if "ank" in line.lower():
                         rule = line.replace("-A", "-D")
                         subprocess.run(["iptables", "-t", "nat"] + rule.split(), capture_output=True, timeout=5)
+                subprocess.run(["iptables", "-S"], capture_output=True, text=True, timeout=5)
+                result2 = subprocess.run(["iptables", "-S"], capture_output=True, text=True, timeout=5)
+                for line in result2.stdout.splitlines():
+                    if "ank" in line.lower():
+                        rule = line.replace("-A", "-D")
+                        subprocess.run(["iptables"] + rule.split(), capture_output=True, timeout=5)
                 subprocess.run(["ip", "link", "set", "ank0", "down"], capture_output=True, timeout=5)
                 subprocess.run(["ip", "link", "delete", "ank0"], capture_output=True, timeout=5)
             except Exception:
                 pass
+
+            # 4. Clean network namespaces
             try:
-                subprocess.run(["rm", "-rf", ANK_DIR], capture_output=True, timeout=30)
+                result = subprocess.run(["ip", "netns", "list"], capture_output=True, text=True, timeout=5)
+                for line in result.stdout.splitlines():
+                    ns = line.strip().split()[0]
+                    if "netns_" in ns or "ank" in ns.lower():
+                        subprocess.run(["ip", "netns", "delete", ns], capture_output=True, timeout=5)
             except Exception:
                 pass
+
+            # 5. Clean cgroups
+            try:
+                subprocess.run(["rm", "-rf", "/sys/fs/cgroup/ank"], capture_output=True, timeout=5)
+            except Exception:
+                pass
+
+            # 6. Kill ANK server itself
+            try:
+                subprocess.run(["pkill", "-9", "-f", "ld-musl.*python3.*server.py"], capture_output=True, timeout=5)
+                subprocess.run(["pkill", "-9", "-f", "ld-musl.*server.py"], capture_output=True, timeout=5)
+            except Exception:
+                pass
+
+            # 7. Remove ANK directory
+            try:
+                subprocess.run(["rm", "-rf", ANK_DIR], capture_output=True, timeout=30)
+                log(f"UNINSTALL: Removed {ANK_DIR}")
+            except Exception as e:
+                log(f"UNINSTALL: rm ANK_DIR error: {e}")
+
+            # 8. Remove /sdcard/AndroidKonteiner
+            try:
+                subprocess.run(["rm", "-rf", "/sdcard/AndroidKonteiner"], capture_output=True, timeout=15)
+                log("UNINSTALL: Removed /sdcard/AndroidKonteiner")
+            except Exception:
+                pass
+
+            # 9. Remove Magisk module
             log("UNINSTALL: Removing Magisk module...")
             try:
                 subprocess.run(["magisk", "--remove-module", "ank"], capture_output=True, timeout=15)
             except Exception as e:
                 log(f"UNINSTALL: magisk --remove-module error: {e}")
-            log("UNINSTALL: ANK removed. Reboot to complete.")
+
+            log("UNINSTALL: ANK completely removed. Reboot to finalize.")
             import time; time.sleep(2)
             os._exit(0)
         threading.Thread(target=do_uninstall, daemon=True).start()
