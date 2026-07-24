@@ -32,13 +32,13 @@ Engine de contêineres ultra-leva para Android — sem compilação, puros scrip
  │                                            ANK ENGINE                                            │
  │                                                                                                  │
  │               Web Panel (Port 8001)    │    REST API    │    Magisk Module / PRoot               │
- │              HTML/CSS/JS + xterm.js     │    Python3     │    post-fs-data / bootstrap            │
+ │              HTML/CSS/JS + xterm.js     │    Python3     │    post-fs-data / bootstrap           │
  ├──────────────────────────────────────────────────────────────────────────────────────────────────┤
  │                                    Bridge ank0 │ iptables NAT                                    │
  ├──────────────────────────────────────────────────────────────────────────────────────────────────┤
  │                          Alpine Linux (Chroot / PRoot) │ s6 process supervisor                   │
  │                          ank-alpinebase: openssh + bash + busybox + shadow + openssl + s6        │
- │                          Python 3.12 | ~20MB rootfs | SSL/TLS                                   │
+ │                          Python 3.12 | ~20MB rootfs | SSL/TLS                                    │
  └──────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -439,13 +439,13 @@ adb shell su -c "sh /data/local/ank/scripts/cleanup.sh"
  │                                            ANK ENGINE                                            │
  │                                                                                                  │
  │               Web Panel (Port 8001)    │    REST API    │    Magisk Module / PRoot               │
- │              HTML/CSS/JS + xterm.js     │    Python3     │    post-fs-data / bootstrap            │
+ │              HTML/CSS/JS + xterm.js     │    Python3     │    post-fs-data / bootstrap           │
  ├──────────────────────────────────────────────────────────────────────────────────────────────────┤
  │                                    Bridge ank0 │ iptables NAT                                    │
  ├──────────────────────────────────────────────────────────────────────────────────────────────────┤
  │                          Alpine Linux (Chroot / PRoot) │ s6 process supervisor                   │
  │                          ank-alpinebase: openssh + bash + busybox + shadow + openssl + s6        │
- │                          Python 3.12 | ~20MB rootfs | SSL/TLS                                   │
+ │                          Python 3.12 | ~20MB rootfs | SSL/TLS                                    │
  └──────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
