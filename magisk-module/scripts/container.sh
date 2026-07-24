@@ -310,8 +310,20 @@ cmd_create() {
                 echo "nameserver 8.8.8.8" > "$BASE_DIR/etc/resolv.conf" 2>/dev/null
                 echo "nameserver 8.8.4.4" >> "$BASE_DIR/etc/resolv.conf" 2>/dev/null
                 echo "127.0.0.1 localhost" > "$BASE_DIR/etc/hosts" 2>/dev/null
+                # Mount tmpfs on /dev for chroot (kernel 3.10 + nodev workaround)
+                mkdir -p "$BASE_DIR/dev/pts" 2>/dev/null
+                umount "$BASE_DIR/dev" 2>/dev/null
+                mount -t tmpfs -o size=16m tmpfs "$BASE_DIR/dev" 2>/dev/null
+                [ -e "$BASE_DIR/dev/null" ] || mknod "$BASE_DIR/dev/null" c 1 3 2>/dev/null
+                chmod 666 "$BASE_DIR/dev/null" 2>/dev/null
+                [ -e "$BASE_DIR/dev/urandom" ] || mknod "$BASE_DIR/dev/urandom" c 1 9 2>/dev/null
+                chmod 666 "$BASE_DIR/dev/urandom" 2>/dev/null
+                mount -t proc proc "$BASE_DIR/proc" 2>/dev/null
                 chroot "$BASE_DIR" /sbin/apk add --no-cache $PKGS 2>/dev/null
-                if [ $? -eq 0 ]; then
+                local apk_rc=$?
+                umount "$BASE_DIR/proc" 2>/dev/null
+                umount "$BASE_DIR/dev" 2>/dev/null
+                if [ $apk_rc -eq 0 ]; then
                     echo "Image '$IMAGE' built successfully"
                     # Setup default content + service marker for template
                     _setup_template_service "$BASE_DIR" "$IMAGE"
@@ -417,32 +429,35 @@ cmd_create() {
     mkdir -p "$ROOTFS/etc" 2>/dev/null
     echo "nameserver 8.8.8.8" > "$ROOTFS/etc/resolv.conf" 2>/dev/null
     echo "nameserver 8.8.4.4" >> "$ROOTFS/etc/resolv.conf" 2>/dev/null
-    # Ensure /dev/null exists
-    mkdir -p "$ROOTFS/dev" 2>/dev/null
-    [ -e "$ROOTFS/dev/null" ] || mknod "$ROOTFS/dev/null" c 1 3 2>/dev/null
-    [ -e "$ROOTFS/dev/urandom" ] || mknod "$ROOTFS/dev/urandom" c 1 9 2>/dev/null
-    # Mount proc for chroot operations
-    mount -t proc proc "$ROOTFS/proc" 2>/dev/null
-    # Set root password via shadow file directly
+    # Ensure /dev/null exists (on tmpfs for nodev workaround)
+    mkdir -p "$ROOTFS/dev/pts" "$ROOTFS/dev/shm" 2>/dev/null
+    umount "$ROOTFS/dev" 2>/dev/null
+    mount -t tmpfs -o size=16m tmpfs "$ROOTFS/dev" 2>/dev/null
+    for node_info in "null:1:3" "zero:1:5" "random:1:8" "urandom:1:9" "tty:5:0" "ptmx:5:2" "console:5:1"; do
+        local _n=$(echo "$node_info" | cut -d: -f1)
+        local _t=$(echo "$node_info" | cut -d: -f2)
+        local _m=$(echo "$node_info" | cut -d: -f3)
+        [ -e "$ROOTFS/dev/$_n" ] || mknod "$ROOTFS/dev/$_n" c "$_t" "$_m" 2>/dev/null
+        chmod 666 "$ROOTFS/dev/$_n" 2>/dev/null
+    done
+    # Set root password — use host openssl via musl linker (no chroot needed)
     if [ -n "$ROOT_PASS" ]; then
         local ENC_PASS=""
-        ENC_PASS=$(chroot "$ROOTFS" /usr/bin/openssl passwd -1 "$ROOT_PASS" 2>/dev/null)
-        if [ -z "$ENC_PASS" ]; then
-            for op in "$ROOTFS/usr/bin/openssl" "$ROOTFS/usr/sbin/openssl"; do
-                [ -f "$op" ] && ENC_PASS=$(LD_LIBRARY_PATH="$ROOTFS/usr/lib:$ROOTFS/lib" "$op" passwd -1 "$ROOT_PASS" 2>/dev/null) && break
-            done
+        local MUSL=$(find "$ANK_DIR/ankfs/lib" -name "ld-musl-*.so*" 2>/dev/null | head -1)
+        local HOST_SSL=""
+        for op in "$ANK_DIR/ankfs/usr/bin/openssl" "$ANK_DIR/ankfs/usr/sbin/openssl"; do
+            [ -f "$op" ] && HOST_SSL="$op" && break
+        done
+        if [ -n "$HOST_SSL" ] && [ -n "$MUSL" ]; then
+            ENC_PASS=$(LD_LIBRARY_PATH="$ANK_DIR/ankfs/usr/lib:$ANK_DIR/ankfs/lib" "$MUSL" "$HOST_SSL" passwd -1 "$ROOT_PASS" 2>/dev/null)
         fi
         if [ -n "$ENC_PASS" ] && [ -f "$ROOTFS/etc/shadow" ]; then
             sed -i "s|^root:[^:]*:|root:${ENC_PASS}:|" "$ROOTFS/etc/shadow" 2>/dev/null
             echo "Password set via shadow"
-        elif [ -f "$ROOTFS/usr/bin/chpasswd" ]; then
-            echo "root:$ROOT_PASS" | chroot "$ROOTFS" /usr/bin/chpasswd 2>/dev/null
-            echo "Password set via chpasswd"
         else
-            echo "WARN: Could not set password (no shadow or chpasswd)"
+            echo "WARN: Could not set password (openssl hash failed)"
         fi
     fi
-    umount "$ROOTFS/proc" 2>/dev/null
     echo "Container ready: $NAME"
 
     # Create config with SSH info
@@ -587,30 +602,47 @@ cmd_start() {
     mount -t tmpfs -o size=16m tmpfs "$ROOTFS/dev/shm" 2>/dev/null
 
     # Set root password before starting sshd
-    local ROOT_PASS=$(grep -o '"root_password":"[^"]*"' "$CONFIG" 2>/dev/null | cut -d'"' -f4)
+    local ROOT_PASS=$(tr -d ' ' < "$CONFIG" 2>/dev/null | grep -o '"root_password":"[^"]*"' | cut -d'"' -f4)
     if [ -n "$ROOT_PASS" ]; then
         echo "  Setting root password..."
-        [ -e "$ROOTFS/dev/null" ] || mknod "$ROOTFS/dev/null" c 1 3 2>/dev/null
-        [ -e "$ROOTFS/dev/urandom" ] || mknod "$ROOTFS/dev/urandom" c 1 9 2>/dev/null
-        mount -t proc proc "$ROOTFS/proc" 2>/dev/null
-        # Set password via shadow directly (most reliable)
+        # Generate hash using host openssl via musl linker (no chroot needed)
         local ENC_PASS=""
-        ENC_PASS=$(chroot "$ROOTFS" /usr/bin/openssl passwd -1 "$ROOT_PASS" 2>/dev/null)
-        if [ -z "$ENC_PASS" ]; then
-            for op in "$ROOTFS/usr/bin/openssl" "$ROOTFS/usr/sbin/openssl"; do
-                [ -f "$op" ] && ENC_PASS=$(LD_LIBRARY_PATH="$ROOTFS/usr/lib:$ROOTFS/lib" "$op" passwd -1 "$ROOT_PASS" 2>/dev/null) && break
-            done
+        local MUSL=$(find "$ANK_DIR/ankfs/lib" -name "ld-musl-*.so*" 2>/dev/null | head -1)
+        local HOST_SSL=""
+        for op in "$ANK_DIR/ankfs/usr/bin/openssl" "$ANK_DIR/ankfs/usr/sbin/openssl"; do
+            [ -f "$op" ] && HOST_SSL="$op" && break
+        done
+        if [ -n "$HOST_SSL" ] && [ -n "$MUSL" ]; then
+            ENC_PASS=$(LD_LIBRARY_PATH="$ANK_DIR/ankfs/usr/lib:$ANK_DIR/ankfs/lib" "$MUSL" "$HOST_SSL" passwd -1 "$ROOT_PASS" 2>/dev/null)
         fi
         if [ -n "$ENC_PASS" ] && [ -f "$ROOTFS/etc/shadow" ]; then
             sed -i "s|^root:[^:]*:|root:${ENC_PASS}:|" "$ROOTFS/etc/shadow" 2>/dev/null
-            echo "  Password set via shadow"
-        elif [ -f "$ROOTFS/usr/bin/chpasswd" ]; then
-            echo "root:$ROOT_PASS" | chroot "$ROOTFS" /usr/bin/chpasswd 2>/dev/null
-            echo "  Password set via chpasswd"
-        else
-            echo "  WARN: Could not set password (no shadow or chpasswd)"
+            echo "  Password set via shadow (openssl hash)"
+        elif [ -f "$ROOTFS/etc/shadow" ]; then
+            # Fallback: use busybox openssl inside container
+            mount -t proc proc "$ROOTFS/proc" 2>/dev/null
+            ENC_PASS=$(chroot "$ROOTFS" /usr/bin/openssl passwd -1 "$ROOT_PASS" 2>/dev/null)
+            if [ -n "$ENC_PASS" ]; then
+                sed -i "s|^root:[^:]*:|root:${ENC_PASS}:|" "$ROOTFS/etc/shadow" 2>/dev/null
+                echo "  Password set via shadow (chroot openssl)"
+            fi
+            umount "$ROOTFS/proc" 2>/dev/null
         fi
-        umount "$ROOTFS/proc" 2>/dev/null
+        # Final fallback: try chpasswd (check both /usr/bin and /usr/sbin)
+        if ! grep -q 'root:\$' "$ROOTFS/etc/shadow" 2>/dev/null; then
+            mount -t proc proc "$ROOTFS/proc" 2>/dev/null
+            local CP=""
+            for cp in "$ROOTFS/usr/sbin/chpasswd" "$ROOTFS/usr/bin/chpasswd"; do
+                [ -f "$cp" ] && CP="$cp" && break
+            done
+            if [ -n "$CP" ]; then
+                echo "root:$ROOT_PASS" | chroot "$ROOTFS" "$CP" 2>/dev/null
+                echo "  Password set via chpasswd"
+            else
+                echo "  ERROR: Could not set password (no chpasswd found)"
+            fi
+            umount "$ROOTFS/proc" 2>/dev/null
+        fi
     fi
 
     # Init script: start sshd as PID 1
