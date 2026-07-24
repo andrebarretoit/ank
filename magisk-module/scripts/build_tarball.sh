@@ -42,22 +42,24 @@ ALPINE_TAR="$ANKCORE_DIR/alpine-minirootfs-build.tar.gz"
 echo "Downloading Alpine minirootfs..."
 OK=0
 for VER in "3.20.2" "3.20.1" "3.20.0" "3.19.1"; do
-    URL="https://dl-cdn.alpinelinux.org/alpine/v3.20/releases/${ARCH_NAME}/alpine-minirootfs-${VER}-${ARCH_NAME}.tar.gz"
-    echo "  Trying Alpine ${VER}..."
-    rm -f "$ALPINE_TAR"
-    $DL "$ALPINE_TAR" "$URL" 2>>"$LOG"
-    if [ -s "$ALPINE_TAR" ]; then
-        FSIZE=$(stat -c%s "$ALPINE_TAR" 2>/dev/null || echo 0)
-        if [ "$FSIZE" -gt 100000 ]; then
-            HEAD=$(dd if="$ALPINE_TAR" bs=1 count=2 2>/dev/null | od -A n -t x1 | tr -d ' ')
-            if [ "$HEAD" = "1f8b" ]; then
-                echo "  Downloaded: ${FSIZE} bytes"
-                OK=1
-                break
-            fi
-        fi
+    for BASE in "https://dl.etalab.com.br/alpine/v3.20/releases/${ARCH_NAME}" "https://dl-cdn.alpinelinux.org/alpine/v3.20/releases/${ARCH_NAME}" "https://dl-ftp.alpinelinux.org/alpine/v3.20/releases/${ARCH_NAME}" "https://mirror.init7.net/alpine/v3.20/releases/${ARCH_NAME}"; do
+        URL="${BASE}/alpine-minirootfs-${VER}-${ARCH_NAME}.tar.gz"
+        echo "  Trying Alpine ${VER} from $(echo $URL | cut -d/ -f3)..."
         rm -f "$ALPINE_TAR"
-    fi
+        $DL "$ALPINE_TAR" "$URL" 2>>"$LOG"
+        if [ -s "$ALPINE_TAR" ]; then
+            FSIZE=$(stat -c%s "$ALPINE_TAR" 2>/dev/null || echo 0)
+            if [ "$FSIZE" -gt 100000 ]; then
+                HEAD=$(dd if="$ALPINE_TAR" bs=1 count=2 2>/dev/null | od -A n -t x1 | tr -d ' ')
+                if [ "$HEAD" = "1f8b" ]; then
+                    echo "  Downloaded: ${FSIZE} bytes"
+                    OK=1
+                    break 2
+                fi
+            fi
+            rm -f "$ALPINE_TAR"
+        fi
+    done
 done
 [ "$OK" -eq 0 ] && { echo "ERROR: Download failed"; exit 1; }
 
@@ -78,7 +80,9 @@ mkdir -p "$BUILDROOT/etc" "$BUILDROOT/etc/apk" "$BUILDROOT/var/cache/apk"
 echo "nameserver 8.8.8.8" > "$BUILDROOT/etc/resolv.conf"
 echo "nameserver 8.8.4.4" >> "$BUILDROOT/etc/resolv.conf"
 echo "127.0.0.1 localhost" > "$BUILDROOT/etc/hosts"
-echo "https://dl-cdn.alpinelinux.org/alpine/v3.20/main" > "$BUILDROOT/etc/apk/repositories"
+echo "https://dl.etalab.com.br/alpine/v3.20/main" > "$BUILDROOT/etc/apk/repositories"
+echo "https://dl.etalab.com.br/alpine/v3.20/community" >> "$BUILDROOT/etc/apk/repositories"
+echo "https://dl-cdn.alpinelinux.org/alpine/v3.20/main" >> "$BUILDROOT/etc/apk/repositories"
 echo "https://dl-cdn.alpinelinux.org/alpine/v3.20/community" >> "$BUILDROOT/etc/apk/repositories"
 
 # Install packages

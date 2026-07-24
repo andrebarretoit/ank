@@ -45,7 +45,7 @@ echo "Downloading Alpine v${VERSION} for ${ARCH_NAME}..."
 echo "Dest: $TARBALL"
 
 # Multiple mirrors for faster download
-MIRRORS="https://dl-cdn.alpinelinux.org/alpine/v${VERSION}/releases/${ARCH_NAME} https://dl-ftp.alpinelinux.org/alpine/v${VERSION}/releases/${ARCH_NAME} https://mirror.init7.net/alpine/v${VERSION}/releases/${ARCH_NAME} https://alpine.global.ssl.fastly.net/alpine/v${VERSION}/releases/${ARCH_NAME} https://uk.alpinelinux.org/alpine/v${VERSION}/releases/${ARCH_NAME}"
+MIRRORS="https://dl.etalab.com.br/alpine/v${VERSION}/releases/${ARCH_NAME} https://dl-cdn.alpinelinux.org/alpine/v${VERSION}/releases/${ARCH_NAME} https://dl-ftp.alpinelinux.org/alpine/v${VERSION}/releases/${ARCH_NAME} https://mirror.init7.net/alpine/v${VERSION}/releases/${ARCH_NAME} https://alpine.global.ssl.fastly.net/alpine/v${VERSION}/releases/${ARCH_NAME} https://uk.alpinelinux.org/alpine/v${VERSION}/releases/${ARCH_NAME}"
 
 DOWNLOADED=0
 for MIRROR_URL in $MIRRORS; do
@@ -96,8 +96,10 @@ rm -rf "$TMPDIR"
 
 # Configure repos + DNS
 mkdir -p "$ROOTFS/etc/apk" "$ROOTFS/var/cache/apk" "$ROOTFS/etc/ssl/certs"
-echo "http://dl-cdn.alpinelinux.org/alpine/v${VERSION}/main" > "$ROOTFS/etc/apk/repositories"
-echo "http://dl-cdn.alpinelinux.org/alpine/v${VERSION}/community" >> "$ROOTFS/etc/apk/repositories"
+echo "https://dl.etalab.com.br/alpine/v${VERSION}/main" > "$ROOTFS/etc/apk/repositories"
+echo "https://dl.etalab.com.br/alpine/v${VERSION}/community" >> "$ROOTFS/etc/apk/repositories"
+echo "https://dl-cdn.alpinelinux.org/alpine/v${VERSION}/main" >> "$ROOTFS/etc/apk/repositories"
+echo "https://dl-cdn.alpinelinux.org/alpine/v${VERSION}/community" >> "$ROOTFS/etc/apk/repositories"
 echo "nameserver 8.8.8.8" > "$ROOTFS/etc/resolv.conf"
 echo "nameserver 8.8.4.4" >> "$ROOTFS/etc/resolv.conf"
 echo "127.0.0.1 localhost" > "$ROOTFS/etc/hosts"

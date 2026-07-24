@@ -4,7 +4,7 @@ ANK_DIR="/data/local/ank"
 ANKFS="$ANK_DIR/ankfs"
 ANK_SDCARD="/sdcard/AndroidKonteiner"
 LOG_FILE="$ANK_DIR/logs/install.log"
-REPO="http://dl-cdn.alpinelinux.org/alpine/v3.20"
+REPO="https://dl.etalab.com.br/alpine/v3.20"
 BASE_IMAGE="alpine-3.20"
 
 init_log() {
@@ -124,8 +124,9 @@ download_alpine() {
     local OUT_TAR="$1"
     find_dl_tool || die "No download tool (wget/curl)"
     for VER in "3.20.2" "3.20.1" "3.20.0" "3.19.1"; do
-        # Multiple mirrors for faster download (ordered by region)
+        # Multiple mirrors for faster download (BR first, then fallback)
         for BASE_URL in \
+            "https://dl.etalab.com.br/alpine/v3.20/releases/${ARCH_NAME}" \
             "https://dl-cdn.alpinelinux.org/alpine/v3.20/releases/${ARCH_NAME}" \
             "https://dl-ftp.alpinelinux.org/alpine/v3.20/releases/${ARCH_NAME}" \
             "https://mirror.init7.net/alpine/v3.20/releases/${ARCH_NAME}" \
@@ -292,8 +293,10 @@ if [ "$TARBALL_FOUND" -eq 1 ]; then
         extract_rootfs "$ALPINE_CACHE" "$IMG_DIR" || die "Failed to extract container base image"
         # Configure repos + DNS on image
         mkdir -p "$IMG_DIR/etc/apk" "$IMG_DIR/var/cache/apk"
-        echo "http://dl-cdn.alpinelinux.org/alpine/v3.20/main" > "$IMG_DIR/etc/apk/repositories"
-        echo "http://dl-cdn.alpinelinux.org/alpine/v3.20/community" >> "$IMG_DIR/etc/apk/repositories"
+        echo "https://dl.etalab.com.br/alpine/v3.20/main" > "$IMG_DIR/etc/apk/repositories"
+        echo "https://dl.etalab.com.br/alpine/v3.20/community" >> "$IMG_DIR/etc/apk/repositories"
+        echo "https://dl-cdn.alpinelinux.org/alpine/v3.20/main" >> "$IMG_DIR/etc/apk/repositories"
+        echo "https://dl-cdn.alpinelinux.org/alpine/v3.20/community" >> "$IMG_DIR/etc/apk/repositories"
         echo "nameserver 8.8.8.8" > "$IMG_DIR/etc/resolv.conf"
         echo "nameserver 8.8.4.4" >> "$IMG_DIR/etc/resolv.conf"
         echo "127.0.0.1 localhost" > "$IMG_DIR/etc/hosts"
@@ -322,7 +325,9 @@ else
     echo "nameserver 8.8.8.8" > "$BUILDROOT/etc/resolv.conf"
     echo "nameserver 8.8.4.4" >> "$BUILDROOT/etc/resolv.conf"
     echo "127.0.0.1 localhost" > "$BUILDROOT/etc/hosts"
-    echo "https://dl-cdn.alpinelinux.org/alpine/v3.20/main" > "$BUILDROOT/etc/apk/repositories"
+    echo "https://dl.etalab.com.br/alpine/v3.20/main" > "$BUILDROOT/etc/apk/repositories"
+    echo "https://dl.etalab.com.br/alpine/v3.20/community" >> "$BUILDROOT/etc/apk/repositories"
+    echo "https://dl-cdn.alpinelinux.org/alpine/v3.20/main" >> "$BUILDROOT/etc/apk/repositories"
     echo "https://dl-cdn.alpinelinux.org/alpine/v3.20/community" >> "$BUILDROOT/etc/apk/repositories"
 
     # Install python3 + deps in ankfs
@@ -350,8 +355,10 @@ else
     IMG_DIR="$ANK_DIR/images/$BASE_IMAGE"
     extract_rootfs "$ALPINE_CACHE" "$IMG_DIR" || die "Failed to extract container base image"
     mkdir -p "$IMG_DIR/etc/apk" "$IMG_DIR/var/cache/apk"
-    echo "http://dl-cdn.alpinelinux.org/alpine/v3.20/main" > "$IMG_DIR/etc/apk/repositories"
-    echo "http://dl-cdn.alpinelinux.org/alpine/v3.20/community" >> "$IMG_DIR/etc/apk/repositories"
+    echo "https://dl.etalab.com.br/alpine/v3.20/main" > "$IMG_DIR/etc/apk/repositories"
+    echo "https://dl.etalab.com.br/alpine/v3.20/community" >> "$IMG_DIR/etc/apk/repositories"
+    echo "https://dl-cdn.alpinelinux.org/alpine/v3.20/main" >> "$IMG_DIR/etc/apk/repositories"
+    echo "https://dl-cdn.alpinelinux.org/alpine/v3.20/community" >> "$IMG_DIR/etc/apk/repositories"
     echo "nameserver 8.8.8.8" > "$IMG_DIR/etc/resolv.conf"
     echo "nameserver 8.8.4.4" >> "$IMG_DIR/etc/resolv.conf"
     echo "127.0.0.1 localhost" > "$IMG_DIR/etc/hosts"
