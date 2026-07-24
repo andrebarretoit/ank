@@ -4,7 +4,7 @@ ANK_DIR="/data/local/ank"
 ANKFS="$ANK_DIR/ankfs"
 ANK_SDCARD="/sdcard/AndroidKonteiner"
 LOG_FILE="$ANK_DIR/logs/install.log"
-REPO="https://dl.etalab.com.br/alpine/v3.20"
+REPO="https://mirror.uepg.br/alpine/v3.22"
 BASE_IMAGE="alpine-3.20"
 
 init_log() {
@@ -123,41 +123,46 @@ find_dl_tool() {
 download_alpine() {
     local OUT_TAR="$1"
     find_dl_tool || die "No download tool (wget/curl)"
-    for VER in "3.20.2" "3.20.1" "3.20.0" "3.19.1"; do
-        # Multiple mirrors for faster download (BR first, then fallback)
-        for BASE_URL in \
-            "https://dl.etalab.com.br/alpine/v3.20/releases/${ARCH_NAME}" \
-            "https://dl-cdn.alpinelinux.org/alpine/v3.20/releases/${ARCH_NAME}" \
-            "https://dl-ftp.alpinelinux.org/alpine/v3.20/releases/${ARCH_NAME}" \
-            "https://mirror.init7.net/alpine/v3.20/releases/${ARCH_NAME}" \
-            "https://alpine.global.ssl.fastly.net/alpine/v3.20/releases/${ARCH_NAME}" \
-            "https://uk.alpinelinux.org/alpine/v3.20/releases/${ARCH_NAME}"; do
-            local URL="${BASE_URL}/alpine-minirootfs-${VER}-${ARCH_NAME}.tar.gz"
-            log INFO "Downloading Alpine ${VER} ${ARCH_NAME}..."
-            log INFO "URL: $URL"
-            rm -f "$OUT_TAR"
+    # BR mirrors first (3.22/3.21), then international (3.20)
+    for VER_URL in \
+        "3.22.3|https://mirror.uepg.br/alpine/v3.22/releases/${ARCH_NAME}" \
+        "3.22.3|http://alpinelinux.c3sl.ufpr.br/alpine/v3.22/releases/${ARCH_NAME}" \
+        "3.21.7|https://mirror.uepg.br/alpine/v3.21/releases/${ARCH_NAME}" \
+        "3.21.7|http://alpinelinux.c3sl.ufpr.br/alpine/v3.21/releases/${ARCH_NAME}" \
+        "3.20.2|https://mirror.uepg.br/alpine/v3.20/releases/${ARCH_NAME}" \
+        "3.20.2|https://dl-cdn.alpinelinux.org/alpine/v3.20/releases/${ARCH_NAME}" \
+        "3.20.2|https://dl-ftp.alpinelinux.org/alpine/v3.20/releases/${ARCH_NAME}" \
+        "3.20.2|https://mirror.init7.net/alpine/v3.20/releases/${ARCH_NAME}" \
+        "3.20.2|https://alpine.global.ssl.fastly.net/alpine/v3.20/releases/${ARCH_NAME}" \
+        "3.20.1|https://dl-cdn.alpinelinux.org/alpine/v3.20/releases/${ARCH_NAME}" \
+        "3.20.0|https://dl-cdn.alpinelinux.org/alpine/v3.20/releases/${ARCH_NAME}" \
+        "3.19.1|https://dl-cdn.alpinelinux.org/alpine/v3.20/releases/${ARCH_NAME}"; do
+        local VER=$(echo "$VER_URL" | cut -d'|' -f1)
+        local BASE_URL=$(echo "$VER_URL" | cut -d'|' -f2)
+        local URL="${BASE_URL}/alpine-minirootfs-${VER}-${ARCH_NAME}.tar.gz"
+        log INFO "Downloading Alpine ${VER} ${ARCH_NAME}..."
+        log INFO "URL: $URL"
+        rm -f "$OUT_TAR"
         echo "[ANK-INSTALL] Downloading Alpine ${VER} for ${ARCH_NAME}..."
         echo "[ANK-INSTALL] URL: $URL"
         $DL "$OUT_TAR" "$URL" 2>>"$LOG_FILE"
-        echo "[ANK-INSTALL] Download exit code: $?"
-            if [ -s "$OUT_TAR" ]; then
-                local FSIZE=$(stat -c%s "$OUT_TAR" 2>/dev/null || echo 0)
-                if [ "$FSIZE" -gt 100000 ]; then
-                    local HEAD=$(dd if="$OUT_TAR" bs=1 count=2 2>/dev/null | od -A n -t x1 | tr -d ' ')
-                    if [ "$HEAD" = "1f8b" ]; then
-                        log OK "Alpine ${VER} downloaded (${FSIZE} bytes)"
-                        echo "[ANK-INSTALL] OK: Alpine ${VER} downloaded (${FSIZE} bytes)"
-                        return 0
-                    fi
+        local DL_RC=$?
+        echo "[ANK-INSTALL] Download exit code: $DL_RC"
+        if [ -s "$OUT_TAR" ]; then
+            local FSIZE=$(stat -c%s "$OUT_TAR" 2>/dev/null || echo 0)
+            if [ "$FSIZE" -gt 100000 ]; then
+                local HEAD=$(dd if="$OUT_TAR" bs=1 count=2 2>/dev/null | od -A n -t x1 | tr -d ' ')
+                if [ "$HEAD" = "1f8b" ]; then
+                    log OK "Alpine ${VER} downloaded (${FSIZE} bytes)"
+                    echo "[ANK-INSTALL] OK: Alpine ${VER} downloaded (${FSIZE} bytes)"
+                    return 0
                 fi
-                echo "[ANK-INSTALL] WARN: Invalid download for ${VER} from $(echo $URL | cut -d/ -f3) (${FSIZE} bytes)"
-                rm -f "$OUT_TAR"
-            else
-                echo "[ANK-INSTALL] WARN: Download failed from $(echo $URL | cut -d/ -f3), trying next mirror..."
             fi
-        done
-        log WARN "Invalid download for ${VER}, trying next version..."
-        echo "[ANK-INSTALL] WARN: All mirrors failed for ${VER}, trying next version..."
+            echo "[ANK-INSTALL] WARN: Invalid download for ${VER} from $(echo $URL | cut -d/ -f3) (${FSIZE} bytes)"
+            rm -f "$OUT_TAR"
+        else
+            echo "[ANK-INSTALL] WARN: Download failed from $(echo $URL | cut -d/ -f3), trying next mirror..."
+        fi
     done
     return 1
 }
@@ -293,8 +298,10 @@ if [ "$TARBALL_FOUND" -eq 1 ]; then
         extract_rootfs "$ALPINE_CACHE" "$IMG_DIR" || die "Failed to extract container base image"
         # Configure repos + DNS on image
         mkdir -p "$IMG_DIR/etc/apk" "$IMG_DIR/var/cache/apk"
-        echo "https://dl.etalab.com.br/alpine/v3.20/main" > "$IMG_DIR/etc/apk/repositories"
-        echo "https://dl.etalab.com.br/alpine/v3.20/community" >> "$IMG_DIR/etc/apk/repositories"
+        echo "https://mirror.uepg.br/alpine/v3.22/main" > "$IMG_DIR/etc/apk/repositories"
+        echo "https://mirror.uepg.br/alpine/v3.22/community" >> "$IMG_DIR/etc/apk/repositories"
+        echo "http://alpinelinux.c3sl.ufpr.br/alpine/v3.22/main" >> "$IMG_DIR/etc/apk/repositories"
+        echo "http://alpinelinux.c3sl.ufpr.br/alpine/v3.22/community" >> "$IMG_DIR/etc/apk/repositories"
         echo "https://dl-cdn.alpinelinux.org/alpine/v3.20/main" >> "$IMG_DIR/etc/apk/repositories"
         echo "https://dl-cdn.alpinelinux.org/alpine/v3.20/community" >> "$IMG_DIR/etc/apk/repositories"
         echo "nameserver 8.8.8.8" > "$IMG_DIR/etc/resolv.conf"
@@ -325,8 +332,10 @@ else
     echo "nameserver 8.8.8.8" > "$BUILDROOT/etc/resolv.conf"
     echo "nameserver 8.8.4.4" >> "$BUILDROOT/etc/resolv.conf"
     echo "127.0.0.1 localhost" > "$BUILDROOT/etc/hosts"
-    echo "https://dl.etalab.com.br/alpine/v3.20/main" > "$BUILDROOT/etc/apk/repositories"
-    echo "https://dl.etalab.com.br/alpine/v3.20/community" >> "$BUILDROOT/etc/apk/repositories"
+    echo "https://mirror.uepg.br/alpine/v3.22/main" > "$BUILDROOT/etc/apk/repositories"
+    echo "https://mirror.uepg.br/alpine/v3.22/community" >> "$BUILDROOT/etc/apk/repositories"
+    echo "http://alpinelinux.c3sl.ufpr.br/alpine/v3.22/main" >> "$BUILDROOT/etc/apk/repositories"
+    echo "http://alpinelinux.c3sl.ufpr.br/alpine/v3.22/community" >> "$BUILDROOT/etc/apk/repositories"
     echo "https://dl-cdn.alpinelinux.org/alpine/v3.20/main" >> "$BUILDROOT/etc/apk/repositories"
     echo "https://dl-cdn.alpinelinux.org/alpine/v3.20/community" >> "$BUILDROOT/etc/apk/repositories"
 
@@ -355,8 +364,10 @@ else
     IMG_DIR="$ANK_DIR/images/$BASE_IMAGE"
     extract_rootfs "$ALPINE_CACHE" "$IMG_DIR" || die "Failed to extract container base image"
     mkdir -p "$IMG_DIR/etc/apk" "$IMG_DIR/var/cache/apk"
-    echo "https://dl.etalab.com.br/alpine/v3.20/main" > "$IMG_DIR/etc/apk/repositories"
-    echo "https://dl.etalab.com.br/alpine/v3.20/community" >> "$IMG_DIR/etc/apk/repositories"
+    echo "https://mirror.uepg.br/alpine/v3.22/main" > "$IMG_DIR/etc/apk/repositories"
+    echo "https://mirror.uepg.br/alpine/v3.22/community" >> "$IMG_DIR/etc/apk/repositories"
+    echo "http://alpinelinux.c3sl.ufpr.br/alpine/v3.22/main" >> "$IMG_DIR/etc/apk/repositories"
+    echo "http://alpinelinux.c3sl.ufpr.br/alpine/v3.22/community" >> "$IMG_DIR/etc/apk/repositories"
     echo "https://dl-cdn.alpinelinux.org/alpine/v3.20/main" >> "$IMG_DIR/etc/apk/repositories"
     echo "https://dl-cdn.alpinelinux.org/alpine/v3.20/community" >> "$IMG_DIR/etc/apk/repositories"
     echo "nameserver 8.8.8.8" > "$IMG_DIR/etc/resolv.conf"

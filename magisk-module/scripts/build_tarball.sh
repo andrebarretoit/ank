@@ -42,7 +42,7 @@ ALPINE_TAR="$ANKCORE_DIR/alpine-minirootfs-build.tar.gz"
 echo "Downloading Alpine minirootfs..."
 OK=0
 for VER in "3.20.2" "3.20.1" "3.20.0" "3.19.1"; do
-    for BASE in "https://dl.etalab.com.br/alpine/v3.20/releases/${ARCH_NAME}" "https://dl-cdn.alpinelinux.org/alpine/v3.20/releases/${ARCH_NAME}" "https://dl-ftp.alpinelinux.org/alpine/v3.20/releases/${ARCH_NAME}" "https://mirror.init7.net/alpine/v3.20/releases/${ARCH_NAME}"; do
+    for BASE in "https://mirror.uepg.br/alpine/v3.22/releases/${ARCH_NAME}" "http://alpinelinux.c3sl.ufpr.br/alpine/v3.22/releases/${ARCH_NAME}" "https://dl-cdn.alpinelinux.org/alpine/v3.20/releases/${ARCH_NAME}" "https://dl-ftp.alpinelinux.org/alpine/v3.20/releases/${ARCH_NAME}" "https://mirror.init7.net/alpine/v3.20/releases/${ARCH_NAME}"; do
         URL="${BASE}/alpine-minirootfs-${VER}-${ARCH_NAME}.tar.gz"
         echo "  Trying Alpine ${VER} from $(echo $URL | cut -d/ -f3)..."
         rm -f "$ALPINE_TAR"
@@ -80,8 +80,10 @@ mkdir -p "$BUILDROOT/etc" "$BUILDROOT/etc/apk" "$BUILDROOT/var/cache/apk"
 echo "nameserver 8.8.8.8" > "$BUILDROOT/etc/resolv.conf"
 echo "nameserver 8.8.4.4" >> "$BUILDROOT/etc/resolv.conf"
 echo "127.0.0.1 localhost" > "$BUILDROOT/etc/hosts"
-echo "https://dl.etalab.com.br/alpine/v3.20/main" > "$BUILDROOT/etc/apk/repositories"
-echo "https://dl.etalab.com.br/alpine/v3.20/community" >> "$BUILDROOT/etc/apk/repositories"
+echo "https://mirror.uepg.br/alpine/v3.22/main" > "$BUILDROOT/etc/apk/repositories"
+echo "https://mirror.uepg.br/alpine/v3.22/community" >> "$BUILDROOT/etc/apk/repositories"
+echo "http://alpinelinux.c3sl.ufpr.br/alpine/v3.22/main" >> "$BUILDROOT/etc/apk/repositories"
+echo "http://alpinelinux.c3sl.ufpr.br/alpine/v3.22/community" >> "$BUILDROOT/etc/apk/repositories"
 echo "https://dl-cdn.alpinelinux.org/alpine/v3.20/main" >> "$BUILDROOT/etc/apk/repositories"
 echo "https://dl-cdn.alpinelinux.org/alpine/v3.20/community" >> "$BUILDROOT/etc/apk/repositories"
 

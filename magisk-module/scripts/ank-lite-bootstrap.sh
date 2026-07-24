@@ -37,8 +37,10 @@ echo "nameserver 8.8.4.4" >> "$ROOTFS/etc/resolv.conf"
 
 # Setup APK repos
 echo "[ANK-Lite] Configurando repositorios Alpine..."
-echo "https://dl.etalab.com.br/alpine/v3.20/main" > "$ROOTFS/etc/apk/repositories"
-echo "https://dl.etalab.com.br/alpine/v3.20/community" >> "$ROOTFS/etc/apk/repositories"
+echo "https://mirror.uepg.br/alpine/v3.22/main" > "$ROOTFS/etc/apk/repositories"
+echo "https://mirror.uepg.br/alpine/v3.22/community" >> "$ROOTFS/etc/apk/repositories"
+echo "http://alpinelinux.c3sl.ufpr.br/alpine/v3.22/main" >> "$ROOTFS/etc/apk/repositories"
+echo "http://alpinelinux.c3sl.ufpr.br/alpine/v3.22/community" >> "$ROOTFS/etc/apk/repositories"
 echo "https://dl-cdn.alpinelinux.org/alpine/v3.20/main" >> "$ROOTFS/etc/apk/repositories"
 echo "https://dl-cdn.alpinelinux.org/alpine/v3.20/community" >> "$ROOTFS/etc/apk/repositories"
 
