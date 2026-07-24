@@ -322,13 +322,7 @@ EXPOSE 8080</textarea>
                     <div class="form-group"><label>Name</label><input type="text" id="container-name" placeholder="my-container" required></div>
                     <div class="form-group"><label>Image</label><select id="container-image"></select></div>
                     <div class="form-row">
-                        <div class="form-group"><label>Root Password</label>
-                            <div class="input-group">
-                                <input type="password" id="container-root-password" placeholder="default: admin123" value="admin123" required minlength="4">
-                                <i class="bi bi-eye pass-toggle" onclick="togglePass(this)"></i>
-                            </div>
-                            <span class="form-hint">Default: admin123</span>
-                        </div>
+                        <div class="form-group"><label>Root Password</label><input type="password" id="container-root-password" placeholder="min 4 chars" required minlength="4"></div>
                         <div class="form-group"><label>SSH Port</label><input type="number" id="container-ssh-port" placeholder="auto" min="1024" max="65535"></div>
                     </div>
                     <div class="form-row">
@@ -390,7 +384,7 @@ EXPOSE 8080</textarea>
                     <div id="ssh-hint" class="ssh-hint" style="display:none;">
                         <div class="ssh-hint-header"><i class="bi bi-terminal"></i> SSH Access</div>
                         <code id="ssh-hint-cmd" class="ssh-hint-cmd">ssh root@0.0.0.0:0</code>
-                        <button class="btn btn-sm btn-ghost" onclick="copySshCmd()"><i class="bi bi-clipboard"></i></button>
+                        <button class="btn btn-sm btn-ghost" onclick="navigator.clipboard.writeText(this.previousElementSibling.textContent);toast('Copied!','success')"><i class="bi bi-clipboard"></i></button>
                     </div>
                     <div class="detail-logs">
                         <div class="card-header"><h4><i class="bi bi-journal-text"></i> Logs</h4></div>
@@ -421,19 +415,19 @@ EXPOSE 8080</textarea>
                             <div id="port-mappings-list"></div>
                             <button type="button" id="add-port-btn" class="btn btn-ghost btn-sm"><i class="bi bi-plus-lg"></i> Add Port</button>
                         </div>
-                        <div class="form-group">
-                            <label class="checkbox-label"><input type="checkbox" id="detail-serves-static"><i class="bi bi-globe2"></i> Serves Static Files</label>
-                        </div>
-                        <div class="form-group">
-                            <label>Static Files Path</label>
-                            <input type="text" id="detail-static-path" placeholder="/var/www/localhost/htdocs">
-                            <p class="form-hint">Path inside container where static files are served</p>
-                        </div>
                         <button type="submit" class="btn btn-primary"><i class="bi bi-check-lg"></i> Save</button>
                     </form>
                 </div>
                 <div id="mtab-network" class="mtab">
                     <form id="detail-network-form">
+                        <div class="form-group">
+                            <label class="checkbox-label"><input type="checkbox" id="detail-serves-static"><i class="bi bi-globe2"></i> Serves Static Files</label>
+                        </div>
+                        <div class="form-group">
+                            <label>Static Files Path</label>
+                            <input type="text" id="detail-static-path" placeholder="/var/www/html">
+                            <p class="form-hint">Path inside container where static files are served</p>
+                        </div>
                         <div class="form-group">
                             <label>Container IP</label>
                             <input type="text" id="detail-container-ip" placeholder="10.20.30.2" readonly>

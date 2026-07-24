@@ -683,7 +683,7 @@ cmd_start() {
             echo "[init] Starting service: $_svc"
             case "$_svc" in
                 nginx)  mkdir -p /run/nginx 2>/dev/null; nginx 2>/dev/null & ;;
-                apache) httpd -f /etc/apache2/httpd.conf -D FOREGROUND 2>/dev/null & ;;
+                apache) httpd -f -p 8080 -h /var/www/localhost/htdocs 2>/dev/null & ;;
                 php)    php -S 0.0.0.0:8080 -t /var/www/php 2>/dev/null & ;;
                 node)   cd /var/www/app 2>/dev/null; node server.js 2>/dev/null & ;;
                 python) cd /var/www/app 2>/dev/null; python3 server.py 2>/dev/null & ;;
@@ -764,6 +764,15 @@ cmd_start() {
             iptables -t nat -A PREROUTING -p tcp --dport "$SVC_PORT" -j DNAT --to-destination "${IP}:${SVC_PORT}" 2>/dev/null
             iptables -A FORWARD -p tcp -d "$IP" --dport "$SVC_PORT" -j ACCEPT 2>/dev/null
             echo "Service forward: host:$SVC_PORT -> $IP:$SVC_PORT"
+        fi
+    fi
+
+    # Apply custom port_mappings from config.json (overrides hardcoded service ports)
+    local HAS_CUSTOM_PORTS=$(grep -o '"host_port"' "$CONFIG" 2>/dev/null | head -1)
+    if [ -n "$HAS_CUSTOM_PORTS" ]; then
+        if [ "$MODE" = "isolated" ]; then
+            sh "$SCRIPTS_DIR/network.sh" apply_ports "$NAME" 2>/dev/null
+            echo "Custom port mappings applied from config.json"
         fi
     fi
 

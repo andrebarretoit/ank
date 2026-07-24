@@ -16,8 +16,8 @@ cmd_setup() {
     local CGROUP="$CGROUP_BASE/$NAME"
 
     mkdir -p "$CGROUP" 2>/dev/null || {
-        echo "ERROR: Failed to create cgroup (is cgroup v2 enabled?)"
-        return 1
+        echo "WARN: Failed to create cgroup (cgroups may not be available) - continuing without resource limits"
+        return 0
     }
 
     # Memory limit (default 256M)

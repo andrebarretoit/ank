@@ -27,26 +27,6 @@ async function api(method, path, body = null) {
     return data;
 }
 
-function copySshCmd() {
-    const el = document.getElementById('ssh-hint-cmd');
-    if (!el) return;
-    const text = el.textContent;
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-        navigator.clipboard.writeText(text).then(() => toast('Copied!', 'success')).catch(() => fallbackCopy(text));
-    } else {
-        fallbackCopy(text);
-    }
-    function fallbackCopy(t) {
-        const ta = document.createElement('textarea');
-        ta.value = t;
-        ta.style.cssText = 'position:fixed;opacity:0';
-        document.body.appendChild(ta);
-        ta.select();
-        try { document.execCommand('copy'); toast('Copied!', 'success'); } catch(e) { toast('Copy failed', 'error'); }
-        ta.remove();
-    }
-}
-
 function toast(msg, type = 'info') {
     const c = document.getElementById('toast-container');
     const el = document.createElement('div');
@@ -120,26 +100,6 @@ function customModal(title, fields) {
         const origField = document.getElementById('input-field');
         origField.style.display = 'none';
         const customFields = fields.map(f => {
-            if (f.type === 'password') {
-                const wrap = document.createElement('div');
-                wrap.className = 'input-group';
-                wrap.style.cssText = 'margin-bottom:8px;';
-                const input = document.createElement('input');
-                input.type = 'password';
-                input.id = f.id;
-                input.value = f.value || '';
-                input.placeholder = f.label;
-                input.style.cssText = 'width:100%;padding:10px;padding-right:36px;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);font-size:14px;';
-                input.className = 'custom-modal-field';
-                const eye = document.createElement('i');
-                eye.className = 'bi bi-eye pass-toggle';
-                eye.style.cssText = 'position:absolute;right:12px;top:50%;transform:translateY(-50%);cursor:pointer;color:var(--text-muted);font-size:15px;pointer-events:auto;';
-                eye.onclick = () => { if (input.type === 'password') { input.type = 'text'; eye.className = 'bi bi-eye-slash pass-toggle'; } else { input.type = 'password'; eye.className = 'bi bi-eye pass-toggle'; } };
-                wrap.appendChild(input);
-                wrap.appendChild(eye);
-                container.appendChild(wrap);
-                return input;
-            }
             const input = document.createElement('input');
             input.type = f.type || 'text';
             input.id = f.id;
@@ -282,11 +242,6 @@ function esc(s) {
     if (!s) return '';
     return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
-function togglePass(el) {
-    const input = el.parentElement.querySelector('input');
-    if (input.type === 'password') { input.type = 'text'; el.className = 'bi bi-eye-slash pass-toggle'; }
-    else { input.type = 'password'; el.className = 'bi bi-eye pass-toggle'; }
-}
 
 async function loadAll() {
     try {
@@ -402,7 +357,7 @@ function renderImages(images) {
             <div class="image-icon"><i class="bi bi-hdd-stack"></i></div>
             <div class="image-info">
                 <span class="image-name">${esc(img.name)}</span>
-                <span class="image-size">${img.size ? fmtBytes(img.size) : 'Unknown'}</span>
+                <span class="image-size">${img.size || 'Unknown'}</span>
             </div>
         </div>
     `).join('');
@@ -508,7 +463,7 @@ function initCoreTerminal() {
 
 async function _connectCoreWs(el) {
     await detectWsProtocol();
-    const url = wsProtocol + '//' + location.host + '/ws/shell?cols=' + (coreTerminal ? coreTerminal.cols : 80) + '&rows=' + (coreTerminal ? coreTerminal.rows : 24);
+    const url = wsProtocol + '//' + location.host + '/ws/shell?cols=' + (coreTerminal ? coreTerminal.cols : 80) + '&rows=' + (coreTerminal ? coreTerminal.rows : 24) + '&token=' + encodeURIComponent(ankToken);
     console.log('WS Connecting:', url);
     coreWs = new WebSocket(url);
     coreWs.onopen = () => {
@@ -545,7 +500,7 @@ let containerBusy = {};
 
 function setContainerLoading(name, action) {
     containerBusy[name] = action;
-    const labelText = action === 'start' ? 'Starting...' : action === 'stop' ? 'Stopping...' : action === 'restart' ? 'Restarting...' : action === 'rebuild' ? 'Rebuilding...' : 'Working...';
+    const labelText = action === 'start' ? 'Starting...' : action === 'stop' ? 'Stopping...' : action === 'restart' ? 'Restarting...' : 'Working...';
     document.querySelectorAll(`.container-card[data-name="${name}"] button, .dash-conn-item[onclick*="${name}"] button`).forEach(b => b.disabled = true);
     const cardBadge = document.querySelector(`.container-card[data-name="${name}"] .status-badge`);
     if (cardBadge && action) { cardBadge.className = 'status-badge status-loading'; cardBadge.textContent = labelText; }
@@ -594,10 +549,6 @@ async function restartContainer(name) {
     setContainerLoading(name, 'restart');
     try { await api('POST', `/containers/${name}/restart`); toast(`Container "${name}" restarted`, 'success'); clearContainerLoading(name); } catch (e) { toast(`Failed: ${e.message}`, 'error'); clearContainerLoading(name); }
 }
-async function rebuildContainer(name) {
-    setContainerLoading(name, 'rebuild');
-    try { await api('POST', `/containers/${name}/restart`); toast(`Container "${name}" rebuilding...`, 'info'); pollContainerStatus(name, 0); } catch (e) { toast(`Failed: ${e.message}`, 'error'); clearContainerLoading(name); }
-}
 async function deleteContainer(name) {
     const ok = await confirmAction('Delete Container', `Delete "${name}"? This cannot be undone.`);
     if (!ok) return;
@@ -636,30 +587,11 @@ async function showContainerDetail(name) {
         const stopped = c.status === 'stopped' || c.status === 'stopping';
         document.getElementById('detail-start').disabled = running || isBuilding || isFailed;
         document.getElementById('detail-stop').disabled = stopped || isBuilding || isFailed;
-        document.getElementById('detail-restart').disabled = isTransient && !isFailed;
+        document.getElementById('detail-restart').disabled = isTransient;
         document.getElementById('detail-delete').disabled = isBuilding;
-
-        // Restart button: show "Rebuild" when failed
-        const restartBtn = document.getElementById('detail-restart');
-        if (isFailed) {
-            restartBtn.innerHTML = '<i class="bi bi-arrow-clockwise"></i> Rebuild';
-            restartBtn.classList.remove('btn-warning');
-            restartBtn.classList.add('btn-info');
-        } else {
-            restartBtn.innerHTML = '<i class="bi bi-arrow-clockwise"></i> Restart';
-            restartBtn.classList.remove('btn-info');
-            restartBtn.classList.add('btn-warning');
-        }
         document.getElementById('detail-start').onclick = async () => { await startContainer(name); showContainerDetail(name); };
         document.getElementById('detail-stop').onclick = async () => { await stopContainer(name); showContainerDetail(name); };
-        document.getElementById('detail-restart').onclick = async () => {
-            if (isFailed) {
-                await rebuildContainer(name);
-            } else {
-                await restartContainer(name);
-                showContainerDetail(name);
-            }
-        };
+        document.getElementById('detail-restart').onclick = async () => { await restartContainer(name); showContainerDetail(name); };
         document.getElementById('detail-delete').onclick = () => deleteContainer(name);
         document.getElementById('detail-autostart').checked = c.autostart || false;
         document.getElementById('detail-mem-limit').value = c.resources?.memory_limit || '256M';
@@ -719,29 +651,20 @@ async function showContainerDetail(name) {
 
         showModal('detail-modal');
 
-        // Real-time log polling for transient states
-        if (isBuilding || isFailed || c.status === 'starting' || c.status === 'stopping') {
+        if (isBuilding) {
             let pollAttempt = 0;
-            const logEl = document.getElementById('detail-log-output');
             const pollBuilding = setInterval(async () => {
                 pollAttempt++;
-                if (pollAttempt > 120) { clearInterval(pollBuilding); return; }
+                if (pollAttempt > 60) { clearInterval(pollBuilding); return; }
                 try {
-                    // Stream logs in real-time
-                    const logs = await api('GET', `/containers/${name}/logs`);
-                    if (logEl && logs.logs) {
-                        logEl.textContent = logs.logs;
-                        logEl.scrollTop = logEl.scrollHeight;
-                    }
-                    // Check status
                     const updated = await api('GET', `/containers/${name}`);
-                    if (updated.status !== 'building' && updated.status !== 'starting' && updated.status !== 'stopping') {
+                    if (updated.status !== 'building' && updated.status !== 'starting') {
                         clearInterval(pollBuilding);
                         loadAll();
                         showContainerDetail(name);
                     }
                 } catch (e) { clearInterval(pollBuilding); }
-            }, 1000);
+            }, 3000);
         }
     } catch (e) { toast(`Failed: ${e.message}`, 'error'); }
 }
@@ -896,7 +819,7 @@ function initContainerTerminal() {
         xtermTerminal.focus();
 
         // Open WebSocket
-        const wsUrl = wsProtocol + '//' + location.host + '/ws/terminal/' + currentContainer.name + '?cols=' + (xtermTerminal.cols || 80) + '&rows=' + (xtermTerminal.rows || 24);
+        const wsUrl = wsProtocol + '//' + location.host + '/ws/terminal/' + currentContainer.name + '?cols=' + (xtermTerminal.cols || 80) + '&rows=' + (xtermTerminal.rows || 24) + '&token=' + encodeURIComponent(ankToken);
         xtermWs = new WebSocket(wsUrl);
         xtermWs.onopen = () => {
             resizeTerminal();
@@ -1019,7 +942,7 @@ async function deployTemplate(id, name, baseReady) {
     if (!baseReady) { toast('Download the Alpine base image first (Pull Alpine)', 'warning'); return; }
     const result = await customModal('Deploy ' + name, [
         { id: 'tpl-name', label: 'Container name:', type: 'text', value: name.toLowerCase().replace(/\s+/g, '-') },
-        { id: 'tpl-pass', label: 'Root password (default: admin123):', type: 'password', value: 'admin123' }
+        { id: 'tpl-pass', label: 'Root password:', type: 'password', value: 'admin123' }
     ]);
     if (!result) return;
     const containerName = result['tpl-name'];

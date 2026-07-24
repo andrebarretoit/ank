@@ -213,54 +213,6 @@ def run_script(script, *args):
     except Exception as e:
         return str(e), 1
 
-def run_script_streaming(script, log_path, timeout=300, *args):
-    """Run script with real-time output streaming to log file. Returns returncode."""
-    script_path = os.path.join(SCRIPTS_DIR, script)
-    cmd_parts = ["/system/bin/sh", script_path] + list(args)
-    cmd_str = " ".join(f"'{a}'" for a in cmd_parts)
-    proc = None
-    try:
-        with open(log_path, "w") as lf:
-            if os.geteuid() != 0:
-                proc = subprocess.Popen(
-                    ["su", "-c", cmd_str],
-                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                    text=True, bufsize=1
-                )
-            else:
-                proc = subprocess.Popen(
-                    cmd_parts,
-                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                    text=True, bufsize=1
-                )
-            for line in proc.stdout:
-                lf.write(line)
-                lf.flush()
-            proc.wait(timeout=timeout)
-            rc = proc.returncode
-            if rc != 0:
-                lf.write(f"ERROR: script exited with code {rc}\n")
-                lf.flush()
-            return rc
-    except subprocess.TimeoutExpired:
-        if proc:
-            try: proc.kill()
-            except Exception: pass
-        try:
-            with open(log_path, "a") as lf:
-                lf.write("ERROR: script timed out\n")
-        except Exception: pass
-        return 1
-    except Exception as e:
-        if proc:
-            try: proc.kill()
-            except Exception: pass
-        try:
-            with open(log_path, "a") as lf:
-                lf.write(f"ERROR: {e}\n")
-        except Exception: pass
-        return 1
-
 def get_container_stats(name):
     cgroup = f"/sys/fs/cgroup/ank/{name}"
     if not os.path.isdir(cgroup):
@@ -382,34 +334,6 @@ http {
         location / { try_files $uri $uri/ =404; }
     }
 }"""
-
-APACHE_HTTPD_CONF = """ServerRoot "/var/www"
-Listen 80
-PidFile /run/apache2/httpd.pid
-ServerAdmin admin@localhost
-ServerName localhost
-
-LoadModule mpm_prefork_module modules/mod_mpm_prefork.so
-LoadModule authz_core_module modules/mod_authz_core.so
-LoadModule authz_host_module modules/mod_authz_host.so
-LoadModule dir_module modules/mod_dir.so
-LoadModule mime_module modules/mod_mime.so
-LoadModule log_config_module modules/mod_log_config.so
-LoadModule unixd_module modules/mod_unixd.so
-
-TypesConfig /etc/mime.types
-DirectoryIndex index.html index.htm
-ErrorLog /dev/stderr
-LogFormat "%h %l %u %t \\"%r\\" %>s %b" common
-CustomLog /dev/stdout common
-
-<Directory "/var/www/localhost/htdocs">
-    Require all granted
-    Options Indexes FollowSymLinks
-</Directory>
-
-DocumentRoot "/var/www/localhost/htdocs"
-"""
 
 ANK_PHP_INDEX = """<?php
 $html = '<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>ANK - PHP</title>';
@@ -640,6 +564,10 @@ def _ws_pty_session(handler, container_name, cols=80, rows=24):
             try:
                 os.kill(child_pid, 9)
                 os.waitpid(child_pid, 0)
+            except Exception:
+                pass
+            try:
+                _ws_send_close(handler.request)
             except Exception:
                 pass
 
@@ -880,29 +808,26 @@ small{color:#334155}
         self.end_headers()
 
     def do_GET(self):
+        self._is_websocket = False
         parsed = urlparse(self.path)
         path = parsed.path
 
         # WebSocket upgrade for shell on host
         if path == "/ws/shell":
+            self._is_websocket = True
             upgrade = self.headers.get("Upgrade", "").lower()
             ws_key = self.headers.get("Sec-WebSocket-Key", "")
             if upgrade != "websocket" or not ws_key:
                 self.send_error(400, "Invalid WebSocket upgrade request")
                 return
+            # Auth: validate token from query param
+            qs = parse_qs(parsed.query)
+            ws_token = qs.get("token", [None])[0]
+            if not _validate_token(ws_token):
+                self.send_error(401, "Unauthorized")
+                return
             accept = _ws_accept_key(ws_key)
             log(f"WS_SHELL: upgrade from {self.client_address[0]}")
-            # CRITICAL: close rfile/wfile to release the socket from
-            # BaseHTTPRequestHandler's BufferedReader/BufferedWriter
-            # so raw socket recv/sendall work without interference
-            try:
-                self.rfile.close()
-            except Exception:
-                pass
-            try:
-                self.wfile.close()
-            except Exception:
-                pass
             rsock = self.request
             resp = (
                 b"HTTP/1.1 101 Switching Protocols\r\n"
@@ -914,6 +839,14 @@ small{color:#334155}
             )
             rsock.sendall(resp)
             log(f"WS_SHELL: 101 sent")
+            try:
+                self.rfile.close()
+            except Exception:
+                pass
+            try:
+                self.wfile.close()
+            except Exception:
+                pass
             cols = 80
             rows = 24
             try:
@@ -927,10 +860,17 @@ small{color:#334155}
 
         # WebSocket upgrade for terminal
         if path.startswith("/ws/terminal/"):
+            self._is_websocket = True
             upgrade = self.headers.get("Upgrade", "").lower()
             ws_key = self.headers.get("Sec-WebSocket-Key", "")
             if upgrade != "websocket" or not ws_key:
                 self.send_error(400, "Invalid WebSocket upgrade request")
+                return
+            # Auth: validate token from query param
+            qs = parse_qs(parsed.query)
+            ws_token = qs.get("token", [None])[0]
+            if not _validate_token(ws_token):
+                self.send_error(401, "Unauthorized")
                 return
             container_name = path.split("/")[3]
             # Verify container is actually running
@@ -947,14 +887,6 @@ small{color:#334155}
                 return
             # Accept WebSocket — send 101 on raw socket
             accept = _ws_accept_key(ws_key)
-            try:
-                self.rfile.close()
-            except Exception:
-                pass
-            try:
-                self.wfile.close()
-            except Exception:
-                pass
             rsock = self.request
             resp = (
                 b"HTTP/1.1 101 Switching Protocols\r\n"
@@ -965,6 +897,14 @@ small{color:#334155}
                 b"\r\n"
             )
             rsock.sendall(resp)
+            try:
+                self.rfile.close()
+            except Exception:
+                pass
+            try:
+                self.wfile.close()
+            except Exception:
+                pass
             # Start PTY session (blocks until done)
             cols = 80
             rows = 24
@@ -1270,19 +1210,8 @@ small{color:#334155}
         log_path = os.path.join(ANK_DIR, "logs", f"{name}.log")
         logs = ""
         if os.path.exists(log_path):
-            with open(log_path, "rb") as f:
-                f.seek(0, 2)
-                size = f.tell()
-                if size > 8192:
-                    f.seek(-8192, 2)
-                    f.read(1)
-                    logs = f.read().decode("utf-8", errors="replace")
-                    nl = logs.find("\n")
-                    if nl >= 0:
-                        logs = logs[nl+1:]
-                else:
-                    f.seek(0)
-                    logs = f.read().decode("utf-8", errors="replace")
+            with open(log_path, "r") as f:
+                logs = f.read()
         self.send_json({"logs": logs})
 
     def api_create_container(self, data):
@@ -1297,10 +1226,7 @@ small{color:#334155}
             self.send_error(409, f"Container '{name}' already exists")
             return
 
-        image = data.get("image", "ank-alpinebase")
-        # FROM alias: alpine-3.20 -> ank-alpinebase
-        if image == "alpine-3.20":
-            image = "ank-alpinebase"
+        image = data.get("image", "alpine-3.20")
         root_password = data.get("root_password", "")
         if not root_password:
             self.send_error(400, "Root password required")
@@ -1344,11 +1270,13 @@ small{color:#334155}
                 with open(log_path, "w") as lf:
                     lf.write(f"Creating container '{name}' (image: {image})...\n")
                     lf.flush()
-                rc = run_script_streaming("container.sh", log_path, 300, "create", name, image, root_password, str(ssh_port), pkgs)
+                output, code = run_script("container.sh", "create", name, image, root_password, str(ssh_port), pkgs)
+                with open(log_path, "a") as lf:
+                    lf.write(output + "\n")
                 cfg = load_container_config(name)
                 if cfg:
-                    if rc != 0:
-                        log(f"ERROR: create {name} (rc={rc})")
+                    if code != 0:
+                        log(f"ERROR: create {name}: {output}")
                         cfg["status"] = "failed"
                     else:
                         log(f"Container {name} created")
@@ -1379,12 +1307,11 @@ small{color:#334155}
         save_container_config(name, config)
         def do_start():
             try:
-                log_path = os.path.join(ANK_DIR, "logs", f"{name}.log")
-                rc = run_script_streaming("container.sh", log_path, 120, "start", name)
+                output, code = run_script("container.sh", "start", name)
                 cfg = load_container_config(name)
                 if cfg:
-                    if rc != 0:
-                        log(f"ERROR: start {name} (rc={rc})")
+                    if code != 0:
+                        log(f"ERROR: start {name}: {output}")
                         cfg["status"] = "stopped"
                         cfg["pid"] = None
                     else:
@@ -1412,15 +1339,14 @@ small{color:#334155}
         save_container_config(name, config)
         def do_stop():
             try:
-                log_path = os.path.join(ANK_DIR, "logs", f"{name}.log")
-                rc = run_script_streaming("container.sh", log_path, 120, "stop", name)
+                output, code = run_script("container.sh", "stop", name)
                 cfg = load_container_config(name)
                 if cfg:
-                    if rc != 0:
-                        log(f"ERROR: stop {name} (rc={rc})")
+                    if code != 0:
+                        log(f"ERROR: stop {name}: {output}")
                     else:
                         log(f"Container {name} stopped")
-                    cfg["status"] = "stopped"
+                        cfg["status"] = "stopped"
                     save_container_config(name, cfg)
             except Exception as e:
                 log(f"ERROR: stop thread {name}: {e}")
@@ -1450,61 +1376,6 @@ small{color:#334155}
         if not config:
             self.send_error(404, f"Container '{name}' not found")
             return
-        status = config.get("status", "stopped")
-
-        # If failed: rebuild (delete + recreate with same params)
-        if status == "failed":
-            def do_rebuild():
-                try:
-                    log(f"Rebuilding failed container: {name}")
-                    log_path = os.path.join(ANK_DIR, "logs", f"{name}.log")
-                    with open(log_path, "w") as lf:
-                        lf.write(f"Rebuilding container '{name}'...\n")
-                        lf.flush()
-
-                    # Save original params before delete
-                    img = config.get("image", "ank-alpinebase")
-                    rpass = config.get("root_password", "admin123")
-                    sport = config.get("ssh_port", 2200)
-                    tpl = config.get("template")
-                    tpl_name = config.get("template_name")
-
-                    # Delete the failed container
-                    run_script("container.sh", "delete", name)
-
-                    # Recreate
-                    pkgs = ""
-                    if tpl:
-                        for t in self.IMAGE_TEMPLATES:
-                            if t["id"] == tpl:
-                                pkgs = " ".join(t.get("packages", []))
-                                break
-
-                    rc = run_script_streaming("container.sh", log_path, 300, "create", name, img, str(rpass), str(sport), pkgs)
-
-                    cfg = load_container_config(name)
-                    if cfg:
-                        if rc != 0:
-                            log(f"ERROR: rebuild {name} failed (rc={rc})")
-                            cfg["status"] = "failed"
-                        else:
-                            log(f"Container {name} rebuilt")
-                            cfg["status"] = "stopped"
-                            if tpl:
-                                cfg["template"] = tpl
-                                cfg["template_name"] = tpl_name
-                        save_container_config(name, cfg)
-                except Exception as e:
-                    log(f"ERROR: rebuild thread {name}: {e}")
-                    cfg = load_container_config(name)
-                    if cfg:
-                        cfg["status"] = "failed"
-                        save_container_config(name, cfg)
-            threading.Thread(target=do_rebuild, daemon=True).start()
-            self.send_json({"message": f"Container '{name}' rebuilding"})
-            return
-
-        # Normal restart: stop + start
         def do_restart():
             try:
                 config["status"] = "stopping"
@@ -1667,20 +1538,18 @@ small{color:#334155}
 
     def _file_info(self, full_path, rel_path):
         try:
-            st = os.lstat(full_path)
+            st = os.stat(full_path)
             is_dir = os.path.isdir(full_path)
-            is_link = os.path.islink(full_path)
             return {
                 "name": os.path.basename(rel_path),
                 "path": "/" + rel_path,
-                "type": "directory" if is_dir else "symlink" if is_link else "file",
+                "type": "directory" if is_dir else "file",
                 "size": st.st_size if not is_dir else 0,
                 "modified": int(st.st_mtime),
                 "permissions": oct(st.st_mode)[-3:]
             }
-        except Exception as e:
-            return {"name": os.path.basename(rel_path), "path": "/" + rel_path, "type": "file", "size": 0, "modified": 0, "permissions": "???"
-            }
+        except Exception:
+            return None
 
     def api_files_list(self, name, qs):
         merged, config = self._get_merged_path(name)
@@ -1942,47 +1811,6 @@ small{color:#334155}
         if code != 0:
             self.send_error(500, f"Failed to pull image: {output}")
             return
-        # Build ank-alpinebase from alpine if not exists
-        ankbase = os.path.join(IMAGES_DIR, "ank-alpinebase")
-        alpine = os.path.join(IMAGES_DIR, f"alpine-{version}")
-        if not os.path.isdir(ankbase) and os.path.isdir(alpine):
-            try:
-                import shutil
-                shutil.copytree(alpine, ankbase)
-                # Install openssh/bash/busybox/shadow in ank-alpinebase
-                for d in ("etc/apk", "var/cache/apk"):
-                    os.makedirs(os.path.join(ankbase, d), exist_ok=True)
-                for f, c in [("etc/resolv.conf", "nameserver 8.8.8.8\nnameserver 8.8.4.4\n"),
-                             ("etc/hosts", "127.0.0.1 localhost\n")]:
-                    with open(os.path.join(ankbase, f), "w") as fh: fh.write(c)
-                subprocess.run(["su", "-c", f"mount -t proc proc {ankbase}/proc 2>/dev/null; chroot {ankbase} /sbin/apk add --no-cache busybox bash shadow openssh openssl s6 2>&1; umount {ankbase}/proc 2>/dev/null"], capture_output=True, timeout=120)
-                subprocess.run(["su", "-c", f"chroot {ankbase} /bin/busybox --install -s /bin 2>/dev/null"], capture_output=True, timeout=10)
-                # sshd_config
-                os.makedirs(os.path.join(ankbase, "etc/ssh"), exist_ok=True)
-                os.makedirs(os.path.join(ankbase, "run/sshd"), exist_ok=True)
-                with open(os.path.join(ankbase, "etc/ssh/sshd_config"), "w") as fh:
-                    fh.write("Port 22\nListenAddress 0.0.0.0\nPermitRootLogin yes\nPasswordAuthentication yes\nChallengeResponseAuthentication no\nX11Forwarding no\nAllowTcpForwarding no\nPidFile /run/sshd.pid\nSubsystem sftp internal-sftp\n")
-                subprocess.run(["su", "-c", f"chroot {ankbase} /usr/bin/ssh-keygen -A 2>/dev/null"], capture_output=True, timeout=10)
-                # s6 services dir
-                os.makedirs(os.path.join(ankbase, "etc/s6/services"), exist_ok=True)
-                # Root shell
-                import re
-                pw = os.path.join(ankbase, "etc/passwd")
-                if os.path.isfile(pw):
-                    with open(pw) as fh: content = fh.read()
-                    content = re.sub(r"^root:[^:]*:[^:]*:[^:]*:[^:]*:[^:]*:.*", "root:x:0:0:root:/root:/bin/bash", content, count=1, flags=re.MULTILINE)
-                    with open(pw, "w") as fh: fh.write(content)
-                # SSH dir
-                os.makedirs(os.path.join(ankbase, "root/.ssh"), exist_ok=True)
-                os.chmod(os.path.join(ankbase, "root/.ssh"), 0o700)
-                open(os.path.join(ankbase, "root/.ssh/authorized_keys"), "w").close()
-                os.chmod(os.path.join(ankbase, "root/.ssh/authorized_keys"), 0o600)
-                # Remove server files
-                import shutil as _shutil
-                _shutil.rmtree(os.path.join(ankbase, "opt/ank"), ignore_errors=True)
-                log(f"ank-alpinebase built from alpine-{version}")
-            except Exception as e:
-                log(f"WARNING: failed to build ank-alpinebase: {e}")
         self.send_json({"message": f"Image 'alpine-{version}' downloaded"})
 
     # ============================================================
@@ -2076,9 +1904,7 @@ small{color:#334155}
 
     def api_image_templates(self):
         templates = []
-        alpine_ready = os.path.isdir(os.path.join(IMAGES_DIR, "ank-alpinebase")) and os.path.lexists(os.path.join(IMAGES_DIR, "ank-alpinebase", "bin/sh"))
-        if not alpine_ready:
-            alpine_ready = os.path.isdir(os.path.join(IMAGES_DIR, "alpine-3.20")) and os.path.lexists(os.path.join(IMAGES_DIR, "alpine-3.20", "bin/sh"))
+        alpine_ready = os.path.isdir(os.path.join(IMAGES_DIR, "alpine-3.20")) and os.path.lexists(os.path.join(IMAGES_DIR, "alpine-3.20", "bin/sh"))
         for t in self.IMAGE_TEMPLATES:
             tpl = dict(t)
             if t["category"] == "base":
@@ -2105,9 +1931,10 @@ small{color:#334155}
             self.send_error(404, f"Template '{template_id}' not found")
             return
 
-        # Use ank-alpinebase (pre-built with openssh/bash/busybox)
-        # container.sh will lazy-build it if missing
-        base_img = os.path.join(IMAGES_DIR, "ank-alpinebase")
+        base_img = os.path.join(IMAGES_DIR, "alpine-3.20")
+        if not os.path.isdir(base_img):
+            self.send_error(400, "Base alpine-3.20 image not found. Reinstall the module.")
+            return
 
         root_password = data.get("root_password", "admin123")
 
@@ -2118,7 +1945,7 @@ small{color:#334155}
         stub_config = {
             "name": container_name,
             "status": "building",
-            "image": "ank-alpinebase",
+            "image": "alpine-3.20",
             "mode": get_mode().get("mode", "shared_host"),
             "autostart": False,
             "ip_address": "",
@@ -2143,24 +1970,16 @@ small{color:#334155}
 
                 ssh_port = self._find_free_port(2200)
                 pkgs = " ".join(template.get("packages", []))
-
-                # Stream container creation output to log in real-time
-                rc = run_script_streaming("container.sh", log_path, 300, "create", container_name, "ank-alpinebase", str(root_password), str(ssh_port), pkgs)
-
-                if rc != 0:
-                    log(f"ERROR: container create failed for {container_name} (rc={rc})")
-                    cfg = load_container_config(container_name)
-                    if cfg:
-                        cfg["status"] = "failed"
-                        save_container_config(container_name, cfg)
-                    with open(log_path, "a") as lf:
-                        lf.write(f"ERROR: container creation failed (exit code {rc})\n")
-                    return
+                output, code = run_script("container.sh", "create", container_name, "alpine-3.20", str(root_password), str(ssh_port), pkgs)
+                with open(log_path, "a") as lf:
+                    lf.write(output + "\n")
+                    lf.flush()
 
                 merged = os.path.join(CONTAINERS_DIR, container_name, "merged")
 
                 def _chroot(cmd, timeout=30):
-                    full = f"chroot {merged} /bin/sh -c '{cmd}'"
+                    wrapped = "export PATH=/bin:/sbin:/usr/bin:/usr/sbin; " + cmd
+                    full = f"chroot {merged} /bin/sh -c '{wrapped}'"
                     return subprocess.run(
                         ["/system/bin/sh", "-c", full],
                         capture_output=True, text=True, timeout=timeout
@@ -2181,55 +2000,44 @@ small{color:#334155}
                     config["ssh_port"] = ssh_port
                     save_container_config(container_name, config)
 
-                # Stream package installation to log
                 if template.get("packages"):
                     pkg_list = " ".join(template["packages"])
                     log(f"Installing packages: {pkg_list} in {container_name}")
-                    with open(log_path, "a") as lf:
-                        lf.write(f"Installing packages: {pkg_list}...\n")
-                        lf.flush()
                     r = _chroot(f"apk update && apk add --allow-untrusted {pkg_list}", timeout=120)
-                    with open(log_path, "a") as lf:
-                        if r.stdout:
-                            lf.write(r.stdout + "\n")
-                        if r.stderr:
-                            lf.write(r.stderr + "\n")
-                        lf.flush()
                     if r.returncode != 0:
-                        log(f"WARNING: apk install failed for {container_name}")
-                        with open(log_path, "a") as lf:
-                            lf.write(f"WARNING: some packages may have failed\n")
-
-                _chroot('mkdir -p /etc/ank')
-                _write_file(os.path.join(merged, 'etc/ank/service'), template_id)
+                        log(f"WARNING: apk install output: {r.stderr[-500:] if r.stderr else r.stdout[-500:]}")
 
                 if template_id == "nginx":
                     static_dir = template["static_path"]
                     _chroot(f'mkdir -p {static_dir} /run/nginx')
                     _write_file(os.path.join(merged, static_dir.lstrip('/'), 'index.html'), ANK_NGINX_HTML)
                     _write_file(os.path.join(merged, 'etc/nginx/nginx.conf'), ANK_NGINX_CONF)
+                    _chroot('nginx -g "daemon off;" &')
 
                 elif template_id == "apache":
                     static_dir = template["static_path"]
-                    _chroot(f'mkdir -p {static_dir} /run/apache2')
+                    _chroot(f'mkdir -p {static_dir}')
                     _write_file(os.path.join(merged, static_dir.lstrip('/'), 'index.html'), ANK_APACHE_HTML)
-                    _write_file(os.path.join(merged, 'etc/apache2/httpd.conf'), APACHE_HTTPD_CONF)
+                    _chroot('httpd -f -p 8080 -h /var/www/localhost/htdocs &')
 
                 elif template_id == "php":
                     php_dir = "/var/www/php"
                     _chroot(f'mkdir -p {php_dir}')
                     _write_file(os.path.join(merged, php_dir.lstrip('/'), 'index.php'), ANK_PHP_INDEX)
+                    _chroot(f'cd {php_dir} && php82 -S 0.0.0.0:8080 &')
 
                 elif template_id == "node":
                     node_dir = "/var/www/app"
                     _chroot(f'mkdir -p {node_dir}')
                     _write_file(os.path.join(merged, node_dir.lstrip('/'), 'server.js'), ANK_NODE_SERVER)
                     _write_file(os.path.join(merged, node_dir.lstrip('/'), 'package.json'), '{"name":"ank-node-app","version":"1.0.0","main":"server.js"}')
+                    _chroot(f'cd {node_dir} && node server.js &')
 
                 elif template_id == "python":
                     py_dir = "/var/www/app"
                     _chroot(f'mkdir -p {py_dir}')
                     _write_file(os.path.join(merged, py_dir.lstrip('/'), 'server.py'), ANK_PYTHON_SERVER)
+                    _chroot(f'cd {py_dir} && python3 server.py &')
 
                 cfg = load_container_config(container_name)
                 if cfg:
@@ -2297,10 +2105,6 @@ small{color:#334155}
             self.send_error(400, "Ankfile must have a FROM instruction")
             return
 
-        # FROM alias: alpine-3.20 -> ank-alpinebase
-        if base_image == "alpine-3.20":
-            base_image = "ank-alpinebase"
-
         if not root_password:
             root_password = "ank123"
 
@@ -2338,22 +2142,16 @@ small{color:#334155}
                         pkgs = " ".join(t.get("packages", []))
                         break
 
-                rc = run_script_streaming("container.sh", log_path, 300, "create", container_name, base_image, root_password, str(ssh_port), pkgs)
-
-                if rc != 0:
-                    log(f"ERROR: container create failed for {container_name} (rc={rc})")
-                    cfg = load_container_config(container_name)
-                    if cfg:
-                        cfg["status"] = "failed"
-                        save_container_config(container_name, cfg)
-                    with open(log_path, "a") as lf:
-                        lf.write(f"ERROR: container creation failed (exit code {rc})\n")
-                    return
+                output, code = run_script("container.sh", "create", container_name, base_image, root_password, str(ssh_port), pkgs)
+                with open(log_path, "a") as lf:
+                    lf.write(output + "\n")
+                    lf.flush()
 
                 merged = os.path.join(CONTAINERS_DIR, container_name, "merged")
 
                 def _chroot(cmd, timeout=60):
-                    full = f"chroot {merged} /bin/sh -c '{cmd}'"
+                    wrapped = "export PATH=/bin:/sbin:/usr/bin:/usr/sbin; " + cmd
+                    full = f"chroot {merged} /bin/sh -c '{wrapped}'"
                     return subprocess.run(
                         ["/system/bin/sh", "-c", full],
                         capture_output=True, text=True, timeout=timeout
@@ -2365,14 +2163,7 @@ small{color:#334155}
                     log(f"Ankfile RUN: {cmd}")
                     with open(log_path, "a") as lf:
                         lf.write(f"RUN: {cmd}\n")
-                        lf.flush()
                     r = _chroot(cmd, timeout=120)
-                    with open(log_path, "a") as lf:
-                        if r.stdout:
-                            lf.write(r.stdout + "\n")
-                        if r.stderr:
-                            lf.write(r.stderr + "\n")
-                        lf.flush()
                     if r.returncode != 0:
                         log(f"Ankfile RUN failed: {r.stderr[-300:]}")
                         with open(log_path, "a") as lf:
@@ -2384,7 +2175,7 @@ small{color:#334155}
                     config["template_name"] = f"Ankfile ({base_image})"
                     config["status"] = "stopped"
                     if ports:
-                        config["port_mappings"] = [{"host_port": p, "container_port": p, "protocol": "tcp"}]
+                        config["port_mappings"] = [{"host_port": port, "container_port": port, "protocol": "tcp"} for port in ports]
                     save_container_config(container_name, config)
                 log(f"Ankfile built as '{container_name}'")
                 with open(log_path, "a") as lf:
@@ -2902,108 +2693,43 @@ small{color:#334155}
         import threading
         def do_uninstall():
             log("UNINSTALL: Starting complete ANK removal...")
-            # 1. Kill ALL container processes
             try:
                 for name in os.listdir(CONTAINERS_DIR):
                     cdir = os.path.join(CONTAINERS_DIR, name)
                     if os.path.isdir(cdir):
                         config = load_container_config(name)
-                        rootfs = os.path.join(cdir, "merged")
-                        # Kill main PID + children
                         if config and config.get("pid"):
                             try:
                                 os.kill(config["pid"], 9)
                             except OSError:
                                 pass
-                        # Kill ALL processes whose rootfs is our merged dir
-                        for entry in os.listdir("/proc"):
-                            if not entry.isdigit():
-                                continue
-                            try:
-                                exe = os.readlink(f"/proc/{entry}/exe")
-                                if rootfs in exe:
-                                    os.kill(int(entry), 9)
-                            except (OSError, ValueError):
-                                pass
-                        # Unmount ALL chroot mounts
-                        for m in ["dev/pts", "dev/shm", "dev", "proc", "sys", "run", "tmp"]:
-                            subprocess.run(["umount", os.path.join(rootfs, m)], capture_output=True, timeout=5)
-                            subprocess.run(["umount", "-l", os.path.join(rootfs, m)], capture_output=True, timeout=5)
-                        subprocess.run(["umount", rootfs], capture_output=True, timeout=5)
-                        subprocess.run(["umount", "-l", rootfs], capture_output=True, timeout=5)
+                        merged = os.path.join(cdir, "merged")
+                        for m in ["proc", "sys", "dev"]:
+                            subprocess.run(["umount", os.path.join(merged, m)], capture_output=True, timeout=5)
+                        subprocess.run(["umount", merged], capture_output=True, timeout=5)
             except Exception as e:
-                log(f"UNINSTALL: container cleanup error: {e}")
-
-            # 2. Kill stray sshd/nginx by name
+                log(f"UNINSTALL: cleanup error: {e}")
             try:
-                subprocess.run(["pkill", "-9", "-f", "sshd.*PidFile"], capture_output=True, timeout=5)
-                subprocess.run(["pkill", "-9", "-f", "nginx.*ank"], capture_output=True, timeout=5)
-            except Exception:
-                pass
-
-            # 3. Clean iptables
-            try:
+                # Only remove ANK-specific iptables rules, not all NAT rules
                 result = subprocess.run(["iptables", "-t", "nat", "-S"], capture_output=True, text=True, timeout=5)
                 for line in result.stdout.splitlines():
                     if "ank" in line.lower():
                         rule = line.replace("-A", "-D")
                         subprocess.run(["iptables", "-t", "nat"] + rule.split(), capture_output=True, timeout=5)
-                subprocess.run(["iptables", "-S"], capture_output=True, text=True, timeout=5)
-                result2 = subprocess.run(["iptables", "-S"], capture_output=True, text=True, timeout=5)
-                for line in result2.stdout.splitlines():
-                    if "ank" in line.lower():
-                        rule = line.replace("-A", "-D")
-                        subprocess.run(["iptables"] + rule.split(), capture_output=True, timeout=5)
                 subprocess.run(["ip", "link", "set", "ank0", "down"], capture_output=True, timeout=5)
                 subprocess.run(["ip", "link", "delete", "ank0"], capture_output=True, timeout=5)
             except Exception:
                 pass
-
-            # 4. Clean network namespaces
-            try:
-                result = subprocess.run(["ip", "netns", "list"], capture_output=True, text=True, timeout=5)
-                for line in result.stdout.splitlines():
-                    ns = line.strip().split()[0]
-                    if "netns_" in ns or "ank" in ns.lower():
-                        subprocess.run(["ip", "netns", "delete", ns], capture_output=True, timeout=5)
-            except Exception:
-                pass
-
-            # 5. Clean cgroups
-            try:
-                subprocess.run(["rm", "-rf", "/sys/fs/cgroup/ank"], capture_output=True, timeout=5)
-            except Exception:
-                pass
-
-            # 6. Kill ANK server itself
-            try:
-                subprocess.run(["pkill", "-9", "-f", "ld-musl.*python3.*server.py"], capture_output=True, timeout=5)
-                subprocess.run(["pkill", "-9", "-f", "ld-musl.*server.py"], capture_output=True, timeout=5)
-            except Exception:
-                pass
-
-            # 7. Remove ANK directory
             try:
                 subprocess.run(["rm", "-rf", ANK_DIR], capture_output=True, timeout=30)
-                log(f"UNINSTALL: Removed {ANK_DIR}")
-            except Exception as e:
-                log(f"UNINSTALL: rm ANK_DIR error: {e}")
-
-            # 8. Remove /sdcard/AndroidKonteiner
-            try:
-                subprocess.run(["rm", "-rf", "/sdcard/AndroidKonteiner"], capture_output=True, timeout=15)
-                log("UNINSTALL: Removed /sdcard/AndroidKonteiner")
             except Exception:
                 pass
-
-            # 9. Remove Magisk module
             log("UNINSTALL: Removing Magisk module...")
             try:
                 subprocess.run(["magisk", "--remove-module", "ank"], capture_output=True, timeout=15)
             except Exception as e:
                 log(f"UNINSTALL: magisk --remove-module error: {e}")
-
-            log("UNINSTALL: ANK completely removed. Reboot to finalize.")
+            log("UNINSTALL: ANK removed. Reboot to complete.")
             import time; time.sleep(2)
             os._exit(0)
         threading.Thread(target=do_uninstall, daemon=True).start()
@@ -3292,6 +3018,35 @@ small{color:#334155}
     def log_message(self, fmt, *args):
         sys.stdout.write(f"[{datetime.now().strftime('%H:%M:%S')}] {args[0]}\n")
         sys.stdout.flush()
+
+    def handle_one_request(self):
+        try:
+            self.raw_requestline = self.rfile.readline(65537)
+            if not self.raw_requestline:
+                self.close_connection = True
+                return
+            if not self.parse_request():
+                return
+            mname = 'do_' + self.command
+            if not hasattr(self, mname):
+                self.send_error(501, "Not Implemented")
+                return
+            method = getattr(self, mname)
+            method()
+            if not getattr(self, '_is_websocket', False):
+                self.wfile.flush()
+        except TimeoutError:
+            self.close_connection = True
+        except Exception:
+            self.handle_error()
+
+    def finish(self):
+        if getattr(self, '_is_websocket', False):
+            return
+        try:
+            super().finish()
+        except Exception:
+            pass
 
 
 def _setup_https():

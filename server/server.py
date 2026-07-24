@@ -566,6 +566,10 @@ def _ws_pty_session(handler, container_name, cols=80, rows=24):
                 os.waitpid(child_pid, 0)
             except Exception:
                 pass
+            try:
+                _ws_send_close(handler.request)
+            except Exception:
+                pass
 
     except Exception as e:
         try:
@@ -816,6 +820,12 @@ small{color:#334155}
             if upgrade != "websocket" or not ws_key:
                 self.send_error(400, "Invalid WebSocket upgrade request")
                 return
+            # Auth: validate token from query param
+            qs = parse_qs(parsed.query)
+            ws_token = qs.get("token", [None])[0]
+            if not _validate_token(ws_token):
+                self.send_error(401, "Unauthorized")
+                return
             accept = _ws_accept_key(ws_key)
             log(f"WS_SHELL: upgrade from {self.client_address[0]}")
             rsock = self.request
@@ -855,6 +865,12 @@ small{color:#334155}
             ws_key = self.headers.get("Sec-WebSocket-Key", "")
             if upgrade != "websocket" or not ws_key:
                 self.send_error(400, "Invalid WebSocket upgrade request")
+                return
+            # Auth: validate token from query param
+            qs = parse_qs(parsed.query)
+            ws_token = qs.get("token", [None])[0]
+            if not _validate_token(ws_token):
+                self.send_error(401, "Unauthorized")
                 return
             container_name = path.split("/")[3]
             # Verify container is actually running

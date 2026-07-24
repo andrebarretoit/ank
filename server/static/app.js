@@ -463,7 +463,7 @@ function initCoreTerminal() {
 
 async function _connectCoreWs(el) {
     await detectWsProtocol();
-    const url = wsProtocol + '//' + location.host + '/ws/shell?cols=' + (coreTerminal ? coreTerminal.cols : 80) + '&rows=' + (coreTerminal ? coreTerminal.rows : 24);
+    const url = wsProtocol + '//' + location.host + '/ws/shell?cols=' + (coreTerminal ? coreTerminal.cols : 80) + '&rows=' + (coreTerminal ? coreTerminal.rows : 24) + '&token=' + encodeURIComponent(ankToken);
     console.log('WS Connecting:', url);
     coreWs = new WebSocket(url);
     coreWs.onopen = () => {
@@ -819,7 +819,7 @@ function initContainerTerminal() {
         xtermTerminal.focus();
 
         // Open WebSocket
-        const wsUrl = wsProtocol + '//' + location.host + '/ws/terminal/' + currentContainer.name + '?cols=' + (xtermTerminal.cols || 80) + '&rows=' + (xtermTerminal.rows || 24);
+        const wsUrl = wsProtocol + '//' + location.host + '/ws/terminal/' + currentContainer.name + '?cols=' + (xtermTerminal.cols || 80) + '&rows=' + (xtermTerminal.rows || 24) + '&token=' + encodeURIComponent(ankToken);
         xtermWs = new WebSocket(wsUrl);
         xtermWs.onopen = () => {
             resizeTerminal();
