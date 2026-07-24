@@ -2134,7 +2134,8 @@ small{color:#334155}
                 merged = os.path.join(CONTAINERS_DIR, container_name, "merged")
 
                 def _chroot(cmd, timeout=60):
-                    full = f"chroot {merged} /bin/sh -c '{cmd}'"
+                    wrapped = "export PATH=/bin:/sbin:/usr/bin:/usr/sbin; " + cmd
+                    full = f"chroot {merged} /bin/sh -c '{wrapped}'"
                     return subprocess.run(
                         ["/system/bin/sh", "-c", full],
                         capture_output=True, text=True, timeout=timeout
@@ -2158,7 +2159,7 @@ small{color:#334155}
                     config["template_name"] = f"Ankfile ({base_image})"
                     config["status"] = "stopped"
                     if ports:
-                        config["port_mappings"] = [{"host_port": p, "container_port": p, "protocol": "tcp"}]
+                        config["port_mappings"] = [{"host_port": port, "container_port": port, "protocol": "tcp"} for port in ports]
                     save_container_config(container_name, config)
                 log(f"Ankfile built as '{container_name}'")
                 with open(log_path, "a") as lf:
