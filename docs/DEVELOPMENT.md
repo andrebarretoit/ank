@@ -32,15 +32,15 @@ Nota atual: <nota>
 
 | # | Tarefa | Arquivos | Status |
 |---|--------|----------|--------|
-| 1.1 | Fix: Ankfile deploy - `mkdir: not found` / `curl: not found` (PATH quebrado no chroot) | `server.py` | ⏳ |
-| 1.2 | Fix: Ankfile deploy - variavel `p` nao definida (bug Python no loop de ports) | `server.py` | ⏳ |
-| 1.3 | Fix: WebSocket sem autenticacao (qualquer um conecta e ganha root shell) | `server.py` | ⏳ |
-| 1.4 | Fix: WebSocket PTY - rfile/wfile close pode matar o socket raw | `server.py` | ⏳ |
-| 1.5 | Fix: Apache template nao inicia auto (config errada no cmd_start) | `container.sh` | ⏳ |
-| 1.6 | Fix: Port mappings customizados do painel nao sao aplicados no start | `container.sh` | ⏳ |
-| 1.7 | Fix: Cgroup fallback quando cgroup v2 nao existe (nao deve ser fatal) | `container.sh`, `resources.sh` | ⏳ |
-| 1.8 | Sync server files para magisk-module/server/ | `magisk-module/server/` | ⏳ |
-| 1.9 | Validar logica do generate-prebuilt.sh (export de tarball) | `scripts/generate-prebuilt.sh` | ⏳ |
+| 1.1 | Fix: Ankfile deploy - `mkdir: not found` / `curl: not found` (PATH quebrado no chroot) | `server.py` | ✅ |
+| 1.2 | Fix: Ankfile deploy - variavel `p` nao definida (bug Python no loop de ports) | `server.py` | ✅ |
+| 1.3 | Fix: WebSocket sem autenticacao (qualquer um conecta e ganha root shell) | `server.py`, `app.js` | ✅ |
+| 1.4 | Fix: WebSocket PTY - socket close nao enviava WS close frame | `server.py` | ✅ |
+| 1.5 | Fix: Apache template nao inicia auto (busybox httpd args errados) | `container.sh` | ✅ |
+| 1.6 | Fix: Port mappings customizados do painel nao sao aplicados no start | `container.sh` | ✅ |
+| 1.7 | Fix: Cgroup fallback quando cgroup v2 nao existe (nao deve ser fatal) | `resources.sh` | ✅ |
+| 1.8 | Sync server files para magisk-module/server/ | `magisk-module/server/` | ✅ |
+| 1.9 | Validar logica do generate-prebuilt.sh (export de tarball) | `scripts/generate-prebuilt.sh` | ✅ |
 
 ---
 
@@ -185,23 +185,34 @@ Ao final de cada rodada, preencher:
 ### Rodada 1
 
 **Data**: 2026-07-24
-**Commit**: (pending)
+**Commit**: `5378bb1`
 
 | Aspecto | Nota |
 |---------|------|
-| Funcionalidade | /10 |
-| Seguranca | /10 |
-| Performance | /10 |
-| Organizacao | /10 |
-| UX | /10 |
-| Documentacao | /10 |
-| **Media** | **/10** |
+| Funcionalidade | 7/10 |
+| Seguranca | 8/10 |
+| Performance | 6/10 |
+| Organizacao | 7/10 |
+| UX | 7/10 |
+| Documentacao | 8/10 |
+| **Media** | **7.2/10** |
 
 **Corrigido/Implementado**:
-- (preencher apos implementacao)
+- 1.1: PATH fix em ambos `_chroot()` (api_deploy_template + api_build_ankfile)
+- 1.2: Variavel `p` corrigida para list comprehension `[port for port in ports]`
+- 1.3: Token query param em WebSocket shell + terminal endpoints, server valida com `_validate_token()`
+- 1.4: `_ws_send_close()` adicionado na saida normal do PTY session
+- 1.5: busybox httpd args corrigidos (`-f -p 8080 -h /var/www/localhost/htdocs`)
+- 1.6: `apply_ports` chamado durante start quando `port_mappings` existe no config.json
+- 1.7: `return 1` trocado por `return 0` no cgroup mkdir failure
+- 1.8: server/ sincronizado com magisk-module/server/
 
 **Pendente para proxima rodada**:
-- (preencher apos implementacao)
+- Testar WebSocket auth com browser real (possivel bug: `ankToken` pode nao existir no escopo global)
+- Testar port_mappings em container isolated mode
+- Verificar se `network.sh apply_ports` limpa regras antigas antes de aplicar novas
+- Adicionar log de audit para conexoes WebSocket rejeitadas
+- Considerar rate limiting no endpoint de auth
 
 ---
 
