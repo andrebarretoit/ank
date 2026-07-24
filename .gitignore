@@ -1,0 +1,11 @@
+dist/
+build/
+installer/build/
+installer/dist/
+__pycache__/
+*.pyc
+*.ico
+*.png
+*.svg
+*.apk
+*.tar.gz
