@@ -74,22 +74,24 @@ class InstallThread(QThread):
         self.adb.push(self.serial, tmp_zip, "/sdcard/Download/ank-magisk.zip")
         self.log.emit("OK: Zip enviado")
 
-        # 3. Install Magisk module
+        # 3. Install Magisk module (streaming output)
         self.progress.emit(0.5, "Instalando modulo Magisk...")
         self.log.emit("Executando: Instalando modulo Magisk...")
         self.log.emit("(pode demorar - instalando rootfs + templates...)")
-        out, code = self.adb.shell_su(self.serial, "magisk --install-module /sdcard/Download/ank-magisk.zip", timeout=600)
 
-        # Fix encoding: replace mojibake
-        if out:
-            clean = out.replace('\ufffd', '?').encode('utf-8', errors='replace').decode('utf-8', errors='replace')
-            self.log.emit(clean)
+        def on_install_line(line):
+            if line.strip():
+                self.log.emit(line)
 
-        # Check for failure markers in output
-        combined = (out or "").lower()
-        failed = (code != 0) or "install failed" in combined or "fail" in combined
+        code = self.adb.shell_su_streaming(
+            self.serial,
+            "magisk --install-module /sdcard/Download/ank-magisk.zip",
+            on_install_line,
+            timeout=600
+        )
 
-        if failed:
+        # Check for failure
+        if code != 0:
             # Fetch install log from device
             self.log.emit("\n--- Log de instalacao do device ---")
             log_out, _ = self.adb.shell(self.serial, "cat /data/local/ank/logs/install.log 2>/dev/null || cat /sdcard/AndroidKonteiner/logs/install.log 2>/dev/null")

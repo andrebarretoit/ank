@@ -109,12 +109,12 @@ detect_arch() {
 
 find_dl_tool() {
     DL=""
-    command -v wget >/dev/null 2>&1 && DL="wget -q -O"
-    if [ -z "$DL" ]; then
-        command -v curl >/dev/null 2>&1 && DL="curl -sL -o"
-    fi
-    if [ -z "$DL" ]; then
-        [ -f /system/bin/toybox ] && /system/bin/toybox wget --help >/dev/null 2>&1 && DL="/system/bin/toybox wget -q -O"
+    if command -v curl >/dev/null 2>&1; then
+        DL="curl -L --connect-timeout 15 --max-time 300 -f -o"
+    elif command -v wget >/dev/null 2>&1; then
+        DL="wget --timeout=300 -q -O"
+    elif [ -f /system/bin/toybox ] && /system/bin/toybox wget --help >/dev/null 2>&1; then
+        DL="/system/bin/toybox wget --timeout=300 -q -O"
     fi
     [ -z "$DL" ] && return 1
     return 0
@@ -124,22 +124,39 @@ download_alpine() {
     local OUT_TAR="$1"
     find_dl_tool || die "No download tool (wget/curl)"
     for VER in "3.20.2" "3.20.1" "3.20.0" "3.19.1"; do
-        local URL="https://dl-cdn.alpinelinux.org/alpine/v3.20/releases/${ARCH_NAME}/alpine-minirootfs-${VER}-${ARCH_NAME}.tar.gz"
-        log INFO "Downloading Alpine ${VER} ${ARCH_NAME}..."
-        rm -f "$OUT_TAR"
-        $DL "$OUT_TAR" "$URL" 2>>"$LOG_FILE"
-        if [ -s "$OUT_TAR" ]; then
-            local FSIZE=$(stat -c%s "$OUT_TAR" 2>/dev/null || echo 0)
-            if [ "$FSIZE" -gt 100000 ]; then
-                local HEAD=$(dd if="$OUT_TAR" bs=1 count=2 2>/dev/null | od -A n -t x1 | tr -d ' ')
-                if [ "$HEAD" = "1f8b" ]; then
-                    log OK "Alpine ${VER} downloaded (${FSIZE} bytes)"
-                    return 0
-                fi
-            fi
-            log WARN "Invalid download for ${VER} (${FSIZE} bytes), trying next..."
+        # Multiple mirrors for faster download (ordered by region)
+        for BASE_URL in \
+            "https://dl-cdn.alpinelinux.org/alpine/v3.20/releases/${ARCH_NAME}" \
+            "https://dl-ftp.alpinelinux.org/alpine/v3.20/releases/${ARCH_NAME}" \
+            "https://mirror.init7.net/alpine/v3.20/releases/${ARCH_NAME}" \
+            "https://alpine.global.ssl.fastly.net/alpine/v3.20/releases/${ARCH_NAME}" \
+            "https://uk.alpinelinux.org/alpine/v3.20/releases/${ARCH_NAME}"; do
+            local URL="${BASE_URL}/alpine-minirootfs-${VER}-${ARCH_NAME}.tar.gz"
+            log INFO "Downloading Alpine ${VER} ${ARCH_NAME}..."
+            log INFO "URL: $URL"
             rm -f "$OUT_TAR"
-        fi
+        echo "[ANK-INSTALL] Downloading Alpine ${VER} for ${ARCH_NAME}..."
+        echo "[ANK-INSTALL] URL: $URL"
+        $DL "$OUT_TAR" "$URL" 2>>"$LOG_FILE"
+        echo "[ANK-INSTALL] Download exit code: $?"
+            if [ -s "$OUT_TAR" ]; then
+                local FSIZE=$(stat -c%s "$OUT_TAR" 2>/dev/null || echo 0)
+                if [ "$FSIZE" -gt 100000 ]; then
+                    local HEAD=$(dd if="$OUT_TAR" bs=1 count=2 2>/dev/null | od -A n -t x1 | tr -d ' ')
+                    if [ "$HEAD" = "1f8b" ]; then
+                        log OK "Alpine ${VER} downloaded (${FSIZE} bytes)"
+                        echo "[ANK-INSTALL] OK: Alpine ${VER} downloaded (${FSIZE} bytes)"
+                        return 0
+                    fi
+                fi
+                echo "[ANK-INSTALL] WARN: Invalid download for ${VER} from $(echo $URL | cut -d/ -f3) (${FSIZE} bytes)"
+                rm -f "$OUT_TAR"
+            else
+                echo "[ANK-INSTALL] WARN: Download failed from $(echo $URL | cut -d/ -f3), trying next mirror..."
+            fi
+        done
+        log WARN "Invalid download for ${VER}, trying next version..."
+        echo "[ANK-INSTALL] WARN: All mirrors failed for ${VER}, trying next version..."
     done
     return 1
 }
@@ -221,11 +238,13 @@ log INFO "Mode: $MODE (chroot=$CHROOT netns=$NETNS pidns=$PIDNS overlay=$OVERLAY
 
 # --- STEP 2: Find or build ankcore tarball ---
 log STEP "2/4 > Rootfs + Python3..."
+echo "[ANK-INSTALL] STEP 2/4: Rootfs + Python3..."
 
 # Tarball is always inside the ZIP at ankfs/
 ANKCORE="$MODPATH/ankfs/ankcore-${ARCH_NAME}.tar.gz"
 if [ ! -s "$ANKCORE" ]; then
     log INFO "Extracting tarball from ZIP..."
+    echo "[ANK-INSTALL] Extracting tarball from ZIP..."
     unzip -o "$ZIPFILE" -d "$MODPATH" >>"$LOG_FILE" 2>&1
     rm -rf "$MODPATH/META-INF"
     ANKCORE="$MODPATH/ankfs/ankcore-${ARCH_NAME}.tar.gz"
@@ -242,10 +261,12 @@ ALPINE_CACHE="$ANK_DIR/cache/alpine-minirootfs-${ARCH_NAME}.tar.gz"
 if [ "$TARBALL_FOUND" -eq 1 ]; then
     # ===== PATH A: Tarball exists -> extract as ankfs =====
     log INFO "ankcore tarball found: $(stat -c%s "$ANKCORE" 2>/dev/null || echo 0) bytes"
+    echo "[ANK-INSTALL] Extracting ankcore tarball..."
     rm -rf "$ANKFS"
     mkdir -p "$ANKFS"
     cd "$ANKFS" && tar xzf "$ANKCORE" 2>>"$LOG_FILE"; cd /
     log OK "ankcore extracted"
+    echo "[ANK-INSTALL] OK: ankcore extracted"
 
     # Ensure /dev nodes exist for Python/PTY (no devtmpfs on kernel 3.10)
     mkdir -p "$ANKFS/dev"
@@ -257,14 +278,17 @@ if [ "$TARBALL_FOUND" -eq 1 ]; then
     [ -e "$ANKFS/dev/console" ] || mknod "$ANKFS/dev/console" c 5 1 2>/dev/null
     chmod 666 "$ANKFS/dev/null" "$ANKFS/dev/urandom" "$ANKFS/dev/random" "$ANKFS/dev/tty" "$ANKFS/dev/ptmx" "$ANKFS/dev/console" 2>/dev/null
     log OK "device nodes created"
+    echo "[ANK-INSTALL] OK: device nodes created"
 
     # Ensure container base image exists (download if needed)
     IMG_DIR="$ANK_DIR/images/$BASE_IMAGE"
     if [ ! -e "$IMG_DIR/bin/sh" ] && [ ! -e "$IMG_DIR/bin/busybox" ]; then
         log INFO "Container base image not found, downloading..."
+        echo "[ANK-INSTALL] Container base image not found, downloading Alpine..."
         if [ ! -s "$ALPINE_CACHE" ]; then
             download_alpine "$ALPINE_CACHE" || die "Alpine download failed"
         fi
+        echo "[ANK-INSTALL] Extracting container base image..."
         extract_rootfs "$ALPINE_CACHE" "$IMG_DIR" || die "Failed to extract container base image"
         # Configure repos + DNS on image
         mkdir -p "$IMG_DIR/etc/apk" "$IMG_DIR/var/cache/apk"
@@ -274,10 +298,14 @@ if [ "$TARBALL_FOUND" -eq 1 ]; then
         echo "nameserver 8.8.4.4" >> "$IMG_DIR/etc/resolv.conf"
         echo "127.0.0.1 localhost" > "$IMG_DIR/etc/hosts"
         log OK "Container base image ready"
+        echo "[ANK-INSTALL] OK: Container base image ready"
+    else
+        echo "[ANK-INSTALL] Container base image already exists"
     fi
 else
     # ===== PATH B: No tarball -> build ankfs from scratch + save image =====
     log WARN "ankcore tarball not found, building from scratch..."
+    echo "[ANK-INSTALL] WARN: ankcore tarball not found, building from scratch..."
 
     # Download Alpine minirootfs
     if [ ! -s "$ALPINE_CACHE" ]; then
@@ -299,11 +327,13 @@ else
 
     # Install python3 + deps in ankfs
     log INFO "Installing python3, openssl, openssh in chroot..."
+    echo "[ANK-INSTALL] Installing python3, openssl, openssh, bash..."
     mount -t proc proc "$BUILDROOT/proc" 2>/dev/null
     chroot "$BUILDROOT" /bin/sh -c "apk update && apk add --no-cache python3 openssl openssh bash busybox shadow" 2>>"$LOG_FILE"
     RET=$?
     umount "$BUILDROOT/proc" 2>/dev/null
     [ $RET -ne 0 ] && die "Failed to install packages in chroot"
+    echo "[ANK-INSTALL] OK: Packages installed"
 
     # Setup busybox symlinks
     if [ -f "$BUILDROOT/bin/busybox" ]; then
@@ -330,6 +360,7 @@ fi
 
 # --- STEP 2.5: Build ank-alpinebase (pre-built container base with openssh/bash/busybox) ---
 log STEP "2.5/4 > Building ank-alpinebase..."
+echo "[ANK-INSTALL] STEP 2.5/4: Building ank-alpinebase..."
 ANKBASE="$ANK_DIR/images/ank-alpinebase"
 if [ ! -d "$ANKBASE/bin" ]; then
     IMG_DIR="$ANK_DIR/images/$BASE_IMAGE"
@@ -337,6 +368,7 @@ if [ ! -d "$ANKBASE/bin" ]; then
         # Verify the image has /sbin/apk
         if [ ! -f "$IMG_DIR/sbin/apk" ] && [ ! -L "$IMG_DIR/sbin/apk" ]; then
             log WARN "Container base image missing /sbin/apk, re-extracting..."
+            echo "[ANK-INSTALL] Re-extracting container base image (missing apk)..."
             rm -rf "$IMG_DIR"
             extract_rootfs "$ALPINE_CACHE" "$IMG_DIR" 2>>"$LOG_FILE"
         fi
@@ -344,12 +376,36 @@ if [ ! -d "$ANKBASE/bin" ]; then
         echo "nameserver 8.8.8.8" > "$ANKBASE/etc/resolv.conf"
         echo "nameserver 8.8.4.4" >> "$ANKBASE/etc/resolv.conf"
         echo "127.0.0.1 localhost" > "$ANKBASE/etc/hosts"
+        echo "[ANK-INSTALL] Installing openssh, bash, s6 in ank-alpinebase..."
         mount -t proc proc "$ANKBASE/proc" 2>/dev/null
-        chroot "$ANKBASE" /sbin/apk add --no-cache busybox bash shadow openssh openssl s6 2>>"$LOG_FILE"
-        RET=$?
+        APK_PKGS="busybox bash shadow openssh openssl s6"
+        APK_RETRIES=3
+        RET=1
+        for attempt in 1 2 3; do
+            echo "[ANK-INSTALL] apk add attempt $APK_RETRIES/$attempt..."
+            chroot "$ANKBASE" /sbin/apk add --no-cache $APK_PKGS 2>&1
+            RET=$?
+            if [ $RET -eq 0 ]; then
+                echo "[ANK-INSTALL] OK: All packages installed"
+                break
+            fi
+            echo "[ANK-INSTALL] WARN: apk add failed (rc=$RET), retrying in 3s..."
+            echo "[ANK-INSTALL] Waiting 3s before retry..."
+            sleep 3
+        done
         umount "$ANKBASE/proc" 2>/dev/null
         if [ $RET -ne 0 ]; then
-            log WARN "ank-alpinebase apk install failed (rc=$RET), containers will install packages individually"
+            # Retry individual failed packages
+            echo "[ANK-INSTALL] Retrying failed packages individually..."
+            mount -t proc proc "$ANKBASE/proc" 2>/dev/null
+            for pkg in $APK_PKGS; do
+                if [ ! -f "$ANKBASE/usr/bin/$pkg" ] && [ ! -f "$ANKBASE/bin/$pkg" ] && [ ! -f "$ANKBASE/usr/sbin/$pkg" ] && [ ! -L "$ANKBASE/bin/$pkg" ]; then
+                    echo "[ANK-INSTALL] Installing $pkg individually..."
+                    chroot "$ANKBASE" /sbin/apk add --no-cache "$pkg" 2>&1 || echo "[ANK-INSTALL] WARN: $pkg install failed"
+                fi
+            done
+            umount "$ANKBASE/proc" 2>/dev/null
+            log WARN "ank-alpinebase apk install had failures, containers will install packages individually"
         else
             chroot "$ANKBASE" /bin/busybox --install -s /bin 2>/dev/null
             sed -i 's|^root:[^:]*:[^:]*:[^:]*:[^:]*:[^:]*:.*|root:x:0:0:root:/root:/bin/bash|' "$ANKBASE/etc/passwd" 2>/dev/null
@@ -382,6 +438,7 @@ fi
 # --- Verify python3 in ankfs ---
 [ ! -f "$ANKFS/usr/bin/python3" ] && die "python3 not found in ankfs"
 log OK "python3 installed"
+echo "[ANK-INSTALL] OK: python3 installed"
 
 # System users in ankfs
 for u in nginx nobody; do
@@ -402,8 +459,10 @@ echo "127.0.0.1 localhost" > "$ANKFS/etc/hosts"
 
 # --- STEP 3: openssh in ankfs ---
 log STEP "3/4 > openssh..."
+echo "[ANK-INSTALL] STEP 3/4: Configuring openssh..."
 if [ -f "$ANKFS/usr/bin/apk" ]; then
-    chroot "$ANKFS" /usr/bin/apk add --no-cache openssh openssl 2>>"$LOG_FILE" || log WARN "openssh install failed (non-fatal)"
+    echo "[ANK-INSTALL] Installing openssh in ankfs..."
+    chroot "$ANKFS" /usr/bin/apk add --no-cache openssh openssl 2>&1 || log WARN "openssh install failed (non-fatal)"
     if [ -d "$ANKFS/etc/ssh" ]; then
         sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin yes/' "$ANKFS/etc/ssh/sshd_config" 2>/dev/null
         sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication yes/' "$ANKFS/etc/ssh/sshd_config" 2>/dev/null
@@ -445,6 +504,7 @@ log OK "$BASE_IMAGE image ready"
 
 # --- STEP 4: Server + scripts ---
 log STEP "4/4 > Server..."
+echo "[ANK-INSTALL] STEP 4/4: Server + scripts..."
 SRC="$MODPATH"
 if [ ! -f "$SRC/server/server.py" ]; then
     mkdir -p "$SRC"
@@ -495,6 +555,7 @@ log OK "$SC static, $SHC scripts"
 
 echo "" >> "$LOG_FILE"
 echo "=== Complete ===" >> "$LOG_FILE"
+echo "[ANK-INSTALL] Installation complete!"
 cp_log_to_sdcard
 
 ui_print ""

@@ -121,6 +121,24 @@ class ADB:
         """Run a shell command as root on the device."""
         return self.shell(serial, f"su -c '{command}'", timeout=timeout)
 
+    def shell_su_streaming(self, serial: str, command: str, on_line, timeout: int = 600):
+        """Run a shell command as root, streaming each line to callback. Returns exit code."""
+        import subprocess as sp
+        cmd = [self._adb_path, "-s", serial, "shell", f"su -c '{command}'"]
+        proc = sp.Popen(cmd, stdout=sp.PIPE, stderr=sp.STDOUT,
+                        text=True, bufsize=1, creationflags=CREATE_NO_WINDOW)
+        try:
+            for line in proc.stdout:
+                on_line(line.rstrip("\n"))
+            proc.wait(timeout=timeout)
+            return proc.returncode
+        except sp.TimeoutExpired:
+            proc.kill()
+            return -1
+        except Exception:
+            proc.kill()
+            return -1
+
     def reboot(self, serial: str) -> bool:
         """Reboot the device."""
         result = self._run_device(serial, ["reboot"])

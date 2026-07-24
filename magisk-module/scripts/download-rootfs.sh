@@ -42,13 +42,36 @@ fi
 
 # Download Alpine minirootfs
 echo "Downloading Alpine v${VERSION} for ${ARCH_NAME}..."
+echo "Dest: $TARBALL"
 
-if command -v curl >/dev/null 2>&1; then
-    curl -L --connect-timeout 15 --max-time 300 -o "$TARBALL" "$ALPINE_URL" 2>&1
-elif command -v wget >/dev/null 2>&1; then
-    wget --timeout=300 -O "$TARBALL" "$ALPINE_URL" 2>&1
-else
-    echo "ERROR: Neither curl nor wget found"
+# Multiple mirrors for faster download
+MIRRORS="https://dl-cdn.alpinelinux.org/alpine/v${VERSION}/releases/${ARCH_NAME} https://dl-ftp.alpinelinux.org/alpine/v${VERSION}/releases/${ARCH_NAME} https://mirror.init7.net/alpine/v${VERSION}/releases/${ARCH_NAME} https://alpine.global.ssl.fastly.net/alpine/v${VERSION}/releases/${ARCH_NAME} https://uk.alpinelinux.org/alpine/v${VERSION}/releases/${ARCH_NAME}"
+
+DOWNLOADED=0
+for MIRROR_URL in $MIRRORS; do
+    FULL_URL="${MIRROR_URL}/alpine-minirootfs-${VERSION}.0-${ARCH_NAME}.tar.gz"
+    echo "Trying: $MIRROR_URL"
+    if command -v curl >/dev/null 2>&1; then
+        curl -L --connect-timeout 10 --max-time 300 --retry 2 --retry-delay 1 \
+             -f -o "$TARBALL" "$FULL_URL" 2>&1
+    elif command -v wget >/dev/null 2>&1; then
+        wget --timeout=300 --tries=2 -q -O "$TARBALL" "$FULL_URL" 2>&1
+    fi
+    echo ""
+    if [ -s "$TARBALL" ]; then
+        HEAD=$(dd if="$TARBALL" bs=1 count=2 2>/dev/null | od -A n -t x1 | tr -d ' ')
+        if [ "$HEAD" = "1f8b" ]; then
+            echo "OK: Downloaded from $MIRROR_URL"
+            DOWNLOADED=1
+            break
+        fi
+    fi
+    echo "WARN: Mirror failed, trying next..."
+    rm -f "$TARBALL"
+done
+
+if [ "$DOWNLOADED" -ne 1 ]; then
+    echo "ERROR: All mirrors failed"
     exit 1
 fi
 

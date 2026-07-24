@@ -32,12 +32,13 @@ Engine de contêineres ultra-leva para Android — sem compilação, puros scrip
  │                                            ANK ENGINE                                            │
  │                                                                                                  │
  │               Web Panel (Port 8001)    │    REST API    │    Magisk Module / PRoot               │
- │                   HTML/CSS/JS          │    Python3     │    post-fs-data / bootstrap            │
+ │              HTML/CSS/JS + xterm.js     │    Python3     │    post-fs-data / bootstrap            │
  ├──────────────────────────────────────────────────────────────────────────────────────────────────┤
  │                                    Bridge ank0 │ iptables NAT                                    │
  ├──────────────────────────────────────────────────────────────────────────────────────────────────┤
- │                                      Alpine Linux (Chroot / PRoot)                               │
- │                               ~8MB rootfs | Python 3 | pip                                       │
+ │                          Alpine Linux (Chroot / PRoot) │ s6 process supervisor                   │
+ │                          ank-alpinebase: openssh + bash + busybox + shadow + openssl + s6        │
+ │                          Python 3.12 | ~20MB rootfs | SSL/TLS                                   │
  └──────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -56,18 +57,24 @@ Engine de contêineres ultra-leva para Android — sem compilação, puros scrip
 ### Funcionalidades
 
 - **Containeres chroot/PRoot** — Rootfs Alpine Linux com Python 3 pre-instalado
-- **GUI Installer** — Instalador grafico para Windows (customtkinter + ADB)
+- **GUI Installer** — Instalador grafico para Windows (PySide6/Qt6 + ADB)
 - **5 tiers enterprise** — Isolamento progressivo conforme capacidade do kernel
 - **Modo Lite** — Funciona sem root via PRoot (userspace emulation)
 - **Painel web** — UI dark estilo Portainer em `localhost:8001`
+- **Terminal interativo** — xterm.js + WebSocket para host shell e terminal de container
+- **SSH de containeres** — Acesso SSH direto via terminal web ou cliente SSH externo
 - **Templates de imagem** — Deploy com um clique: Python, Nginx, Apache, PHP, Node.js
-- **Ankfile** — Build de imagens customizadas via Ankfile (tipo Dockerfile)
+- **Ankfile** — Build de imagens customizadas via Ankfile (tipo Dockerfile) com suporte a `PASSWD`
+- **Pull Image** — Baixe e construa imagens pelo painel web (Alpine, ank-alpinebase)
 - **File Explorer** — Navegue, edite, crie, renomeie e delete arquivos dentro dos containeres
 - **Upload de arquivos** — Envie sites estaticos diretamente para containeres (HTML/CSS/JS/ZIP)
 - **Shell** — Comandos `ank` e `ank-core` pelo terminal web + comandos reais do host
+- **Log streaming em tempo real** — Saida de build/deploy/start/stop via polling a cada 1s
 - **Stats em tempo real** — CPU, memoria, uptime, status dos containeres
 - **Port mapping** — Encaminhe portas do dispositivo para containeres (TCP/UDP)
+- **Auto-incremento de porta** — Portas em uso sao incrementadas automaticamente (+1)
 - **Autostart** — Containeres restauram no boot via Magisk
+- **s6 process supervisor** — Gerenciamento de processos leve (~200KB, sem Python)
 - **Seguranca** — Token Bearer, HTTPS auto-assinado, rate limiting, headers de seguranca
 - **Uninstall completo** — Desinstalacao via painel com remocao total
 
@@ -80,7 +87,7 @@ Engine de contêineres ultra-leva para Android — sem compilação, puros scrip
 1. Baixe `ANK-Installer.exe` em [Releases](https://github.com/andrebarretoit/ank/releases)
 2. Conecte o device via USB com ADB habilitado
 3. Execute o instalador — detecta device, tier, e instala automaticamente
-4. Acesse `https://<ip-do-device>:8001`
+4. Acesse `http://<ip-do-device>:8001`
 
 #### Modulo Magisk (Manual)
 
@@ -95,7 +102,7 @@ Engine de contêineres ultra-leva para Android — sem compilação, puros scrip
 1. Baixe `ANK-Installer.exe` ou use `adb push` para enviar o rootfs + PRoot
 2. Execute `ank-lite-bootstrap.sh` no device
 3. Execute `start-lite.sh` para iniciar o servidor
-4. Acesse `https://localhost:8001`
+4. Acesse `http://localhost:8001`
 
 #### Credenciais
 
@@ -104,7 +111,7 @@ Engine de contêineres ultra-leva para Android — sem compilação, puros scrip
 | Usuario | `admin` |
 | Senha | `admin123` |
 
-Salvas em `/sdcard/AndroidKonteiner/CREDENCIAIS.txt`. Troque imediatamente via Configuracoes.
+Salvas em `/data/local/ank/config.json`. Troque imediatamente via Configuracoes.
 
 ---
 
@@ -126,6 +133,7 @@ Salvas em `/sdcard/AndroidKonteiner/CREDENCIAIS.txt`. Troque imediatamente via C
 | `ank templates` | Listar templates disponiveis |
 | `ank deploy <template> <nome>` | Deploy de um template |
 | `ank ankfile <nome> <arquivo>` | Build de Ankfile personalizado |
+| `ank pull <image>` | Baixar imagem base |
 
 #### `ank-core` — Administracao do Sistema
 
@@ -150,7 +158,7 @@ Salvas em `/sdcard/AndroidKonteiner/CREDENCIAIS.txt`. Troque imediatamente via C
 | Python 3.12 | python3, pip | 5000 | Yes |
 | Nginx Static | nginx | 8080 | Yes |
 | Apache Static | apache2 | 8080 | Yes |
-| PHP 8.2 | php82, php82-fpm | 8080 | Yes |
+| PHP 8.2 | php82, php82-mbstring, php82-json | 8080 | Yes |
 | Node.js 20 | nodejs, npm | 3000 | Yes |
 
 Todos os templates vem pre-configurados com software instalado e pagina ANK de exemplo.
@@ -168,6 +176,7 @@ Crie imagens customizadas com um Ankfile (similar a Dockerfile).
 | `RUN <cmd>` | Executar comando durante build |
 | `EXPOSE <port>` | Expor porta |
 | `WORKDIR <path>` | Definir diretorio de trabalho |
+| `PASSWD <senha>` | Definir senha root do container |
 
 **Exemplo:**
 
@@ -176,6 +185,7 @@ FROM alpine-3.20
 RUN apk add --allow-untrusted nginx
 RUN mkdir -p /var/www/html
 RUN echo "<h1>Custom ANK Image</h1>" > /var/www/html/index.html
+PASSWD minhasenha123
 EXPOSE 8080
 ```
 
@@ -191,13 +201,19 @@ EXPOSE 8080
 | `GET` | `/api/containers` | Listar containeres |
 | `POST` | `/api/containers` | Criar container |
 | `GET` | `/api/containers/:id` | Inspecionar container |
+| `GET` | `/api/containers/:id/logs` | Logs (tail 8KB) |
 | `POST` | `/api/containers/:id/start` | Iniciar |
 | `POST` | `/api/containers/:id/stop` | Parar |
 | `POST` | `/api/containers/:id/restart` | Reiniciar |
 | `POST` | `/api/containers/:id/update` | Atualizar config |
 | `POST` | `/api/containers/:id/exec` | Executar comando |
 | `DELETE` | `/api/containers/:id` | Deletar |
-| `GET` | `/api/containers/:id/logs` | Logs |
+| `GET` | `/api/containers/:id/files` | Listar arquivos |
+| `GET` | `/api/containers/:id/files/content` | Ler conteudo de arquivo |
+| `POST` | `/api/containers/:id/files/write` | Escrever arquivo |
+| `POST` | `/api/containers/:id/files/mkdir` | Criar diretorio |
+| `POST` | `/api/containers/:id/files/rename` | Renomear arquivo |
+| `DELETE` | `/api/containers/:id/files` | Deletar arquivo |
 | `PUT` | `/api/containers/:id/upload` | Upload de arquivos |
 | `GET` | `/api/images` | Listar imagens |
 | `GET` | `/api/images/templates` | Listar templates |
@@ -212,6 +228,9 @@ EXPOSE 8080
 | `POST` | `/api/auth/login` | Autenticar |
 | `POST` | `/api/auth/password` | Trocar credenciais |
 | `GET` | `/api/logs` | Logs do servidor |
+| `GET` | `/api/protocol` | Protocolo ativo (HTTP/HTTPS) |
+| `WS` | `/ws/shell` | Terminal host (WebSocket) |
+| `WS` | `/ws/terminal/:name` | Terminal de container (WebSocket) |
 
 #### Exemplos curl
 
@@ -224,6 +243,16 @@ curl -H "Authorization: Bearer <token>" -X POST \
   -H "Content-Type: application/json" \
   -d '{"template":"nginx-static","name":"meu-site"}' \
   http://localhost:8001/api/images/templates
+
+# Listar arquivos de um container
+curl -H "Authorization: Bearer <token>" \
+  http://localhost:8001/api/containers/meu-site/files?path=/
+
+# Baixar imagem
+curl -H "Authorization: Bearer <token>" -X POST \
+  -H "Content-Type: application/json" \
+  -d '{"image":"alpine-3.20"}' \
+  http://localhost:8001/api/images/pull
 ```
 
 ---
@@ -249,20 +278,24 @@ ank/
 │   └── static/
 │       ├── index.html            # UI do painel web
 │       ├── style.css             # Tema dark/light + responsivo
-│       ├── app.js                # JS client-side (i18n, temas, modais)
+│       ├── app.js                # JS client-side (xterm.js, WebSocket, modais)
 │       └── favicon.svg           # Icone do app
 ├── magisk-module/
 │   ├── module.prop               # Metadados do modulo
-│   ├── post-fs-data.sh           # Hook de boot
-│   ├── service.sh                # Servico de boot
-│   ├── install.sh                # Instalador do modulo
+│   ├── post-fs-data.sh           # Hook de boot (bridge ank0, iptables)
+│   ├── service.sh                # Servico de boot (inicia server)
+│   ├── install.sh                # Instalador (two-path: tarball ou build from scratch)
+│   ├── ankfs/                    # Rootfs pre-compilado (Alpine + Python + openssh)
+│   │   └── ankcore-armv7.tar.gz  # Tarball do rootfs
 │   ├── scripts/
-│   │   ├── container.sh          # Ciclo de vida dos containeres
+│   │   ├── container.sh          # Ciclo de vida dos containeres + _ensure_ankbase
 │   │   ├── network.sh            # Namespaces + iptables
 │   │   ├── resources.sh          # Cgroups (memoria/cpu)
 │   │   ├── cleanup.sh            # Garbage collector
 │   │   ├── detect.sh             # Deteccao de kernel/modo
+│   │   ├── download-rootfs.sh    # Download Alpine minirootfs
 │   │   ├── executor.sh           # Executor de comandos
+│   │   ├── build_tarball.sh      # Gerar ankcore tarball (dev tool)
 │   │   ├── uninstall.sh          # Desinstalacao completa
 │   │   ├── ank-lite-bootstrap.sh # Bootstrap PRoot (non-root)
 │   │   ├── start-lite.sh         # Iniciar servidor Lite
@@ -270,13 +303,13 @@ ank/
 │   └── server/                   # Copia dos arquivos do server
 ├── installer/
 │   ├── main.py                   # Entry point do GUI installer
-│   ├── build.bat                 # Build do .exe via PyInstaller
+│   ├── ANK-Installer.spec        # PyInstaller spec
 │   ├── core/
 │   │   ├── adb.py                # Wrapper ADB
 │   │   ├── detector.py           # Deteccao de capabilities + tier
 │   │   └── installer_lite.py     # Instalacao non-root via PRoot
 │   └── ui/
-│       ├── app.py                # Janela principal + sidebar
+│       ├── app.py                # Janela principal + sidebar (PySide6/Qt6)
 │       ├── theme.py              # Cores, fontes, layout
 │       ├── step_connect.py       # Step 1: Conectar device
 │       ├── step_detect.py        # Step 2: Detectar compatibilidade
@@ -288,26 +321,33 @@ ank/
 ├── README.md
 ├── PROJECT.md                    # Spec do projeto
 ├── DEVELOPMENT.md                # Guia de desenvolvimento
-└── releases.json
+└── build_zip.py                  # Gerador do ank-magisk.zip
 ```
 
 #### Caminhos no Dispositivo
 
 ```
-/sdcard/AndroidKonteiner/
+/data/local/ank/
 ├── ankfs/                        # Rootfs do servidor (Alpine + Python)
+│   ├── usr/bin/python3           # Python 3.12
+│   ├── usr/sbin/sshd             # OpenSSH server
 │   ├── opt/ank/server.py         # Servidor ativo
+│   ├── dev/                      # Device nodes (null, urandom, ptmx)
 │   └── lib/ld-musl-*.so.1       # Linker musl
-├── core/                         # Scripts shell
-├── containers/<nome>/            # Dados + config.json por container
 ├── images/                       # Imagens base
-├── logs/                         # server.log, server.pid
-├── cache/                        # Downloads temporarios
-├── config.json                   # Config global (subnet, porta, etc.)
+│   ├── alpine-3.20/              # Alpine minirootfs limpa
+│   └── ank-alpinebase/           # Base para containeres (openssh + bash + s6)
+├── containers/<nome>/            # Dados por container
+│   ├── config.json               # Config (status, porta, IP, password)
+│   ├── merged/                   # Rootfs do container
+│   ├── upper/                    # Overlay upper layer
+│   └── work/                     # Overlay work layer
+├── logs/                         # server.log, server.pid, <container>.log
+├── cache/                        # alpine-minirootfs-<arch>.tar.gz
+├── config.json                   # Config global (subnet, porta, credenciais)
 ├── mode                          # Tier detectado (JSON)
-├── proot                         # Binario PRoot (modo Lite)
-├── cert.pem                      # Certificado HTTPS (auto-gerado)
-└── key.pem                       # Chave HTTPS (auto-gerada)
+├── protocol                      # HTTP ou HTTPS
+└── cert.pem / key.pem            # Certificado HTTPS (auto-gerado)
 ```
 
 ---
@@ -333,7 +373,7 @@ ank/
 
 | Versao | Status | Download |
 |--------|--------|----------|
-| v2.0.0 | **Ultima** | [ank-v2.0.0.zip](https://github.com/andrebarretoit/ank/releases/download/v2.0.0/ank-v2.0.0.zip) |
+| v2.0.0 | **Ultima** | [ank-magisk.zip](https://github.com/andrebarretoit/ank/releases/download/v2.0.0/ank-magisk.zip) + [ANK-Installer.exe](https://github.com/andrebarretoit/ank/releases/download/v2.0.0/ANK-Installer.exe) |
 
 ---
 
@@ -347,16 +387,28 @@ adb shell su -c "zcat /proc/config.gz | grep NAMESPACES"
 adb shell su -c "zcat /proc/config.gz | grep OVERLAY"
 
 # Verificar tier detectado
-adb shell cat /sdcard/AndroidKonteiner/mode
+adb shell cat /data/local/ank/mode
 
 # Logs do servidor
-adb shell cat /sdcard/AndroidKonteiner/logs/server.log
+adb shell cat /data/local/ank/logs/server.log
 
-# Logs de boot
-adb shell cat /sdcard/AndroidKonteiner/logs/boot.log
+# Logs de um container
+adb shell cat /data/local/ank/logs/<nome>.log
+
+# Verificar se ank-alpinebase existe
+adb shell su -c "ls /data/local/ank/images/ank-alpinebase/bin/sh"
+
+# Recriar ank-alpinebase (lazy build)
+adb shell su -c "rm -rf /data/local/ank/images/ank-alpinebase"
+
+# Verificar device nodes no ankfs
+adb shell su -c "ls -la /data/local/ank/ankfs/dev/"
+
+# Testar Python no ankfs
+adb shell su -c "mount -t proc proc /data/local/ank/ankfs/proc; chroot /data/local/ank/ankfs /usr/bin/python3 -c 'import pty; print(\"OK\")'"
 
 # Limpeza manual
-adb shell su -c "sh /sdcard/AndroidKonteiner/core/cleanup.sh"
+adb shell su -c "sh /data/local/ank/scripts/cleanup.sh"
 ```
 
 ---
@@ -387,12 +439,13 @@ adb shell su -c "sh /sdcard/AndroidKonteiner/core/cleanup.sh"
  │                                            ANK ENGINE                                            │
  │                                                                                                  │
  │               Web Panel (Port 8001)    │    REST API    │    Magisk Module / PRoot               │
- │                   HTML/CSS/JS          │    Python3     │    post-fs-data / bootstrap            │
+ │              HTML/CSS/JS + xterm.js     │    Python3     │    post-fs-data / bootstrap            │
  ├──────────────────────────────────────────────────────────────────────────────────────────────────┤
  │                                    Bridge ank0 │ iptables NAT                                    │
  ├──────────────────────────────────────────────────────────────────────────────────────────────────┤
- │                                      Alpine Linux (Chroot / PRoot)                               │
- │                               ~8MB rootfs | Python 3 | pip                                       │
+ │                          Alpine Linux (Chroot / PRoot) │ s6 process supervisor                   │
+ │                          ank-alpinebase: openssh + bash + busybox + shadow + openssl + s6        │
+ │                          Python 3.12 | ~20MB rootfs | SSL/TLS                                   │
  └──────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -411,18 +464,24 @@ adb shell su -c "sh /sdcard/AndroidKonteiner/core/cleanup.sh"
 ### Features
 
 - **Chroot/PRoot containers** — Alpine Linux rootfs with Python 3 pre-installed
-- **GUI Installer** — Graphical installer for Windows (customtkinter + ADB)
+- **GUI Installer** — Graphical installer for Windows (PySide6/Qt6 + ADB)
 - **5 enterprise tiers** — Progressive isolation based on kernel capability
 - **Lite mode** — Works without root via PRoot (userspace emulation)
 - **Web panel** — Portainer-style dark UI on `localhost:8001`
+- **Interactive terminal** — xterm.js + WebSocket for host shell and container terminal
+- **Container SSH** — Direct SSH access via web terminal or external SSH client
 - **Image templates** — One-click deploy: Python, Nginx, Apache, PHP, Node.js
-- **Ankfile** — Build custom images from Ankfile (like Dockerfile)
+- **Ankfile** — Build custom images from Ankfile (like Dockerfile) with `PASSWD` support
+- **Pull Image** — Download and build images from the web panel (Alpine, ank-alpinebase)
 - **File Explorer** — Browse, edit, create, rename and delete files inside containers
 - **File upload** — Upload static sites directly to containers (HTML/CSS/JS/ZIP)
 - **Shell** — `ank` and `ank-core` commands from the web terminal + real host commands
+- **Realtime log streaming** — Build/deploy/start/stop output via 1s polling
 - **Realtime stats** — CPU, memory, uptime, container status
 - **Port mapping** — Forward device ports to containers (TCP/UDP)
+- **Auto port increment** — Conflicting ports auto-increment (+1)
 - **Auto-start** — Containers restore on boot via Magisk
+- **s6 process supervisor** — Lightweight process management (~200KB, no Python)
 - **Security** — Token Bearer auth, self-signed HTTPS, rate limiting, security headers
 - **Complete uninstall** — Uninstall via panel with full removal
 
@@ -435,7 +494,7 @@ adb shell su -c "sh /sdcard/AndroidKonteiner/core/cleanup.sh"
 1. Download `ANK-Installer.exe` from [Releases](https://github.com/andrebarretoit/ank/releases)
 2. Connect device via USB with ADB enabled
 3. Run the installer — detects device, tier, and installs automatically
-4. Access `https://<device-ip>:8001`
+4. Access `http://<device-ip>:8001`
 
 #### Magisk Module (Manual)
 
@@ -450,7 +509,7 @@ adb shell su -c "sh /sdcard/AndroidKonteiner/core/cleanup.sh"
 1. Download `ANK-Installer.exe` or use `adb push` to send rootfs + PRoot
 2. Run `ank-lite-bootstrap.sh` on the device
 3. Run `start-lite.sh` to start the server
-4. Access `https://localhost:8001`
+4. Access `http://localhost:8001`
 
 #### Credentials
 
@@ -459,7 +518,7 @@ adb shell su -c "sh /sdcard/AndroidKonteiner/core/cleanup.sh"
 | Username | `admin` |
 | Password | `admin123` |
 
-Saved to `/sdcard/AndroidKonteiner/CREDENCIAIS.txt`. Change immediately via Settings.
+Saved to `/data/local/ank/config.json`. Change immediately via Settings.
 
 ---
 
@@ -481,6 +540,7 @@ Saved to `/sdcard/AndroidKonteiner/CREDENCIAIS.txt`. Change immediately via Sett
 | `ank templates` | List available templates |
 | `ank deploy <template> <name>` | Deploy a template |
 | `ank ankfile <name> <file>` | Build from custom Ankfile |
+| `ank pull <image>` | Download base image |
 
 #### `ank-core` — System Admin
 
@@ -505,7 +565,7 @@ Saved to `/sdcard/AndroidKonteiner/CREDENCIAIS.txt`. Change immediately via Sett
 | Python 3.12 | python3, pip | 5000 | Yes |
 | Nginx Static | nginx | 8080 | Yes |
 | Apache Static | apache2 | 8080 | Yes |
-| PHP 8.2 | php82, php82-fpm | 8080 | Yes |
+| PHP 8.2 | php82, php82-mbstring, php82-json | 8080 | Yes |
 | Node.js 20 | nodejs, npm | 3000 | Yes |
 
 All templates come pre-configured with software installed and an ANK branded example page.
@@ -523,6 +583,7 @@ Create custom images with an Ankfile (similar to Dockerfile).
 | `RUN <cmd>` | Execute command during build |
 | `EXPOSE <port>` | Expose port |
 | `WORKDIR <path>` | Set working directory |
+| `PASSWD <password>` | Set container root password |
 
 **Example:**
 
@@ -531,6 +592,7 @@ FROM alpine-3.20
 RUN apk add --allow-untrusted nginx
 RUN mkdir -p /var/www/html
 RUN echo "<h1>Custom ANK Image</h1>" > /var/www/html/index.html
+PASSWD mysecretpass
 EXPOSE 8080
 ```
 
@@ -546,13 +608,19 @@ EXPOSE 8080
 | `GET` | `/api/containers` | List containers |
 | `POST` | `/api/containers` | Create container |
 | `GET` | `/api/containers/:id` | Inspect container |
+| `GET` | `/api/containers/:id/logs` | Logs (tail 8KB) |
 | `POST` | `/api/containers/:id/start` | Start |
 | `POST` | `/api/containers/:id/stop` | Stop |
 | `POST` | `/api/containers/:id/restart` | Restart |
 | `POST` | `/api/containers/:id/update` | Update settings |
 | `POST` | `/api/containers/:id/exec` | Execute command |
 | `DELETE` | `/api/containers/:id` | Delete |
-| `GET` | `/api/containers/:id/logs` | Logs |
+| `GET` | `/api/containers/:id/files` | List files |
+| `GET` | `/api/containers/:id/files/content` | Read file content |
+| `POST` | `/api/containers/:id/files/write` | Write file |
+| `POST` | `/api/containers/:id/files/mkdir` | Create directory |
+| `POST` | `/api/containers/:id/files/rename` | Rename file |
+| `DELETE` | `/api/containers/:id/files` | Delete file |
 | `PUT` | `/api/containers/:id/upload` | Upload files |
 | `GET` | `/api/images` | List images |
 | `GET` | `/api/images/templates` | List templates |
@@ -567,6 +635,9 @@ EXPOSE 8080
 | `POST` | `/api/auth/login` | Authenticate |
 | `POST` | `/api/auth/password` | Change credentials |
 | `GET` | `/api/logs` | Server logs |
+| `GET` | `/api/protocol` | Active protocol (HTTP/HTTPS) |
+| `WS` | `/ws/shell` | Host terminal (WebSocket) |
+| `WS` | `/ws/terminal/:name` | Container terminal (WebSocket) |
 
 #### curl Examples
 
@@ -579,6 +650,16 @@ curl -H "Authorization: Bearer <token>" -X POST \
   -H "Content-Type: application/json" \
   -d '{"template":"nginx-static","name":"my-site"}' \
   http://localhost:8001/api/images/templates
+
+# List files in a container
+curl -H "Authorization: Bearer <token>" \
+  http://localhost:8001/api/containers/my-site/files?path=/
+
+# Download an image
+curl -H "Authorization: Bearer <token>" -X POST \
+  -H "Content-Type: application/json" \
+  -d '{"image":"alpine-3.20"}' \
+  http://localhost:8001/api/images/pull
 ```
 
 ---
@@ -604,20 +685,24 @@ ank/
 │   └── static/
 │       ├── index.html            # Web panel UI
 │       ├── style.css             # Dark/light theme + responsive
-│       ├── app.js                # Client-side JS (i18n, themes, modals)
+│       ├── app.js                # Client-side JS (xterm.js, WebSocket, modals)
 │       └── favicon.svg           # App icon
 ├── magisk-module/
 │   ├── module.prop               # Module metadata
-│   ├── post-fs-data.sh           # Boot hook
-│   ├── service.sh                # Boot service
-│   ├── install.sh                # Module installer
+│   ├── post-fs-data.sh           # Boot hook (bridge ank0, iptables)
+│   ├── service.sh                # Boot service (starts server)
+│   ├── install.sh                # Installer (two-path: tarball or build from scratch)
+│   ├── ankfs/                    # Pre-built rootfs (Alpine + Python + openssh)
+│   │   └── ankcore-armv7.tar.gz  # Rootfs tarball
 │   ├── scripts/
-│   │   ├── container.sh          # Container lifecycle
+│   │   ├── container.sh          # Container lifecycle + _ensure_ankbase
 │   │   ├── network.sh            # Namespaces + iptables
 │   │   ├── resources.sh          # Cgroups (memory/cpu)
 │   │   ├── cleanup.sh            # Garbage collector
 │   │   ├── detect.sh             # Kernel/mode detection
+│   │   ├── download-rootfs.sh    # Download Alpine minirootfs
 │   │   ├── executor.sh           # Command executor
+│   │   ├── build_tarball.sh      # Generate ankcore tarball (dev tool)
 │   │   ├── uninstall.sh          # Complete uninstaller
 │   │   ├── ank-lite-bootstrap.sh # PRoot bootstrap (non-root)
 │   │   ├── start-lite.sh         # Start Lite server
@@ -625,13 +710,13 @@ ank/
 │   └── server/                   # Server files copy
 ├── installer/
 │   ├── main.py                   # GUI installer entry point
-│   ├── build.bat                 # Build .exe via PyInstaller
+│   ├── ANK-Installer.spec        # PyInstaller spec
 │   ├── core/
 │   │   ├── adb.py                # ADB wrapper
 │   │   ├── detector.py           # Capability detection + tier
 │   │   └── installer_lite.py     # Non-root install via PRoot
 │   └── ui/
-│       ├── app.py                # Main window + sidebar
+│       ├── app.py                # Main window + sidebar (PySide6/Qt6)
 │       ├── theme.py              # Colors, fonts, layout
 │       ├── step_connect.py       # Step 1: Connect device
 │       ├── step_detect.py        # Step 2: Detect compatibility
@@ -643,26 +728,33 @@ ank/
 ├── README.md
 ├── PROJECT.md                    # Project spec
 ├── DEVELOPMENT.md                # Development guide
-└── releases.json
+└── build_zip.py                  # ank-magisk.zip builder
 ```
 
 #### Device Paths
 
 ```
-/sdcard/AndroidKonteiner/
+/data/local/ank/
 ├── ankfs/                        # Server rootfs (Alpine + Python)
+│   ├── usr/bin/python3           # Python 3.12
+│   ├── usr/sbin/sshd             # OpenSSH server
 │   ├── opt/ank/server.py         # Live server
+│   ├── dev/                      # Device nodes (null, urandom, ptmx)
 │   └── lib/ld-musl-*.so.1       # Musl linker
-├── core/                         # Shell scripts
-├── containers/<name>/            # Per-container data + config.json
 ├── images/                       # Base images
-├── logs/                         # server.log, server.pid
-├── cache/                        # Temporary downloads
-├── config.json                   # Global config (subnet, port, etc.)
+│   ├── alpine-3.20/              # Clean Alpine minirootfs
+│   └── ank-alpinebase/           # Container base (openssh + bash + s6)
+├── containers/<name>/            # Per-container data
+│   ├── config.json               # Config (status, port, IP, password)
+│   ├── merged/                   # Container rootfs
+│   ├── upper/                    # Overlay upper layer
+│   └── work/                     # Overlay work layer
+├── logs/                         # server.log, server.pid, <container>.log
+├── cache/                        # alpine-minirootfs-<arch>.tar.gz
+├── config.json                   # Global config (subnet, port, credentials)
 ├── mode                          # Detected tier (JSON)
-├── proot                         # PRoot binary (Lite mode)
-├── cert.pem                      # HTTPS certificate (auto-generated)
-└── key.pem                       # HTTPS key (auto-generated)
+├── protocol                      # HTTP or HTTPS
+└── cert.pem / key.pem            # HTTPS certificate (auto-generated)
 ```
 
 ---
@@ -688,7 +780,7 @@ ank/
 
 | Version | Status | Download |
 |---------|--------|----------|
-| v2.0.0 | **Latest** | [ank-v2.0.0.zip](https://github.com/andrebarretoit/ank/releases/download/v2.0.0/ank-v2.0.0.zip) |
+| v2.0.0 | **Latest** | [ank-magisk.zip](https://github.com/andrebarretoit/ank/releases/download/v2.0.0/ank-magisk.zip) + [ANK-Installer.exe](https://github.com/andrebarretoit/ank/releases/download/v2.0.0/ANK-Installer.exe) |
 
 ---
 
@@ -702,16 +794,28 @@ adb shell su -c "zcat /proc/config.gz | grep NAMESPACES"
 adb shell su -c "zcat /proc/config.gz | grep OVERLAY"
 
 # Check detected tier
-adb shell cat /sdcard/AndroidKonteiner/mode
+adb shell cat /data/local/ank/mode
 
 # Server logs
-adb shell cat /sdcard/AndroidKonteiner/logs/server.log
+adb shell cat /data/local/ank/logs/server.log
 
-# Boot logs
-adb shell cat /sdcard/AndroidKonteiner/logs/boot.log
+# Container logs
+adb shell cat /data/local/ank/logs/<name>.log
+
+# Check if ank-alpinebase exists
+adb shell su -c "ls /data/local/ank/images/ank-alpinebase/bin/sh"
+
+# Rebuild ank-alpinebase (lazy build)
+adb shell su -c "rm -rf /data/local/ank/images/ank-alpinebase"
+
+# Verify device nodes in ankfs
+adb shell su -c "ls -la /data/local/ank/ankfs/dev/"
+
+# Test Python in ankfs
+adb shell su -c "mount -t proc proc /data/local/ank/ankfs/proc; chroot /data/local/ank/ankfs /usr/bin/python3 -c 'import pty; print(\"OK\")'"
 
 # Manual cleanup
-adb shell su -c "sh /sdcard/AndroidKonteiner/core/cleanup.sh"
+adb shell su -c "sh /data/local/ank/scripts/cleanup.sh"
 ```
 
 ---
