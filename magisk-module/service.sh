@@ -94,6 +94,24 @@ fi
 # Restore host hostname
 /system/bin/sh -c "echo $(getprop ro.product.model 2>/dev/null || echo Android) > /proc/sys/kernel/hostname" 2>/dev/null
 
+# Kernel 3.10 has no devtmpfs, and /data is mounted with nodev
+# Mount tmpfs on /dev so pty.fork() and /dev/null work for server.py (WebSocket terminal)
+# Check if devpts is mounted (not just /dev) - /dev may be tmpfs from manual mount but missing devpts
+if ! mountpoint -q "$ROOTFS/dev/pts" 2>/dev/null; then
+    umount "$ROOTFS/dev" 2>/dev/null
+    mount -t tmpfs -o size=16m tmpfs "$ROOTFS/dev" 2>/dev/null
+    mknod "$ROOTFS/dev/null" c 1 3 2>/dev/null; chmod 666 "$ROOTFS/dev/null" 2>/dev/null
+    mknod "$ROOTFS/dev/zero" c 1 5 2>/dev/null; chmod 666 "$ROOTFS/dev/zero" 2>/dev/null
+    mknod "$ROOTFS/dev/random" c 1 8 2>/dev/null; chmod 666 "$ROOTFS/dev/random" 2>/dev/null
+    mknod "$ROOTFS/dev/urandom" c 1 9 2>/dev/null; chmod 666 "$ROOTFS/dev/urandom" 2>/dev/null
+    mknod "$ROOTFS/dev/tty" c 5 0 2>/dev/null; chmod 666 "$ROOTFS/dev/tty" 2>/dev/null
+    mknod "$ROOTFS/dev/ptmx" c 5 2 2>/dev/null; chmod 666 "$ROOTFS/dev/ptmx" 2>/dev/null
+    mknod "$ROOTFS/dev/console" c 5 1 2>/dev/null; chmod 666 "$ROOTFS/dev/console" 2>/dev/null
+    mkdir -p "$ROOTFS/dev/pts" "$ROOTFS/dev/shm" 2>/dev/null
+    mount -t devpts devpts "$ROOTFS/dev/pts" 2>/dev/null
+    log "Mounted tmpfs on /dev (kernel 3.10 workaround)"
+fi
+
 # Start server on HOST using musl linker
 cd "$ROOTFS"
 env LD_LIBRARY_PATH="$PYLIB" nohup "$MUSL" "$ROOTFS/usr/bin/python3" "$SERVER" > "$ANK_DIR/logs/server.log" 2>&1 &

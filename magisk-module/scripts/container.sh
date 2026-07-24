@@ -53,10 +53,12 @@ _ensure_ankbase() {
     echo "nameserver 8.8.4.4" >> "$ANKBASE/etc/resolv.conf" 2>/dev/null
     echo "127.0.0.1 localhost" > "$ANKBASE/etc/hosts" 2>/dev/null
 
-    # Ensure /dev exists for apk
-    mkdir -p "$ANKBASE/dev" 2>/dev/null
-    [ -e "$ANKBASE/dev/null" ] || mknod "$ANKBASE/dev/null" c 1 3 2>/dev/null
-    [ -e "$ANKBASE/dev/urandom" ] || mknod "$ANKBASE/dev/urandom" c 1 9 2>/dev/null
+    # Ensure /dev exists for apk (kernel 3.10 + nodev workaround)
+    mkdir -p "$ANKBASE/dev/pts" "$ANKBASE/dev/shm" 2>/dev/null
+    umount "$ANKBASE/dev" 2>/dev/null
+    mount -t tmpfs -o size=16m tmpfs "$ANKBASE/dev" 2>/dev/null
+    [ -e "$ANKBASE/dev/null" ] || mknod "$ANKBASE/dev/null" c 1 3 2>/dev/null; chmod 666 "$ANKBASE/dev/null" 2>/dev/null
+    [ -e "$ANKBASE/dev/urandom" ] || mknod "$ANKBASE/dev/urandom" c 1 9 2>/dev/null; chmod 666 "$ANKBASE/dev/urandom" 2>/dev/null
 
     # Install packages (stream output)
     echo "Installing openssh, bash, busybox, shadow, openssl, s6..."
@@ -570,6 +572,20 @@ cmd_start() {
         fi
     fi
 
+    # Mount tmpfs on /dev before any mknod (kernel 3.10 + nodev workaround)
+    mkdir -p "$ROOTFS/dev/pts" "$ROOTFS/dev/shm" "$ROOTFS/run/sshd" 2>/dev/null
+    umount "$ROOTFS/dev" 2>/dev/null
+    mount -t tmpfs -o size=16m tmpfs "$ROOTFS/dev" 2>/dev/null
+    for node_info in "null:1:3" "zero:1:5" "random:1:8" "urandom:1:9" "tty:5:0" "ptmx:5:2" "console:5:1"; do
+        local _n=$(echo "$node_info" | cut -d: -f1)
+        local _t=$(echo "$node_info" | cut -d: -f2)
+        local _m=$(echo "$node_info" | cut -d: -f3)
+        mknod "$ROOTFS/dev/$_n" c "$_t" "$_m" 2>/dev/null
+        chmod 666 "$ROOTFS/dev/$_n" 2>/dev/null
+    done
+    mount -t devpts devpts "$ROOTFS/dev/pts" 2>/dev/null
+    mount -t tmpfs -o size=16m tmpfs "$ROOTFS/dev/shm" 2>/dev/null
+
     # Set root password before starting sshd
     local ROOT_PASS=$(grep -o '"root_password":"[^"]*"' "$CONFIG" 2>/dev/null | cut -d'"' -f4)
     if [ -n "$ROOT_PASS" ]; then
@@ -597,7 +613,7 @@ cmd_start() {
         umount "$ROOTFS/proc" 2>/dev/null
     fi
 
-    # Init script: setup dev, start sshd as PID 1
+    # Init script: start sshd as PID 1
     # In shared_host/isolated modes, sshd listens on SSH_PORT directly (no DNAT needed)
     local SSHD_PORT=22
     if [ "$MODE" = "shared_host" ] || [ "$MODE" = "isolated" ] || [ "$MODE" = "shared_network" ]; then
@@ -615,14 +631,8 @@ cmd_start() {
         mkdir -p /dev/pts /dev/shm /run/sshd 2>/dev/null
         mount -t proc proc /proc 2>/dev/null
         mount -t sysfs sysfs /sys 2>/dev/null
-        mount -t devtmpfs devtmpfs /dev 2>/dev/null || true
-        for node in "null:1:3" "zero:1:5" "random:1:8" "urandom:1:9" "tty:5:0" "ptmx:5:2" "console:5:1"; do
-            n=$(echo "$node" | cut -d: -f1)
-            t=$(echo "$node" | cut -d: -f2)
-            m=$(echo "$node" | cut -d: -f3)
-            [ -e "/dev/$n" ] || mknod "/dev/$n" c "$t" "$m" 2>/dev/null
-            chmod 666 "/dev/$n" 2>/dev/null
-        done
+        # Do NOT mount devtmpfs here - /dev nodes are created by host before chroot
+        # devtmpfs on kernel 3.10 may overwrite our nodes with empty/broken /dev
         mount -t devpts devpts /dev/pts 2>/dev/null || true
         echo "[init] Filesystems mounted"
         hostname CONTAINER_NAME_PLACEHOLDER 2>/dev/null
