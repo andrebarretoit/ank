@@ -804,11 +804,13 @@ small{color:#334155}
         self.end_headers()
 
     def do_GET(self):
+        self._is_websocket = False
         parsed = urlparse(self.path)
         path = parsed.path
 
         # WebSocket upgrade for shell on host
         if path == "/ws/shell":
+            self._is_websocket = True
             upgrade = self.headers.get("Upgrade", "").lower()
             ws_key = self.headers.get("Sec-WebSocket-Key", "")
             if upgrade != "websocket" or not ws_key:
@@ -827,6 +829,14 @@ small{color:#334155}
             )
             rsock.sendall(resp)
             log(f"WS_SHELL: 101 sent")
+            try:
+                self.rfile.close()
+            except Exception:
+                pass
+            try:
+                self.wfile.close()
+            except Exception:
+                pass
             cols = 80
             rows = 24
             try:
@@ -840,6 +850,7 @@ small{color:#334155}
 
         # WebSocket upgrade for terminal
         if path.startswith("/ws/terminal/"):
+            self._is_websocket = True
             upgrade = self.headers.get("Upgrade", "").lower()
             ws_key = self.headers.get("Sec-WebSocket-Key", "")
             if upgrade != "websocket" or not ws_key:
@@ -870,6 +881,14 @@ small{color:#334155}
                 b"\r\n"
             )
             rsock.sendall(resp)
+            try:
+                self.rfile.close()
+            except Exception:
+                pass
+            try:
+                self.wfile.close()
+            except Exception:
+                pass
             # Start PTY session (blocks until done)
             cols = 80
             rows = 24
@@ -1943,7 +1962,8 @@ small{color:#334155}
                 merged = os.path.join(CONTAINERS_DIR, container_name, "merged")
 
                 def _chroot(cmd, timeout=30):
-                    full = f"chroot {merged} /bin/sh -c '{cmd}'"
+                    wrapped = "export PATH=/bin:/sbin:/usr/bin:/usr/sbin; " + cmd
+                    full = f"chroot {merged} /bin/sh -c '{wrapped}'"
                     return subprocess.run(
                         ["/system/bin/sh", "-c", full],
                         capture_output=True, text=True, timeout=timeout
@@ -2981,6 +3001,35 @@ small{color:#334155}
     def log_message(self, fmt, *args):
         sys.stdout.write(f"[{datetime.now().strftime('%H:%M:%S')}] {args[0]}\n")
         sys.stdout.flush()
+
+    def handle_one_request(self):
+        try:
+            self.raw_requestline = self.rfile.readline(65537)
+            if not self.raw_requestline:
+                self.close_connection = True
+                return
+            if not self.parse_request():
+                return
+            mname = 'do_' + self.command
+            if not hasattr(self, mname):
+                self.send_error(501, "Not Implemented")
+                return
+            method = getattr(self, mname)
+            method()
+            if not getattr(self, '_is_websocket', False):
+                self.wfile.flush()
+        except TimeoutError:
+            self.close_connection = True
+        except Exception:
+            self.handle_error()
+
+    def finish(self):
+        if getattr(self, '_is_websocket', False):
+            return
+        try:
+            super().finish()
+        except Exception:
+            pass
 
 
 def _setup_https():
