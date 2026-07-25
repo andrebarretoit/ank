@@ -377,37 +377,22 @@ cmd_create() {
         exit 1
     fi
 
-    # Atomic port allocation with lock file
-    local LOCK_FILE="$ANK_DIR/.port_lock"
+    # Port allocation - find first free port
     local ORIG_PORT="$SSH_PORT"
-    (
-        flock -w 5 200 2>/dev/null || exit 1
-        while true; do
-            local PORT_IN_USE=0
-            for cfg in "$CONTAINERS_DIR"/*/config.json; do
-                [ -f "$cfg" ] || continue
-                local existing_port=$(grep -o '"ssh_port":[^,]*' "$cfg" 2>/dev/null | cut -d: -f2 | tr -d ' ')
-                if [ "$existing_port" = "$SSH_PORT" ]; then
-                    PORT_IN_USE=1
-                    break
-                fi
-            done
-            [ "$PORT_IN_USE" -eq 0 ] && break
-            SSH_PORT=$((SSH_PORT + 1))
-            [ "$SSH_PORT" -gt 65000 ] && SSH_PORT="$ORIG_PORT" && break
-        done
-        echo "$SSH_PORT"
-    ) 200>"$LOCK_FILE"
-    # Read result from subshell (fallback: re-check without lock)
-    if [ "$SSH_PORT" = "$ORIG_PORT" ]; then
+    while true; do
+        local PORT_IN_USE=0
         for cfg in "$CONTAINERS_DIR"/*/config.json; do
             [ -f "$cfg" ] || continue
             local existing_port=$(grep -o '"ssh_port":[^,]*' "$cfg" 2>/dev/null | cut -d: -f2 | tr -d ' ')
             if [ "$existing_port" = "$SSH_PORT" ]; then
-                SSH_PORT=$((SSH_PORT + 1))
+                PORT_IN_USE=1
+                break
             fi
         done
-    fi
+        [ "$PORT_IN_USE" -eq 0 ] && break
+        SSH_PORT=$((SSH_PORT + 1))
+        [ "$SSH_PORT" -gt 65000 ] && SSH_PORT="$ORIG_PORT" && break
+    done
     if [ "$SSH_PORT" != "$ORIG_PORT" ]; then
         echo "WARN: Port $ORIG_PORT in use, using $SSH_PORT instead"
     fi
