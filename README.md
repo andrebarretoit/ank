@@ -77,6 +77,13 @@ Engine de contêineres ultra-leva para Android — sem compilação, puros scrip
 - **s6 process supervisor** — Gerenciamento de processos leve (~200KB, sem Python)
 - **Seguranca** — Token Bearer, HTTPS auto-assinado, rate limiting, headers de seguranca
 - **Uninstall completo** — Desinstalacao via painel com remocao total
+- **Stacks** — Gerenciamento de grupos de containeres com load balancing e auto-scaling
+- **Load Balancer** — Proxy reverso Python para stacks com health check
+- **Auto-scaling** — Escalamento automatico baseado em triggers (CPU, memoria, requests/sec)
+- **Backups** — Rotinas de backup via sshpass+scp com agendamento e retencao
+- **Nodos multi-device** — Gerencie multiplos dispositivos ANK remotos via HTTP API
+- **Volumes compartilhados** — Bind mount do host para containeres em stacks
+- **Ankfile em Stacks** — Deploy de imagens customizadas via Ankfile dentro de stacks
 
 ---
 
@@ -191,6 +198,49 @@ EXPOSE 8080
 
 ---
 
+### Stacks
+
+Gerencie grupos de containeres identicos com load balancing e auto-scaling.
+
+| Recurso | Descricao |
+|---------|-----------|
+| Criacao | Crie stacks a partir de templates ou Ankfiles customizados |
+| Scale up/down | Adicione ou remova containers manualmente |
+| Auto-scaling | Escalamento automatico por CPU, memoria ou requests/sec |
+| Load Balancer | Proxy reverso Python com algoritmos round_robin e least_conn |
+| Shared Volume | Bind mount do host para compartilhar dados entre containers |
+| Ankfile | Deploy de imagens customizadas via Ankfile dentro de stacks |
+
+Acesse pelo painel web na aba **Stacks**.
+
+### Backups
+
+Automatize backup dos seus dados com agendamento e retencao.
+
+| Recurso | Descricao |
+|---------|-----------|
+| Rotinas | Crie rotinas com source, destino SSH e agendamento |
+| Execucao | Execute manualmente ou via cron |
+| Retencao | Politica automatica de limpeza de backups antigos |
+| Navegacao | Navegue arquivos de backup remotos pelo painel |
+| sshpass+scp | Transferencia segura via SSH sem interacao |
+
+Acesse pelo painel web na aba **Backups**.
+
+### Multi-Node
+
+Gerencie multiplos dispositivos ANK de um painel central.
+
+| Recurso | Descricao |
+|---------|-----------|
+| Conexao | Conecte via HTTP API (URL + credenciais do painel remoto) |
+| Heartbeat | Monitoramento a cada 30s com status online/offline |
+| Dashboard | Visao agregada de todos os nodos (CPU, RAM, disco, containers) |
+| Containeres | Crie, inicie, pare e delete containeres em nodos remotos |
+| Proxy | Comunicacao HTTP/WS transparente entre nodos |
+
+Acesse pelo painel web na aba **Nodes**.
+
 ### Referencia da API
 
 | Metodo | Endpoint | Descricao |
@@ -231,6 +281,29 @@ EXPOSE 8080
 | `GET` | `/api/protocol` | Protocolo ativo (HTTP/HTTPS) |
 | `WS` | `/ws/shell` | Terminal host (WebSocket) |
 | `WS` | `/ws/terminal/:name` | Terminal de container (WebSocket) |
+| `GET` | `/api/stacks` | Listar stacks |
+| `GET` | `/api/stacks/:id` | Inspecionar stack |
+| `POST` | `/api/stacks` | Criar stack |
+| `POST` | `/api/stacks/:id/scale` | Escalar stack para cima |
+| `POST` | `/api/stacks/:id/scale-down` | Escalar stack para baixo |
+| `POST` | `/api/stacks/:id/update` | Atualizar stack |
+| `POST` | `/api/stacks/:id/delete` | Deletar stack |
+| `GET` | `/api/stacks/:id/logs` | Logs da stack |
+| `GET` | `/api/stacks/:id/metrics` | Metricas da stack |
+| `GET` | `/api/backups` | Listar rotinas de backup |
+| `GET` | `/api/backups/:id` | Inspecionar rotina |
+| `POST` | `/api/backups` | Criar rotina de backup |
+| `POST` | `/api/backups/:id/execute` | Executar backup |
+| `POST` | `/api/backups/:id/delete` | Deletar rotina |
+| `GET` | `/api/backups/:id/browse` | Navegar arquivos remotos |
+| `GET` | `/api/nodes` | Listar nodos |
+| `GET` | `/api/nodes/:id` | Inspecionar nodo |
+| `POST` | `/api/nodes` | Adicionar nodo |
+| `POST` | `/api/nodes/:id/delete` | Remover nodo |
+| `POST` | `/api/nodes/:id/refresh` | Atualizar dados do nodo |
+| `GET` | `/api/nodes/:id/containers` | Containeres do nodo remoto |
+| `GET` | `/api/nodes/:id/stacks` | Stacks do nodo remoto |
+| `GET` | `/api/system/dashboard` | Dashboard agregado (todos nodos) |
 
 #### Exemplos curl
 
@@ -275,10 +348,20 @@ curl -H "Authorization: Bearer <token>" -X POST \
 ank/
 ├── server/
 │   ├── server.py                 # Servidor HTTP Python3 (stdlib, sem Flask)
+│   ├── stack_manager.py          # Gerenciamento de stacks (CRUD, scale, auto-scale)
+│   ├── ank_orchestrator.py       # Loop de auto-scaling em background
+│   ├── ank_lb.py                 # Load balancer Python (proxy reverso + health check)
+│   ├── node_manager.py           # Gerenciamento multi-nodo (heartbeat, API HTTP)
+│   ├── node_proxy.py             # Proxy HTTP/WS para nodos remotos
+│   ├── backup_manager.py         # Rotinas de backup (CRUD, historico)
+│   ├── backup_runner.py          # Executor de backup (tar.gz + scp + retencao)
+│   ├── backup_browser.py         # Navegador de arquivos remotos via SSH
 │   └── static/
 │       ├── index.html            # UI do painel web
 │       ├── style.css             # Tema dark/light + responsivo
 │       ├── app.js                # JS client-side (xterm.js, WebSocket, modais)
+│       ├── ank-cli.py            # Scripts CLI (bin/ank, bin/ank-core)
+│       ├── ank-profile.sh        # Profile do shell WS
 │       └── favicon.svg           # Icone do app
 ├── magisk-module/
 │   ├── module.prop               # Metadados do modulo
@@ -342,6 +425,15 @@ ank/
 │   ├── upper/                    # Overlay upper layer
 │   └── work/                     # Overlay work layer
 ├── logs/                         # server.log, server.pid, <container>.log
+├── stacks/                       # Dados de stacks
+│   └── <nome>/
+│       ├── data/                 # Volume compartilhado (bind mount nos containers)
+│       └── config.json           # Config da stack
+├── backups/                      # Dados de backups
+│   ├── routines/                 # Rotinas de backup (JSON)
+│   └── history/                  # Historico de execucoes
+├── nodes/                        # Configs de nodos remotos
+│   └── node-*.json               # Config por nodo (ip, port, token)
 ├── cache/                        # alpine-minirootfs-<arch>.tar.gz
 ├── config.json                   # Config global (subnet, porta, credenciais)
 ├── mode                          # Tier detectado (JSON)
@@ -483,6 +575,13 @@ adb shell su -c "sh /data/local/ank/scripts/cleanup.sh"
 - **s6 process supervisor** — Lightweight process management (~200KB, no Python)
 - **Security** — Token Bearer auth, self-signed HTTPS, rate limiting, security headers
 - **Complete uninstall** — Uninstall via panel with full removal
+- **Stacks** — Manage container groups with load balancing and auto-scaling
+- **Load Balancer** — Python reverse proxy for stacks with health check
+- **Auto-scaling** — Automatic scaling based on triggers (CPU, memory, requests/sec)
+- **Backups** — Backup routines via sshpass+scp with scheduling and retention
+- **Multi-device nodes** — Manage multiple remote ANK devices via HTTP API
+- **Shared volumes** — Bind mount from host into stack containers
+- **Ankfile in Stacks** — Deploy custom images via Ankfile within stacks
 
 ---
 
@@ -597,6 +696,49 @@ EXPOSE 8080
 
 ---
 
+### Stacks
+
+Manage groups of identical containers with load balancing and auto-scaling.
+
+| Feature | Description |
+|---------|-------------|
+| Creation | Create stacks from templates or custom Ankfiles |
+| Scale up/down | Add or remove containers manually |
+| Auto-scaling | Automatic scaling by CPU, memory or requests/sec |
+| Load Balancer | Python reverse proxy with round_robin and least_conn algorithms |
+| Shared Volume | Bind mount from host to share data between containers |
+| Ankfile | Deploy custom images via Ankfile within stacks |
+
+Access from the web panel in the **Stacks** tab.
+
+### Backups
+
+Automate your data backups with scheduling and retention.
+
+| Feature | Description |
+|---------|-------------|
+| Routines | Create routines with source, SSH destination and schedule |
+| Execution | Run manually or via cron |
+| Retention | Automatic cleanup policy for old backups |
+| Browsing | Browse remote backup files from the web panel |
+| sshpass+scp | Secure transfer via SSH without interaction |
+
+Access from the web panel in the **Backups** tab.
+
+### Multi-Node
+
+Manage multiple ANK devices from a central panel.
+
+| Feature | Description |
+|---------|-------------|
+| Connection | Connect via HTTP API (URL + remote panel credentials) |
+| Heartbeat | Monitoring every 30s with online/offline status |
+| Dashboard | Aggregated view of all nodes (CPU, RAM, disk, containers) |
+| Containers | Create, start, stop and delete containers on remote nodes |
+| Proxy | Transparent HTTP/WS communication between nodes |
+
+Access from the web panel in the **Nodes** tab.
+
 ### API Reference
 
 | Method | Endpoint | Description |
@@ -637,6 +779,29 @@ EXPOSE 8080
 | `GET` | `/api/protocol` | Active protocol (HTTP/HTTPS) |
 | `WS` | `/ws/shell` | Host terminal (WebSocket) |
 | `WS` | `/ws/terminal/:name` | Container terminal (WebSocket) |
+| `GET` | `/api/stacks` | List stacks |
+| `GET` | `/api/stacks/:id` | Inspect stack |
+| `POST` | `/api/stacks` | Create stack |
+| `POST` | `/api/stacks/:id/scale` | Scale stack up |
+| `POST` | `/api/stacks/:id/scale-down` | Scale stack down |
+| `POST` | `/api/stacks/:id/update` | Update stack |
+| `POST` | `/api/stacks/:id/delete` | Delete stack |
+| `GET` | `/api/stacks/:id/logs` | Stack logs |
+| `GET` | `/api/stacks/:id/metrics` | Stack metrics |
+| `GET` | `/api/backups` | List backup routines |
+| `GET` | `/api/backups/:id` | Inspect routine |
+| `POST` | `/api/backups` | Create backup routine |
+| `POST` | `/api/backups/:id/execute` | Execute backup |
+| `POST` | `/api/backups/:id/delete` | Delete routine |
+| `GET` | `/api/backups/:id/browse` | Browse remote files |
+| `GET` | `/api/nodes` | List nodes |
+| `GET` | `/api/nodes/:id` | Inspect node |
+| `POST` | `/api/nodes` | Add node |
+| `POST` | `/api/nodes/:id/delete` | Remove node |
+| `POST` | `/api/nodes/:id/refresh` | Refresh node data |
+| `GET` | `/api/nodes/:id/containers` | Remote node containers |
+| `GET` | `/api/nodes/:id/stacks` | Remote node stacks |
+| `GET` | `/api/system/dashboard` | Aggregated dashboard (all nodes) |
 
 #### curl Examples
 
@@ -681,10 +846,20 @@ curl -H "Authorization: Bearer <token>" -X POST \
 ank/
 ├── server/
 │   ├── server.py                 # Python3 HTTP server (stdlib, no Flask)
+│   ├── stack_manager.py          # Stack management (CRUD, scale, auto-scale)
+│   ├── ank_orchestrator.py       # Background auto-scaling loop
+│   ├── ank_lb.py                 # Python load balancer (reverse proxy + health check)
+│   ├── node_manager.py           # Multi-node management (heartbeat, HTTP API)
+│   ├── node_proxy.py             # HTTP/WS proxy for remote nodes
+│   ├── backup_manager.py         # Backup routines (CRUD, history)
+│   ├── backup_runner.py          # Backup executor (tar.gz + scp + retention)
+│   ├── backup_browser.py         # Remote file browser via SSH
 │   └── static/
 │       ├── index.html            # Web panel UI
 │       ├── style.css             # Dark/light theme + responsive
 │       ├── app.js                # Client-side JS (xterm.js, WebSocket, modals)
+│       ├── ank-cli.py            # CLI scripts (bin/ank, bin/ank-core)
+│       ├── ank-profile.sh        # WS shell profile
 │       └── favicon.svg           # App icon
 ├── magisk-module/
 │   ├── module.prop               # Module metadata
@@ -748,6 +923,15 @@ ank/
 │   ├── upper/                    # Overlay upper layer
 │   └── work/                     # Overlay work layer
 ├── logs/                         # server.log, server.pid, <container>.log
+├── stacks/                       # Stack data
+│   └── <name>/
+│       ├── data/                 # Shared volume (bind mount in containers)
+│       └── config.json           # Stack config
+├── backups/                      # Backup data
+│   ├── routines/                 # Backup routines (JSON)
+│   └── history/                  # Execution history
+├── nodes/                        # Remote node configs
+│   └── node-*.json               # Per-node config (ip, port, token)
 ├── cache/                        # alpine-minirootfs-<arch>.tar.gz
 ├── config.json                   # Global config (subnet, port, credentials)
 ├── mode                          # Detected tier (JSON)
