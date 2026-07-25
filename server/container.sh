@@ -330,10 +330,12 @@ cmd_create() {
                 else
                     echo "WARN: Some packages may have failed for '$IMAGE'"
                 fi
-                else
-                    echo "WARN: Failed to build image '$IMAGE', using ank-alpinebase"
-                    BASE_DIR="$ANKBASE"
+            else
+                echo "WARN: Failed to copy ank-alpinebase for '$IMAGE', using base"
+                BASE_DIR="$ANKBASE"
             fi
+        else
+            echo "WARN: ank-alpinebase not found, cannot build '$IMAGE'"
         fi
     fi
 
