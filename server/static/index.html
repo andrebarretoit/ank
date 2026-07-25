@@ -302,6 +302,10 @@ EXPOSE 8080</textarea>
                     <div class="card" style="border: 1px solid var(--danger)">
                         <div class="card-header"><h3 style="color:var(--danger)"><i class="bi bi-exclamation-triangle"></i> Danger Zone</h3></div>
                         <div class="card-body">
+                            <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">
+                                <button type="button" class="btn btn-ghost" id="restart-server-btn"><i class="bi bi-arrow-repeat"></i> Restart Server</button>
+                                <button type="button" class="btn btn-ghost" id="restart-device-btn"><i class="bi bi-phone"></i> Restart Device</button>
+                            </div>
                             <p style="color:var(--text-secondary);font-size:13px;margin-bottom:12px">Completely remove ANK: all containers, images, configs, network rules, and the ANK directory. This cannot be undone.</p>
                             <button type="button" class="btn btn-danger" id="uninstall-btn"><i class="bi bi-trash3"></i> Uninstall ANK</button>
                         </div>
@@ -355,6 +359,7 @@ EXPOSE 8080</textarea>
                 <h3><i class="bi bi-box-seam" style="font-size:20px;color:var(--accent)"></i> <span id="detail-name">-</span></h3>
                 <div style="display:flex;gap:6px;align-items:center;">
                     <span id="detail-status" class="status-badge">-</span>
+                    <div id="detail-port-warning" class="port-warning" style="display:none;"></div>
                     <button class="modal-close"><i class="bi bi-x-lg"></i></button>
                 </div>
             </div>
@@ -415,11 +420,6 @@ EXPOSE 8080</textarea>
                             <div id="port-mappings-list"></div>
                             <button type="button" id="add-port-btn" class="btn btn-ghost btn-sm"><i class="bi bi-plus-lg"></i> Add Port</button>
                         </div>
-                        <button type="submit" class="btn btn-primary"><i class="bi bi-check-lg"></i> Save</button>
-                    </form>
-                </div>
-                <div id="mtab-network" class="mtab">
-                    <form id="detail-network-form">
                         <div class="form-group">
                             <label class="checkbox-label"><input type="checkbox" id="detail-serves-static"><i class="bi bi-globe2"></i> Serves Static Files</label>
                         </div>
@@ -428,6 +428,11 @@ EXPOSE 8080</textarea>
                             <input type="text" id="detail-static-path" placeholder="/var/www/html">
                             <p class="form-hint">Path inside container where static files are served</p>
                         </div>
+                        <button type="submit" class="btn btn-primary"><i class="bi bi-check-lg"></i> Save</button>
+                    </form>
+                </div>
+                <div id="mtab-network" class="mtab">
+                    <form id="detail-network-form">
                         <div class="form-group">
                             <label>Container IP</label>
                             <input type="text" id="detail-container-ip" placeholder="10.20.30.2" readonly>

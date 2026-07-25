@@ -575,8 +575,11 @@ async function deleteContainer(name) {
 }
 
 let currentContainer = null;
+let detailLogTimer = null;
 
 async function showContainerDetail(name) {
+    // Clean up previous log timer
+    if (detailLogTimer) { clearInterval(detailLogTimer); detailLogTimer = null; }
     try {
         const [c, logs] = await Promise.all([api('GET', `/containers/${name}`), api('GET', `/containers/${name}/logs`)]);
         currentContainer = c;
@@ -590,6 +593,17 @@ async function showContainerDetail(name) {
         const statusText = isBuilding ? 'Building...' : isFailed ? 'Failed' : c.status === 'starting' ? 'Starting...' : c.status === 'stopping' ? 'Stopping...' : c.status;
         document.getElementById('detail-status').textContent = statusText;
         document.getElementById('detail-status').className = `status-badge ${statusClass}`;
+
+        // Show port warning if present
+        const portWarningEl = document.getElementById('detail-port-warning');
+        if (portWarningEl) {
+            if (c.port_warning) {
+                portWarningEl.textContent = c.port_warning;
+                portWarningEl.style.display = '';
+            } else {
+                portWarningEl.style.display = 'none';
+            }
+        }
 
         document.getElementById('detail-ip').textContent = c.ip_address || '-';
         document.getElementById('detail-image').textContent = c.template_name || c.image || '-';
@@ -686,7 +700,6 @@ async function showContainerDetail(name) {
         }
 
         // Poll logs in real-time while modal is open
-        let detailLogTimer = null;
         const startDetailLogPoll = () => {
             if (detailLogTimer) return;
             detailLogTimer = setInterval(async () => {
@@ -700,7 +713,6 @@ async function showContainerDetail(name) {
         };
         startDetailLogPoll();
         const detailModal = document.getElementById('detail-modal');
-        const origClose = detailModal?.close;
         if (detailModal) {
             detailModal._logCleanup = () => { if (detailLogTimer) { clearInterval(detailLogTimer); detailLogTimer = null; } };
         }
@@ -1171,6 +1183,27 @@ document.getElementById('panel-settings-form').addEventListener('submit', async 
         localStorage.setItem('ank_refresh', refresh);
         startRefreshTimer();
         toast('Panel settings saved', 'success');
+    } catch (e) { toast(`Failed: ${e.message}`, 'error'); }
+});
+
+document.getElementById('restart-device-btn')?.addEventListener('click', async () => {
+    const ok = await confirmAction('Restart Device', 'This will reboot the Android device. Keep USB connected. Continue?');
+    if (!ok) return;
+    try {
+        toast('Rebooting device...', 'warning');
+        await api('POST', '/system/restart-device');
+        document.body.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100vh;background:#0f172a;color:#e2e8f0;font-family:sans-serif;text-align:center"><div><h1 style="font-size:32px;margin-bottom:16px">Device Rebooting...</h1><p style="color:#94a3b8">The device is restarting. Wait for it to come back online.</p></div></div>';
+    } catch (e) { toast(`Failed: ${e.message}`, 'error'); }
+});
+
+document.getElementById('restart-server-btn')?.addEventListener('click', async () => {
+    const ok = await confirmAction('Restart Server', 'This will stop all containers and restart the ANK server. Continue?');
+    if (!ok) return;
+    try {
+        toast('Restarting server...', 'warning');
+        await api('POST', '/system/restart-server');
+        document.body.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100vh;background:#0f172a;color:#e2e8f0;font-family:sans-serif;text-align:center"><div><h1 style="font-size:32px;margin-bottom:16px">Server Restarting...</h1><p style="color:#94a3b8">The ANK server is restarting. This page will reload shortly.</p></div></div>';
+        setTimeout(() => location.reload(), 5000);
     } catch (e) { toast(`Failed: ${e.message}`, 'error'); }
 });
 

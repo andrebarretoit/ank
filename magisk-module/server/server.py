@@ -694,6 +694,10 @@ class AnkHandler(BaseHTTPRequestHandler):
                     p = cfg.get("ssh_port")
                     if p:
                         used.add(int(p))
+                    for pm in cfg.get("port_mappings", []):
+                        hp = pm.get("host_port")
+                        if hp:
+                            used.add(int(hp))
             except Exception:
                 pass
         port = start
@@ -1113,6 +1117,10 @@ small{color:#334155}
             pass
         elif path == "/api/system/shell":
             self.api_shell(data)
+        elif path == "/api/system/restart-device":
+            self.api_restart_device()
+        elif path == "/api/system/restart-server":
+            self.api_restart_server()
         elif path == "/api/networks":
             self.api_create_network(data)
         elif path == "/api/system/config":
@@ -2017,11 +2025,12 @@ small{color:#334155}
                     wrapped = "export PATH=/bin:/sbin:/usr/bin:/usr/sbin; " + cmd
                     full = f"chroot {merged} /bin/sh -c '{wrapped}'"
                     try:
-                        subprocess.Popen(
+                        p = subprocess.Popen(
                             ["/system/bin/sh", "-c", full],
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                             start_new_session=True
                         )
+                        log(f"Background chroot PID: {p.pid} cmd: {cmd}")
                     except Exception as e:
                         log(f"WARNING: _chroot_bg failed: {e}")
 
@@ -2033,7 +2042,15 @@ small{color:#334155}
                     config["template_name"] = template["name"]
                     config["image"] = f"{template['name'].lower().replace(' ', '-')}"
                     if template.get("port"):
-                        config["port_mappings"] = [{"host_port": template["port"], "container_port": template["port"], "protocol": "tcp"}]
+                        desired_port = template["port"]
+                        actual_port = self._find_free_port(desired_port)
+                        port_warnings = []
+                        if actual_port != desired_port:
+                            port_warnings.append(f"Port {desired_port} in use, using {actual_port} instead")
+                            log(f"Port {desired_port} busy for {container_name}, using {actual_port}")
+                        config["port_mappings"] = [{"host_port": actual_port, "container_port": desired_port, "protocol": "tcp"}]
+                        if port_warnings:
+                            config["port_warning"] = "; ".join(port_warnings)
                     if template.get("serves_static"):
                         config["serves_static"] = True
                         config["static_path"] = template["static_path"]
@@ -2745,6 +2762,48 @@ small{color:#334155}
             config["autostart_on_boot"] = data["autostart_on_boot"]
         save_config(config)
         self.send_json({"message": "Configuration updated"})
+
+    def api_restart_device(self):
+        """Reboot the Android device."""
+        log("RESTART_DEVICE: Rebooting device...")
+        self.send_json({"message": "Device rebooting..."})
+        import threading
+        def _reboot():
+            import time
+            time.sleep(1)
+            os.system("svc power reboot 2>/dev/null || reboot 2>/dev/null || su -c reboot 2>/dev/null")
+        threading.Thread(target=_reboot, daemon=True).start()
+
+    def api_restart_server(self):
+        """Stop everything ANK and restart the server."""
+        log("RESTART_SERVER: Stopping all containers and restarting...")
+        import threading
+        def _restart():
+            import time
+            # Stop all running containers
+            for cfg_file in glob.glob(os.path.join(CONTAINERS_DIR, "*/config.json")):
+                try:
+                    with open(cfg_file) as f:
+                        cfg = json.load(f)
+                    if cfg.get("status") == "running":
+                        name = cfg.get("name")
+                        if name:
+                            log(f"RESTART_SERVER: Stopping {name}...")
+                            run_script("container.sh", "stop", name)
+                except Exception:
+                    pass
+            # Kill server processes
+            log("RESTART_SERVER: Killing server process...")
+            time.sleep(2)
+            os.system(f"fuser -k 8001/tcp 2>/dev/null")
+            time.sleep(1)
+            # Restart server
+            log("RESTART_SERVER: Starting server...")
+            ank_dir = os.path.dirname(ANK_DIR) if ANK_DIR.endswith("/ankfs") else ANK_DIR
+            os.system(f"setsid sh {ANK_DIR}/opt/ank/start-server.sh </dev/null >{ANK_DIR}/logs/server.log 2>&1 &")
+            log("RESTART_SERVER: Done")
+        threading.Thread(target=_restart, daemon=True).start()
+        self.send_json({"message": "Server restarting..."})
 
     def api_uninstall(self):
         import threading
