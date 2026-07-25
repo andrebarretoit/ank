@@ -2187,7 +2187,6 @@ small{color:#334155}
                     if template.get("serves_static"):
                         config["serves_static"] = True
                         config["static_path"] = template["static_path"]
-                    config["ssh_port"] = ssh_port
                     save_container_config(container_name, config)
 
                 if template.get("packages"):

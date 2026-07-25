@@ -689,11 +689,16 @@ cmd_start() {
         mount -t devpts devpts /dev/pts 2>/dev/null || true
         hostname CONTAINER_NAME_PLACEHOLDER 2>/dev/null
         cd /root 2>/dev/null || cd /
+
+        # Write PID tracking file for clean shutdown
+        echo $$ > /run/ank.procs
+
         echo "[ANK-INIT] Starting sshd on port CONTAINER_SSHD_PORT..."
         if [ -x /usr/sbin/sshd ]; then
             ssh-keygen -A 2>/dev/null
             /usr/sbin/sshd -D -p CONTAINER_SSHD_PORT -o PasswordAuthentication=yes -o PermitRootLogin=yes -o PidFile=/run/sshd.pid -e 2>/dev/null &
             _sshd_pid=$!
+            echo "$_sshd_pid" >> /run/ank.procs
             echo "[ANK-INIT] sshd started (PID: $_sshd_pid)"
         else
             echo "[ANK-INIT] WARN: sshd not found"
@@ -712,10 +717,12 @@ cmd_start() {
         fi
         if [ -n "$_svc" ]; then
             echo "[ANK-INIT] Starting service: $_svc (port: $_port, path: $_path)"
+            _svc_pid=""
             case "$_svc" in
                 nginx)
-                    mkdir -p /run/nginx 2>/dev/null
-                    nginx -g "daemon off;" -p "${_port:-8080}" 2>/dev/null & ;;
+                    printf "events {}\\nhttp { server { listen %s; server_name localhost; root %s; index index.html; location / { try_files $uri $uri/ =404; } } }\\n" "${_port:-8080}" "${_path:-/var/www/html}" > /tmp/nginx.conf
+                    nginx -c /tmp/nginx.conf -g "daemon off;" 2>/dev/null &
+                    _svc_pid=$! ;;
                 apache)
                     httpd -C "Listen ${_port:-9090}" \
                           -c "ServerName localhost" \
@@ -723,20 +730,27 @@ cmd_start() {
                           -c "<Directory ${_path:-/var/www/localhost/htdocs}>" \
                           -c "Require all granted" \
                           -c "</Directory>" \
-                          -DFOREGROUND 2>/dev/null & ;;
+                          -DFOREGROUND 2>/dev/null &
+                    _svc_pid=$! ;;
                 php)
-                    php82 -S 0.0.0.0:"${_port:-8000}" -t "${_path:-/var/www/php}" 2>/dev/null & ;;
+                    php82 -S 0.0.0.0:"${_port:-8000}" -t "${_path:-/var/www/php}" 2>/dev/null &
+                    _svc_pid=$! ;;
                 node)
-                    cd "${_path:-/var/www/app}" 2>/dev/null; node server.js 2>/dev/null & ;;
+                    cd "${_path:-/var/www/app}" 2>/dev/null; node server.js 2>/dev/null &
+                    _svc_pid=$! ;;
                 python)
-                    cd "${_path:-/var/www/app}" 2>/dev/null; python3 server.py 2>/dev/null & ;;
+                    cd "${_path:-/var/www/app}" 2>/dev/null; python3 server.py 2>/dev/null &
+                    _svc_pid=$! ;;
                 *)
-                    echo "$_svc" | sh 2>/dev/null & ;;
+                    echo "$_svc" | sh 2>/dev/null &
+                    _svc_pid=$! ;;
             esac
+            [ -n "$_svc_pid" ] && echo "$_svc_pid" >> /run/ank.procs
         fi
         if [ "$_s6" = "true" ] && [ -x /init ]; then
             echo "[ANK-INIT] Starting s6-overlay..."
             /init &
+            echo $! >> /run/ank.procs
         fi
         echo "[ANK-INIT] Container ready"
         while [ "$_ank_exit" = "0" ]; do
@@ -860,18 +874,30 @@ cmd_stop() {
 
     echo "Stopping container: $NAME"
 
-    # === Phase 1: Kill ALL processes in this container ===
-    echo "  Scanning for processes..."
+    # === Phase 1: Kill ALL processes ===
+    echo "  Killing all processes..."
     local KILL_COUNT=0
 
-    # Kill main PID tree first
+    # 1a: Kill by PID file (tracked in CONTAINER_INIT)
+    if [ -f "$ROOTFS/run/ank.procs" ]; then
+        while read -r cpid; do
+            [ -z "$cpid" ] && continue
+            kill -9 "$cpid" 2>/dev/null && KILL_COUNT=$((KILL_COUNT+1))
+        done < "$ROOTFS/run/ank.procs"
+    fi
+
+    # 1b: Kill sshd by PID file
+    if [ -f "$ROOTFS/run/sshd.pid" ]; then
+        local sshd_pid=$(cat "$ROOTFS/run/sshd.pid" 2>/dev/null)
+        [ -n "$sshd_pid" ] && kill -9 "$sshd_pid" 2>/dev/null && KILL_COUNT=$((KILL_COUNT+1))
+    fi
+
+    # 1c: Kill main PID tree
     if [ -n "$PID" ] && [ "$PID" != "null" ]; then
         echo "  Stopping main process (PID: $PID)..."
-        # Kill all children recursively
         local CHILDREN=""
         for child in $(ps -o pid= --ppid "$PID" 2>/dev/null); do
             CHILDREN="$CHILDREN $child"
-            # Get grandchildren too
             for gc in $(ps -o pid= --ppid "$child" 2>/dev/null); do
                 CHILDREN="$CHILDREN $gc"
             done
@@ -882,17 +908,22 @@ cmd_stop() {
         kill -9 "$PID" 2>/dev/null && KILL_COUNT=$((KILL_COUNT+1))
     fi
 
-    # Kill by cgroup if available
+    # 1d: Kill by cgroup if available
     if [ -d "/sys/fs/cgroup/ank/$NAME" ]; then
         while read -r cpid; do
             kill -9 "$cpid" 2>/dev/null && KILL_COUNT=$((KILL_COUNT+1))
         done < "/sys/fs/cgroup/ank/$NAME/cgroup.procs" 2>/dev/null
     fi
 
-    # Kill by name patterns matching this container's SSH port
+    # 1e: Kill any sshd on this container's port
     pkill -9 -f "sshd.*-p.*${SSH_PORT}" 2>/dev/null && KILL_COUNT=$((KILL_COUNT+1))
 
-    # Final sweep: find ANY process still running in this container's rootfs
+    # 1f: Kill any nginx/apache/php/node/python with this container's rootfs
+    pkill -9 -f "nginx.*-c.*/tmp/nginx" 2>/dev/null
+    pkill -9 -f "httpd.*-C.*Listen" 2>/dev/null
+    pkill -9 -f "php82.*-S" 2>/dev/null
+
+    # 1g: Final sweep — /proc scan for ANY process in this container's rootfs
     for pid_dir in /proc/[0-9]*; do
         local pid=$(basename "$pid_dir" 2>/dev/null)
         [ -z "$pid" ] && continue
@@ -908,7 +939,7 @@ cmd_stop() {
         fi
     done
 
-    # Wait and re-scan for orphaned processes
+    # Wait and re-scan for orphans
     sleep 1
     for pid_dir in /proc/[0-9]*; do
         local pid=$(basename "$pid_dir" 2>/dev/null)
@@ -924,6 +955,10 @@ cmd_stop() {
             kill -9 "$pid" 2>/dev/null && KILL_COUNT=$((KILL_COUNT+1))
         fi
     done
+
+    # Clean PID files
+    rm -f "$ROOTFS/run/ank.procs" "$ROOTFS/run/sshd.pid" 2>/dev/null
+
     echo "  All processes stopped (killed: $KILL_COUNT)"
 
     # === Phase 2: Unmount ALL chroot mounts ===
