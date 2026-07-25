@@ -632,11 +632,12 @@ EXPOSE 8080</textarea>
         <div class="modal-content">
             <div class="modal-header"><h3><i class="bi bi-pc-display-horizontal"></i> Add Node</h3><button class="modal-close"><i class="bi bi-x-lg"></i></button></div>
             <div class="modal-body">
-                <div class="form-group"><label>Hostname / IP</label><input type="text" id="node-hostname" placeholder="192.168.1.101" required></div>
-                <div class="form-group"><label>SSH Port</label><input type="number" id="node-ssh-port" value="22"></div>
-                <div class="form-group"><label>SSH Password</label><input type="password" id="node-ssh-pass"></div>
-                <div class="form-group"><label>Root Password</label><input type="password" id="node-root-pass"></div>
-                <div class="form-group"><label>Device Name</label><input type="text" id="node-device" placeholder="Galaxy S24"></div>
+                <p style="color:var(--text-muted);font-size:12px;margin-bottom:12px">Connect via the remote device's ANK web panel (HTTP API).</p>
+                <div class="form-group"><label>Panel IP / Hostname</label><input type="text" id="node-hostname" placeholder="192.168.1.215" required></div>
+                <div class="form-group"><label>Panel Port</label><input type="number" id="node-panel-port" value="8001"></div>
+                <div class="form-group"><label>Panel User</label><input type="text" id="node-user" value="admin"></div>
+                <div class="form-group"><label>Panel Password</label><input type="password" id="node-pass"></div>
+                <div class="form-group"><label>Alias (optional)</label><input type="text" id="node-alias" placeholder="Galaxy S24"></div>
             </div>
             <div class="modal-footer">
                 <button type="button" class="btn btn-ghost modal-close">Cancel</button>

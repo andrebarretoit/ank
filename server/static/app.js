@@ -1737,19 +1737,19 @@ async function loadNodes() {
 function showAddNodeModal() { showModal('add-node-modal'); }
 
 async function addNode() {
-    const hostname = document.getElementById('node-hostname')?.value?.trim();
-    if (!hostname) { toast('Hostname required', 'error'); return; }
+    const ip = document.getElementById('node-hostname')?.value?.trim();
+    if (!ip) { toast('Panel IP required', 'error'); return; }
     try {
-        toast(`Adding node "${hostname}"...`, 'info');
+        toast(`Connecting to "${ip}"...`, 'info');
         await api('POST', '/nodes', {
-            hostname,
-            ssh_port: parseInt(document.getElementById('node-ssh-port')?.value || '22'),
-            ssh_pass: document.getElementById('node-ssh-pass')?.value || '',
-            root_pass: document.getElementById('node-root-pass')?.value || '',
-            device: document.getElementById('node-device')?.value || ''
+            ip,
+            port: parseInt(document.getElementById('node-panel-port')?.value || '8001'),
+            user: document.getElementById('node-user')?.value?.trim() || 'admin',
+            password: document.getElementById('node-pass')?.value || '',
+            alias: document.getElementById('node-alias')?.value?.trim() || ''
         });
         hideModal('add-node-modal');
-        toast(`Node "${hostname}" added`, 'success');
+        toast(`Node "${ip}" added`, 'success');
         loadNodes();
     } catch (e) { toast(`Failed: ${e.message}`, 'error'); }
 }

@@ -3518,33 +3518,36 @@ small{color:#334155}
         if not nm:
             self.send_json({"error": "node_manager not available"}, 500)
             return
-        hostname = data.get("hostname", "").strip()
-        if not hostname:
-            self.send_json({"error": "hostname required"}, 400)
+        ip = data.get("ip", "").strip()
+        if not ip:
+            self.send_json({"error": "ip required"}, 400)
             return
-        result = nm.add_node(hostname, data)
-        if "error" in result:
-            self.send_json(result, 400)
-        else:
-            self.send_json(result)
+        try:
+            node = nm.add_node(data)
+            self.send_json(node)
+        except Exception as e:
+            self.send_json({"error": str(e)}, 400)
 
     def api_delete_node(self, node_id):
         nm = self._get_node_manager()
         if not nm:
             self.send_json({"error": "node_manager not available"}, 500)
             return
-        result = nm.delete_node(node_id)
-        if "error" in result:
-            self.send_json(result, 400)
+        result = nm.remove_node(node_id)
+        if result:
+            self.send_json({"ok": True, "message": f"Node {node_id} removed"})
         else:
-            self.send_json(result)
+            self.send_json({"error": "Node not found"}, 404)
 
     def api_refresh_node(self, node_id):
         nm = self._get_node_manager()
         if not nm:
             self.send_json({"error": "node_manager not available"}, 500)
             return
-        result = nm.refresh_node(node_id)
+        result = nm.get_node(node_id)
+        if not result:
+            self.send_json({"error": "Node not found"}, 404)
+            return
         self.send_json(result)
 
     # ============================================================
@@ -3802,6 +3805,11 @@ def main():
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
     print(f"Ank Container Engine v2.0.0")
     print(f"Starting server on 0.0.0.0:{PORT}...")
+
+    # Ensure server directory is in sys.path for module imports
+    _server_dir = os.path.dirname(os.path.abspath(__file__))
+    if _server_dir not in sys.path:
+        sys.path.insert(0, _server_dir)
 
     # Start auto-scaling orchestrator
     try:
