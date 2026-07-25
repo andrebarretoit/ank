@@ -557,7 +557,13 @@ async function pollContainerStatus(name, attempt) {
             setTimeout(() => pollContainerStatus(name, attempt + 1), 2000);
         } else {
             loadAll();
+            const detailModal = document.getElementById('detail-modal');
+            if (detailModal && detailModal.style.display !== 'none' && document.getElementById('detail-name')?.textContent === name) {
+                showContainerDetail(name);
+            }
         }
+    } catch (e) { loadAll(); }
+}
     } catch (e) { loadAll(); }
 }
 
