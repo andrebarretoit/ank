@@ -550,7 +550,6 @@ async function pollContainerStatus(name, attempt) {
             setTimeout(() => pollContainerStatus(name, attempt + 1), 2000);
         } else {
             loadAll();
-            if (currentContainer && currentContainer.name === name) showContainerDetail(name);
         }
     } catch (e) { loadAll(); }
 }
@@ -571,7 +570,14 @@ async function deleteContainer(name) {
     const ok = await confirmAction('Delete Container', `Delete "${name}"? This cannot be undone.`);
     if (!ok) return;
     setContainerLoading(name, 'delete');
-    try { await api('DELETE', `/containers/${name}`); hideModal('detail-modal'); toast(`Container "${name}" deleted`, 'success'); clearContainerLoading(name); } catch (e) { toast(`Failed: ${e.message}`, 'error'); clearContainerLoading(name); }
+    try {
+        await api('DELETE', `/containers/${name}`);
+        if (detailLogTimer) { clearInterval(detailLogTimer); detailLogTimer = null; }
+        currentContainer = null;
+        hideModal('detail-modal');
+        toast(`Container "${name}" deleted`, 'success');
+        clearContainerLoading(name);
+    } catch (e) { toast(`Failed: ${e.message}`, 'error'); clearContainerLoading(name); }
 }
 
 let currentContainer = null;
@@ -704,11 +710,16 @@ async function showContainerDetail(name) {
             if (detailLogTimer) return;
             detailLogTimer = setInterval(async () => {
                 try {
+                    if (!document.getElementById('detail-modal') || document.getElementById('detail-modal').classList.contains('hidden')) {
+                        clearInterval(detailLogTimer); detailLogTimer = null; return;
+                    }
                     const logs = await api('GET', `/containers/${name}/logs`);
                     const logText = typeof logs.logs === 'string' ? logs.logs : (Array.isArray(logs.logs) ? logs.logs.join('\n') : '');
                     const el = document.getElementById('detail-log-output');
                     if (el) el.textContent = logText || 'No logs available';
-                } catch (e) {}
+                } catch (e) {
+                    clearInterval(detailLogTimer); detailLogTimer = null;
+                }
             }, 3000);
         };
         startDetailLogPoll();
@@ -1280,10 +1291,11 @@ async function loadLogs(append) {
             return;
         }
         if (append) {
+            const wasAtBottom = viewer.scrollTop + viewer.clientHeight >= viewer.scrollHeight - 30;
             const frag = document.createDocumentFragment();
             data.lines.forEach(line => { const div = document.createElement('div'); div.className = 'log-entry'; div.innerHTML = colorizeLog(line); frag.appendChild(div); });
             viewer.appendChild(frag);
-            viewer.scrollTop = viewer.scrollHeight;
+            if (wasAtBottom) viewer.scrollTop = viewer.scrollHeight;
         } else {
             viewer.innerHTML = data.lines.map(line => { const div = document.createElement('div'); div.className = 'log-entry'; div.innerHTML = colorizeLog(line); return div.outerHTML; }).join('');
             viewer.scrollTop = viewer.scrollHeight;
