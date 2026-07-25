@@ -438,9 +438,8 @@ html[data-theme="light"] .icon-toggle .bi-moon-stars { display: inline; }
 .ssh-hint-cmd { flex: 1; background: rgba(0,0,0,0.3); padding: 8px 12px; border-radius: var(--radius-sm); font-family: var(--font-mono); font-size: 13px; color: #f0f6fc; letter-spacing: 0.3px; overflow-x: auto; white-space: nowrap; }
 
 /* Port Mappings */
-.port-row { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; flex-wrap: wrap; }
-.port-row input { background: var(--bg-tertiary); border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--text-primary); padding: 7px 10px; font-size: 13px; width: 84px; }
-.port-row select { background: var(--bg-tertiary); border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--text-primary); padding: 7px 10px; font-size: 13px; }
+.port-row { display: flex; gap: 8px; align-items: flex-end; margin-bottom: 10px; }
+.port-row input, .port-row select { background: var(--bg-tertiary); border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--text-primary); padding: 7px 10px; font-size: 13px; width: 100%; box-sizing: border-box; }
 .port-row .btn { padding: 5px 9px; }
 
 /* Empty State */

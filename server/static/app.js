@@ -749,11 +749,11 @@ function renderPortMappings(ports) {
     if (!ports.length) { list.innerHTML = ''; return; }
     list.innerHTML = ports.map((p, i) => `
         <div class="port-row">
-            <input type="number" placeholder="Host" value="${p.host_port || ''}" data-idx="${i}" data-field="host_port">
-            <span style="color:var(--text-muted)">:</span>
-            <input type="number" placeholder="Container" value="${p.container_port || ''}" data-idx="${i}" data-field="container_port">
-            <select data-idx="${i}" data-field="protocol"><option value="tcp" ${p.protocol==='tcp'?'selected':''}>TCP</option><option value="udp" ${p.protocol==='udp'?'selected':''}>UDP</option></select>
-            <button type="button" class="btn btn-ghost btn-sm remove-port" data-idx="${i}"><i class="bi bi-x-lg"></i></button>
+            <div style="flex:1"><label style="font-size:11px;color:var(--text-muted);margin-bottom:2px;display:block">Host Port</label><input type="number" placeholder="8080" value="${p.host_port || ''}" data-idx="${i}" data-field="host_port"></div>
+            <span style="color:var(--text-muted);align-self:flex-end;padding-bottom:10px">→</span>
+            <div style="flex:1"><label style="font-size:11px;color:var(--text-muted);margin-bottom:2px;display:block">Container Port</label><input type="number" placeholder="80" value="${p.container_port || ''}" data-idx="${i}" data-field="container_port"></div>
+            <div style="width:70px"><label style="font-size:11px;color:var(--text-muted);margin-bottom:2px;display:block">Proto</label><select data-idx="${i}" data-field="protocol"><option value="tcp" ${p.protocol==='tcp'?'selected':''}>TCP</option><option value="udp" ${p.protocol==='udp'?'selected':''}>UDP</option></select></div>
+            <button type="button" class="btn btn-ghost btn-sm remove-port" data-idx="${i}" style="align-self:flex-end;margin-bottom:6px"><i class="bi bi-x-lg"></i></button>
         </div>
     `).join('');
     list.querySelectorAll('.remove-port').forEach(btn => {
@@ -832,7 +832,7 @@ document.querySelectorAll('.modal-tab').forEach(tab => {
         tab.classList.add('active');
         document.getElementById(`mtab-${tab.dataset.mtab}`).classList.add('active');
         if (tab.dataset.mtab === 'terminal' && currentContainer) initContainerTerminal();
-        if (tab.dataset.mtab === 'files' && currentContainer) showFileExplorer(currentContainer.name);
+        if (tab.dataset.mtab === 'files' && currentContainer) { fileContainerName = currentContainer.name; showFileExplorer(currentContainer.name); }
     });
 });
 
