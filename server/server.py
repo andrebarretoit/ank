@@ -3279,7 +3279,7 @@ small{color:#334155}
     def _get_stack_manager(self):
         try:
             from stack_manager import StackManager
-            return StackManager(ANK_DIR)
+            return StackManager()
         except Exception:
             return None
 
@@ -3402,7 +3402,7 @@ small{color:#334155}
     def _get_backup_manager(self):
         try:
             from backup_manager import BackupManager
-            return BackupManager(ANK_DIR)
+            return BackupManager()
         except Exception:
             return None
 
@@ -3430,9 +3430,11 @@ small{color:#334155}
         params = parse_qs(query)
         remote_path = params.get("path", ["/"])[0]
         try:
-            from backup_browser import BackupBrowser
-            bb = BackupBrowser(ANK_DIR)
-            files = bb.browse(routine_id, remote_path)
+            bm = self._get_backup_manager()
+            if not bm:
+                self.send_json({"error": "backup_manager not available"}, 500)
+                return
+            files = bm.list_remote_files(routine_id, remote_path)
             self.send_json({"files": files, "path": remote_path})
         except Exception as e:
             self.send_json({"error": str(e)}, 500)
@@ -3454,9 +3456,19 @@ small{color:#334155}
 
     def api_execute_backup(self, routine_id):
         try:
+            bm = self._get_backup_manager()
+            if not bm:
+                self.send_json({"error": "backup_manager not available"}, 500)
+                return
+            routine = bm.get_routine(routine_id)
+            if not routine:
+                self.send_json({"error": "Routine not found"}, 404)
+                return
             from backup_runner import BackupRunner
-            br = BackupRunner(ANK_DIR)
-            result = br.execute(routine_id)
+            log_file = os.path.join(ANK_DIR, "logs", f"backup-{routine_id}.log")
+            os.makedirs(os.path.dirname(log_file), exist_ok=True)
+            br = BackupRunner(routine, log_file)
+            result = br.run()
             self.send_json(result)
         except Exception as e:
             self.send_json({"error": str(e)}, 500)
@@ -3479,7 +3491,7 @@ small{color:#334155}
     def _get_node_manager(self):
         try:
             from node_manager import NodeManager
-            return NodeManager(ANK_DIR)
+            return NodeManager()
         except Exception:
             return None
 
@@ -3830,7 +3842,7 @@ def main():
     try:
         from ank_orchestrator import Orchestrator as _Orchestrator
         from stack_manager import StackManager as _StackManager
-        _sm = _StackManager(ANK_DIR)
+        _sm = _StackManager()
         _orch = _Orchestrator(_sm)
         _orch.start(interval=10)
         print("Orchestrator started (auto-scaling enabled)")
