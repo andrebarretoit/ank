@@ -83,39 +83,33 @@ class StepConfirm(QWidget):
         self.labels["mode"].setText(f"Modo: {tier_name}")
         self.labels["mode"].setStyleSheet(f"color: {color}; font-size: 13px; font-weight: bold;")
 
+        is_rooted = device and getattr(device, 'is_rooted', False)
+
         if install_mode == "ank_ui":
+            method = "Magisk module" if is_rooted else "PRoot/Termux"
             self.labels["storage"].setText("Instalacao: ANK UI (launcher)")
             self.desc_label.setText(
                 "O instalador ira:\n"
-                "  1. Instalar a engine ANK (server + chroot)\n"
+                f"  1. Instalar o stack ANK completo ({method})\n"
                 "  2. Instalar o ANK Launcher\n"
                 "  3. Configurar como launcher padrao\n"
                 "  4. Reiniciar o dispositivo"
             )
-        elif tier == "lite":
-            self.labels["storage"].setText("Armazenamento: ~150MB (rootfs)")
-            self.desc_label.setText(
-                "O instalador ira:\n"
-                "  1. Instalar PRoot no device\n"
-                "  2. Baixar Alpine rootfs\n"
-                "  3. Configurar Python3 e servidor\n"
-                "  4. Criar configuracao inicial"
-            )
-        elif device and getattr(device, 'is_rooted', False):
+        elif is_rooted:
             self.labels["storage"].setText("Armazenamento: ~200MB (rootfs + containeres)")
             self.desc_label.setText(
                 "O instalador ira:\n"
-                "  1. Enviar o modulo Magisk para o device\n"
-                "  2. Instalar o modulo via Magisk Manager\n"
-                "  3. Configurar o servidor ANK\n"
+                "  1. Instalar o stack ANK completo (server + core + containers)\n"
+                "  2. Configurar servicos e rede\n"
+                "  3. Criar container padrao\n"
                 "  4. Reiniciar o dispositivo"
             )
         else:
-            self.labels["storage"].setText("Armazenamento: ~150MB (rootfs)")
+            self.labels["storage"].setText("Armazenamento: ~150MB (rootfs + containeres)")
             self.desc_label.setText(
                 "O instalador ira:\n"
-                "  1. Enviar o modulo Magisk para o device\n"
-                "  2. Instalar o modulo via Magisk Manager\n"
-                "  3. Configurar o servidor ANK\n"
-                "  4. Reiniciar o dispositivo"
+                "  1. Instalar PRoot/Termux no device\n"
+                "  2. Instalar o stack ANK completo (server + core + containers)\n"
+                "  3. Configurar servicos e rede\n"
+                "  4. Criar container padrao"
             )
