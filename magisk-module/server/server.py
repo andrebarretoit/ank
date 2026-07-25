@@ -686,7 +686,7 @@ def _ws_shell_session(handler, cols=80, rows=24):
             os.environ["SHELL"] = shell
             try:
                 if has_profile:
-                    os.execl(shell, shell, "-c", f". {profile}; exec {shell} --login")
+                    os.execl(shell, shell, "-c", f". {profile}; exec {shell}")
                 else:
                     os.execv(shell, [shell])
             except Exception:

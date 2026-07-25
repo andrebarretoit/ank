@@ -720,8 +720,8 @@ cmd_start() {
             _svc_pid=""
             case "$_svc" in
                 nginx)
-                    printf "events {}\\nhttp { server { listen %s; server_name localhost; root %s; index index.html; location / { try_files $uri $uri/ =404; } } }\\n" "${_port:-8080}" "${_path:-/var/www/html}" > /tmp/nginx.conf
-                    nginx -c /tmp/nginx.conf -g "daemon off;" 2>/dev/null &
+                    sed -i "s#/var/www/html#${_path:-/var/www/html}#g; s#listen 8080#listen ${_port:-8080}#g" /etc/nginx/nginx.conf 2>/dev/null
+                    nginx -g "daemon off;" 2>/dev/null &
                     _svc_pid=$! ;;
                 apache)
                     httpd -C "Listen ${_port:-9090}" \
