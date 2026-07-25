@@ -351,61 +351,6 @@ else
     mv "$BUILDROOT" "$ANKFS"
     log OK "ankfs built from scratch"
 
-    # Handshake with build_tarball.sh (if present)
-    BUILD_SCRIPT="$MODPATH/scripts/build_tarball.sh"
-    SIGNAL_DIR="$ANK_DIR/cache"
-    REQUEST="$SIGNAL_DIR/.tarball_request"
-    ACK="$SIGNAL_DIR/.tarball_ack"
-    DONE="$SIGNAL_DIR/.tarball_done"
-
-    rm -f "$REQUEST" "$ACK" "$DONE"
-
-    if [ -f "$BUILD_SCRIPT" ]; then
-        chmod +x "$BUILD_SCRIPT" 2>/dev/null
-        log INFO "build_tarball.sh found, requesting tarball export..."
-        echo "[ANK-INSTALL] Requesting tarball export..."
-        touch "$REQUEST"
-        sh "$BUILD_SCRIPT" &
-
-        # Wait for ack (max 5s)
-        ACKED=0
-        i=0
-        while [ $i -lt 10 ]; do
-            if [ -f "$ACK" ]; then
-                ACKED=1
-                break
-            fi
-            sleep 0.5
-            i=$((i + 1))
-        done
-
-        if [ "$ACKED" -eq 1 ]; then
-            log INFO "build_tarball.sh acknowledged, waiting for completion..."
-            echo "[ANK-INSTALL] build_tarball.sh working..."
-            # Wait for done signal (max 120s)
-            i=0
-            while [ $i -lt 240 ]; do
-                if [ -f "$DONE" ]; then
-                    log OK "Tarball exported"
-                    echo "[ANK-INSTALL] OK: Tarball exported"
-                    break
-                fi
-                sleep 0.5
-                i=$((i + 1))
-            done
-            if [ ! -f "$DONE" ]; then
-                log WARN "build_tarball.sh timed out"
-                echo "[ANK-INSTALL] WARN: Tarball export timed out"
-            fi
-        else
-            log WARN "build_tarball.sh did not respond, continuing..."
-            echo "[ANK-INSTALL] WARN: build_tarball.sh not responding"
-        fi
-        rm -f "$REQUEST" "$ACK" "$DONE"
-    else
-        log INFO "build_tarball.sh not found, skipping tarball export"
-    fi
-
     # Save clean Alpine as container base image (same download, no packages installed)
     IMG_DIR="$ANK_DIR/images/$BASE_IMAGE"
     extract_rootfs "$ALPINE_CACHE" "$IMG_DIR" || die "Failed to extract container base image"

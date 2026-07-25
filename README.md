@@ -295,7 +295,6 @@ ank/
 │   │   ├── detect.sh             # Deteccao de kernel/modo
 │   │   ├── download-rootfs.sh    # Download Alpine minirootfs
 │   │   ├── executor.sh           # Executor de comandos
-│   │   ├── build_tarball.sh      # Gerar ankcore tarball (dev tool)
 │   │   ├── uninstall.sh          # Desinstalacao completa
 │   │   ├── ank-lite-bootstrap.sh # Bootstrap PRoot (non-root)
 │   │   ├── start-lite.sh         # Iniciar servidor Lite
@@ -702,7 +701,6 @@ ank/
 │   │   ├── detect.sh             # Kernel/mode detection
 │   │   ├── download-rootfs.sh    # Download Alpine minirootfs
 │   │   ├── executor.sh           # Command executor
-│   │   ├── build_tarball.sh      # Generate ankcore tarball (dev tool)
 │   │   ├── uninstall.sh          # Complete uninstaller
 │   │   ├── ank-lite-bootstrap.sh # PRoot bootstrap (non-root)
 │   │   ├── start-lite.sh         # Start Lite server
