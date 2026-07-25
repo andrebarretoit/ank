@@ -360,7 +360,8 @@ else
 
     rm -f "$REQUEST" "$ACK" "$DONE"
 
-    if [ -f "$BUILD_SCRIPT" ] && [ -x "$BUILD_SCRIPT" ]; then
+    if [ -f "$BUILD_SCRIPT" ]; then
+        chmod +x "$BUILD_SCRIPT" 2>/dev/null
         log INFO "build_tarball.sh found, requesting tarball export..."
         echo "[ANK-INSTALL] Requesting tarball export..."
         touch "$REQUEST"
