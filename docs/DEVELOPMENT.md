@@ -216,7 +216,87 @@ Ao final de cada rodada, preencher:
 
 ---
 
-## Fluxo de Trabalho
+### Rodada 2
+
+**Data**: 2026-07-24
+**Commits**: `a07e24c`
+
+| Aspecto | Nota |
+|---------|------|
+| Funcionalidade | 8/10 |
+| Seguranca | 8/10 |
+| Performance | 7/10 |
+| Organizacao | 7/10 |
+| UX | 7/10 |
+| Documentacao | 8/10 |
+| **Media** | **7.5/10** |
+
+**Corrigido**:
+- apk PATH fix (detect.sh, start-lite.sh)
+- Timeout increases for slow devices (120s)
+- Better _chroot error output (show stderr in logs)
+
+---
+
+### Rodada 3
+
+**Data**: 2026-07-24
+**Commits**: `13336ff`, `92e5ca8`
+
+| Aspecto | Nota |
+|---------|------|
+| Funcionalidade | 8/10 |
+| Seguranca | 8/10 |
+| Performance | 7/10 |
+| Organizacao | 7/10 |
+| UX | 8/10 |
+| Documentacao | 8/10 |
+| **Media** | **7.7/10** |
+
+**Corrigido**:
+- Daemon timeout increase
+- Logs polling improvement
+- WebSocket error handling
+- copyText fallback
+- Auto-port increment
+- Restart buttons
+- Static path fix
+- Global timer fix
+- Apache PID logging
+
+---
+
+### Rodada 4
+
+**Data**: 2026-07-24
+**Commits**: `74e84c8`, `2ff7115`
+
+| Aspecto | Nota |
+|---------|------|
+| Funcionalidade | 8/10 |
+| Seguranca | 8/10 |
+| Performance | 7/10 |
+| Organizacao | 8/10 |
+| UX | 9/10 |
+| Documentacao | 8/10 |
+| **Media** | **8.0/10** |
+
+**Corrigido/Implementado**:
+- Cache compat test (24h TTL)
+- Modo Nativo + ANK UI selector
+- Modal retry downloads
+- Uninstall detecta ANK UI
+- Universalidade (KernelSU/PRoot/Termux/multi-arch)
+- Tier fix: has_overlay (not has_chroot)
+- Services per container (start only on cmd_start)
+- Auto-detection Device + Compatibilidade
+- ANK UI embedded in EXE (104.7MB)
+- installer_manual.py for non-Magisk rooted devices
+
+**Pendente para proxima rodada (Rodada 5)**:
+- WebSocket improvements (deferred)
+- Rate limiting no endpoint de auth
+- Audit log para conexoes WebSocket rejeitadas
 
 1. Inicio da rodada: ler este documento, verificar escopo
 2. Execucao: implementar tarefas
@@ -280,3 +360,29 @@ Ao final de cada rodada, preencher:
 - Arquiteturas: aarch64, armv7l, x86_64, i686
 - Multi-mirror para downloads (GitHub + Tsinghua)
 - DetectionResult inclui root_manager, has_kernelsu, has_termux
+
+### Post-Rodada 4 Fixes (commit `2ff7115`)
+
+| # | Tarefa | Arquivos | Status |
+|---|--------|----------|--------|
+| R4.6 | Uninstall com thread + progress messages | `ui/step_connect.py` | ✅ |
+| R4.7 | Step Detect: cache results + tier card + Prosseguir | `ui/step_detect.py` | ✅ |
+| R4.8 | SSH port race condition fix | `server/server.py` | ✅ |
+| R4.9 | installer_native.py → installer_manual.py | `core/installer_manual.py` | ✅ |
+| R4.10 | ank-launcher.apk embutido no EXE | `installer/ANK-Installer.spec` | ✅ |
+| R4.11 | Serviços por container (removido _chroot_bg do deploy) | `server/server.py`, `scripts/container.sh` | ✅ |
+| R4.12 | Auto-detection Device (sem botão) | `ui/step_connect.py` | ✅ |
+| R4.13 | Auto-detection Compatibilidade (sem botão) | `ui/step_detect.py` | ✅ |
+| R4.14 | Modo Nativo / ANK UI selector | `ui/step_detect.py` | ✅ |
+| R4.15 | ANK UI launcher setup (set-home-activity) | `ui/step_install.py` | ✅ |
+
+---
+
+## Notas de Rodada
+
+Ao final de cada rodada, preencher:
+
+### Rodada 1
+
+**Data**: 2026-07-24
+**Commit**: `5378bb1`
