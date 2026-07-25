@@ -923,14 +923,6 @@ small{color:#334155}
             )
             rsock.sendall(resp)
             log(f"WS_SHELL: 101 sent")
-            try:
-                self.rfile.close()
-            except Exception:
-                pass
-            try:
-                self.wfile.close()
-            except Exception:
-                pass
             cols = 80
             rows = 24
             try:
@@ -982,14 +974,6 @@ small{color:#334155}
                 b"\r\n"
             )
             rsock.sendall(resp)
-            try:
-                self.rfile.close()
-            except Exception:
-                pass
-            try:
-                self.wfile.close()
-            except Exception:
-                pass
             # Start PTY session (blocks until done)
             cols = 80
             rows = 24
