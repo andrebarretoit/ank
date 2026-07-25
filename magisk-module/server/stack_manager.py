@@ -159,6 +159,7 @@ class StackManager:
         if self._load_stack_config(name):
             raise ValueError(f"Stack '{name}' already exists")
         template = config.get("template", "nginx")
+        ankfile = config.get("ankfile", "")
         min_containers = max(1, config.get("min", 1))
         max_containers = max(min_containers, config.get("max", 10))
         port = config.get("port") or _find_free_port()
@@ -173,6 +174,7 @@ class StackManager:
         stack_config = {
             "name": name,
             "template": template,
+            "ankfile": ankfile,
             "port": port,
             "min": min_containers,
             "max": max_containers,
@@ -195,7 +197,7 @@ class StackManager:
         created = []
         for i in range(min_containers):
             cname = f"stack-{name}-{i + 1}"
-            if self._create_stack_container(name, cname, template, root_password):
+            if self._create_stack_container(name, cname, template, root_password, ankfile=ankfile):
                 created.append(cname)
                 stack_config["containers"].append(cname)
         self._save_stack_config(name, stack_config)
@@ -251,7 +253,8 @@ class StackManager:
         idx = current + 1
         cname = f"stack-{stack_name}-{idx}"
         root_password = stack_config.get("root_password", "ankstack")
-        if self._create_stack_container(stack_name, cname, stack_config["template"], root_password):
+        ankfile = stack_config.get("ankfile", "")
+        if self._create_stack_container(stack_name, cname, stack_config["template"], root_password, ankfile=ankfile):
             stack_config["containers"].append(cname)
             self._save_stack_config(stack_name, stack_config)
             self._setup_load_balancer(stack_name, stack_config)
@@ -464,37 +467,54 @@ class StackManager:
             return 0
         return 0
 
-    def _create_stack_container(self, stack_name, cname, template, root_password):
+    def _create_stack_container(self, stack_name, cname, template, root_password, ankfile=""):
         ssh_port = _get_free_ssh_port()
         image = f"ank-alpinebase-3.20"
         pkgs = ""
-        if template == "nginx":
-            pkgs = "nginx"
-        elif template == "apache":
-            pkgs = "apache2"
-        elif template == "php":
-            pkgs = "php82 php82-cgi"
-        elif template == "node":
-            pkgs = "nodejs npm"
-        elif template == "python":
-            pkgs = "python3"
-        _log(f"Creating container '{cname}' (template={template}, port={ssh_port})")
+        custom_workdir = "/"
+        custom_cmd = ""
+        custom_ports = []
+
+        if ankfile:
+            parsed = self._parse_ankfile(ankfile)
+            image = parsed.get("base_image", image)
+            pkgs = parsed.get("pkgs", "")
+            custom_workdir = parsed.get("workdir", "/")
+            custom_cmd = parsed.get("cmd", "")
+            custom_ports = parsed.get("ports", [])
+            template = "ankfile"
+            _log(f"Creating container '{cname}' (ankfile, image={image}, port={ssh_port})")
+        else:
+            if template == "nginx":
+                pkgs = "nginx"
+            elif template == "apache":
+                pkgs = "apache2"
+            elif template == "php":
+                pkgs = "php82 php82-cgi"
+            elif template == "node":
+                pkgs = "nodejs npm"
+            elif template == "python":
+                pkgs = "python3"
+            _log(f"Creating container '{cname}' (template={template}, port={ssh_port})")
+
         output, code = run_script(
             "container.sh", "create", cname, image, root_password, str(ssh_port), pkgs
         )
         if code != 0:
             _log(f"ERROR: Failed to create '{cname}': {output}")
             return False
+
+        if ankfile:
+            self._apply_ankfile_config(cname, parsed)
+
         stack_data_dir = os.path.join(STACKS_DIR, stack_name, "data")
         container_dir = os.path.join(CONTAINERS_DIR, cname)
         merged_dir = os.path.join(container_dir, "merged")
-        data_mount = self._get_data_mount_path(template)
+        data_mount = self._get_data_mount_path(template) if not ankfile else (parsed.get("volumes", ["/var/www/data"])[0] if parsed.get("volumes") else "/var/www/data")
         if data_mount and os.path.isdir(stack_data_dir) and os.path.isdir(merged_dir):
             target = os.path.join(merged_dir, data_mount.lstrip("/"))
             os.makedirs(target, exist_ok=True)
-            output, code = run_script(
-                "container.sh", "start", cname
-            )
+            output, code = run_script("container.sh", "start", cname)
             if code == 0:
                 self._bind_mount(stack_data_dir, target)
         output, code = run_script("container.sh", "start", cname)
@@ -502,6 +522,64 @@ class StackManager:
             _log(f"ERROR: Failed to start '{cname}': {output}")
             return False
         return True
+
+    def _parse_ankfile(self, content):
+        """Parse an Ankfile and return structured build info."""
+        result = {
+            "base_image": "ank-alpinebase-3.20",
+            "pkgs": "",
+            "workdir": "/",
+            "cmd": "",
+            "ports": [],
+            "volumes": [],
+            "root_password": "",
+            "run_commands": []
+        }
+        pkgs = []
+        for line in content.strip().split("\n"):
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line.startswith("FROM "):
+                base = line.split(" ", 1)[1].strip()
+                if not base.startswith("ank-"):
+                    base = f"ank-alpinebase-{base}" if not base.startswith("alpine") else f"ank-{base}"
+                result["base_image"] = base
+            elif line.startswith("PASSWD "):
+                result["root_password"] = line[7:].strip()
+            elif line.startswith("RUN "):
+                cmd = line[4:].strip()
+                result["run_commands"].append(cmd)
+                for pkg in cmd.replace("apk add", "").replace("--no-cache", "").replace("--allow-untrusted", "").split():
+                    if not pkg.startswith("-") and pkg not in ("apk", "add", "&&", "||"):
+                        pkgs.append(pkg)
+            elif line.startswith("CMD "):
+                result["cmd"] = line[4:].strip().strip('"').strip("'")
+            elif line.startswith("EXPOSE "):
+                try:
+                    result["ports"].append(int(line[7:].strip()))
+                except ValueError:
+                    pass
+            elif line.startswith("WORKDIR "):
+                result["workdir"] = line[8:].strip()
+            elif line.startswith("VOLUME "):
+                result["volumes"].append(line[7:].strip())
+        result["pkgs"] = " ".join(pkgs) if pkgs else ""
+        return result
+
+    def _apply_ankfile_config(self, cname, parsed):
+        """Apply ankfile WORKDIR/CMD/VOLUME to container config."""
+        config = load_container_config(cname)
+        if not config:
+            return
+        if parsed.get("workdir"):
+            config["workdir"] = parsed["workdir"]
+        if parsed.get("cmd"):
+            config["cmd"] = parsed["cmd"]
+        if parsed.get("ports"):
+            config["exposed_ports"] = parsed["ports"]
+        config["source"] = "ankfile"
+        save_container_config(cname, config)
 
     def _get_data_mount_path(self, template):
         paths = {

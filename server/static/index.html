@@ -591,7 +591,10 @@ EXPOSE 8080</textarea>
             <div class="modal-header"><h3><i class="bi bi-stack"></i> New Stack</h3><button class="modal-close"><i class="bi bi-x-lg"></i></button></div>
             <div class="modal-body">
                 <div class="form-group"><label>Stack Name</label><input type="text" id="stack-name" placeholder="my-stack" required></div>
-                <div class="form-group"><label>Image</label><select id="stack-image"><option value="nginx">nginx</option><option value="apache">apache</option><option value="php">php</option><option value="node">node</option><option value="python">python</option></select></div>
+                <div class="form-group"><label>Image</label><select id="stack-image" onchange="toggleStackAnkfile()"><option value="nginx">nginx</option><option value="apache">apache</option><option value="php">php</option><option value="node">node</option><option value="python">python</option><option value="ankfile">Custom (Ankfile)</option></select></div>
+                <div id="stack-ankfile-section" style="display:none">
+                    <div class="form-group"><label>Ankfile</label><textarea id="stack-ankfile" rows="8" style="width:100%;background:var(--bg-primary);color:var(--text-primary);border:1px solid var(--border);border-radius:6px;padding:10px;font-family:'JetBrains Mono',monospace;font-size:12px;resize:vertical" placeholder="FROM alpine-3.20&#10;PASSWD ank123&#10;RUN apk add --allow-untrusted nginx&#10;EXPOSE 8080&#10;WORKDIR /app"></textarea></div>
+                </div>
                 <div class="form-group"><label>Instances</label><input type="number" id="stack-instances" value="1" min="1" max="10"></div>
                 <div class="form-group"><label>LB Port (30000-39999)</label><input type="number" id="stack-lb-port" value="30000" min="30000" max="39999"></div>
                 <div class="form-group"><label class="checkbox-label"><input type="checkbox" id="stack-volume" checked><i class="bi bi-hdd"></i> Mount shared data/ volume</label></div>

@@ -1561,15 +1561,17 @@ async function loadStacks() {
             const running = (s.containers || []).filter(c => c.status === 'running').length;
             const total = (s.containers || []).length;
             const statusColor = running === total && total > 0 ? 'var(--success)' : running > 0 ? 'var(--warning)' : 'var(--danger)';
+            const tpl = s.template === 'ankfile' ? '<i class="bi bi-filetype-json"></i> Ankfile' : esc(s.template || s.image || '');
+            const lbPort = s.port || s.lb_port || '-';
             return `<div class="card-hover" style="background:var(--bg-secondary);border:1px solid var(--border);border-radius:12px;padding:16px;margin-bottom:12px">
                 <div style="display:flex;justify-content:space-between;align-items:center">
                     <div>
                         <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
                             <span style="width:8px;height:8px;border-radius:50%;background:${statusColor};flex-shrink:0"></span>
                             <strong style="color:var(--text-primary)">${esc(s.name)}</strong>
-                            <span style="color:var(--text-muted);font-size:12px">${esc(s.image || '')}</span>
+                            <span style="color:var(--text-muted);font-size:12px">${tpl}</span>
                         </div>
-                        <div style="color:var(--text-muted);font-size:12px">${running}/${total} running &middot; LB port ${s.lb_port || '-'}</div>
+                        <div style="color:var(--text-muted);font-size:12px">${running}/${total} running &middot; LB port ${lbPort}</div>
                     </div>
                     <div style="display:flex;gap:6px">
                         <button class="btn btn-sm btn-ghost" onclick="scaleStackUp('${esc(s.name)}')" title="Scale Up"><i class="bi bi-plus-lg"></i></button>
@@ -1584,6 +1586,12 @@ async function loadStacks() {
 
 function showCreateStackModal() { showModal('create-stack-modal'); }
 
+function toggleStackAnkfile() {
+    const sel = document.getElementById('stack-image')?.value;
+    const sec = document.getElementById('stack-ankfile-section');
+    if (sec) sec.style.display = sel === 'ankfile' ? 'block' : 'none';
+}
+
 async function createStack() {
     const name = document.getElementById('stack-name')?.value?.trim();
     const image = document.getElementById('stack-image')?.value;
@@ -1591,10 +1599,13 @@ async function createStack() {
     const lbPort = parseInt(document.getElementById('stack-lb-port')?.value || '30000');
     const volume = document.getElementById('stack-volume')?.checked;
     const trigger = document.getElementById('stack-trigger')?.value;
+    const ankfile = image === 'ankfile' ? (document.getElementById('stack-ankfile')?.value?.trim() || '') : '';
     if (!name) { toast('Stack name required', 'error'); return; }
+    if (image === 'ankfile' && !ankfile) { toast('Ankfile content required', 'error'); return; }
+    if (ankfile && !ankfile.includes('FROM')) { toast('Ankfile must have a FROM instruction', 'error'); return; }
     try {
         toast(`Creating stack "${name}"...`, 'info');
-        await api('POST', '/stacks', { name, image, instances, lb_port: lbPort, shared_volume: volume, trigger: trigger === 'none' ? null : trigger });
+        await api('POST', '/stacks', { name, template: image, instances, lb_port: lbPort, shared_volume: volume, trigger: trigger === 'none' ? null : trigger, ankfile });
         hideModal('create-stack-modal');
         toast(`Stack "${name}" created`, 'success');
         loadStacks();

@@ -3324,15 +3324,30 @@ small{color:#334155}
             self.send_json({"error": "stack_manager not available"}, 500)
             return
         name = data.get("name", "").strip()
-        image = data.get("image", "")
-        if not name or not image:
-            self.send_json({"error": "name and image required"}, 400)
+        template = data.get("template", data.get("image", "nginx"))
+        ankfile = data.get("ankfile", "")
+        if not name:
+            self.send_json({"error": "name required"}, 400)
             return
-        result = sm.create_stack(name, image, data)
-        if "error" in result:
-            self.send_json(result, 400)
-        else:
+        if not template and not ankfile:
+            self.send_json({"error": "template or ankfile required"}, 400)
+            return
+        try:
+            config = {
+                "name": name,
+                "template": template or "nginx",
+                "ankfile": ankfile,
+                "min": data.get("min", data.get("instances", 1)),
+                "max": data.get("max", 10),
+                "port": data.get("lb_port", data.get("port")),
+                "trigger": data.get("trigger", "requests"),
+                "root_password": data.get("root_password", "ankstack"),
+                "load_balance": data.get("load_balance", "least_conn")
+            }
+            result = sm.create_stack(config)
             self.send_json(result)
+        except Exception as e:
+            self.send_json({"error": str(e)}, 400)
 
     def api_scale_stack(self, name, data):
         sm = self._get_stack_manager()
