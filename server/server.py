@@ -377,24 +377,24 @@ HTTPServer(('0.0.0.0', 8000), Handler).serve_forever()"""
 
 S6_SERVICES = {
     "nginx": {
-        "run": "#!/command/execlineb -P\nnginx -g \"daemon off;\"",
-        "finish": "#!/command/execlineb -P\ns6-svc -d /run/service/nginx"
+        "run": "#!/bin/sh\nexec nginx -g 'daemon off;'",
+        "finish": "#!/bin/sh\ntrue"
     },
     "apache": {
-        "run": "#!/command/execlineb -P\nhttpd -D FOREGROUND -f /etc/apache2/httpd.conf",
-        "finish": "#!/command/execlineb -P\ns6-svc -d /run/service/apache"
+        "run": "#!/bin/sh\nexec httpd -D FOREGROUND -f /etc/apache2/httpd.conf",
+        "finish": "#!/bin/sh\ntrue"
     },
     "php": {
-        "run": "#!/command/execlineb -P\nphp-cgi -b 0.0.0.0:8000",
-        "finish": "#!/command/execlineb -P\ns6-svc -d /run/service/php"
+        "run": "#!/bin/sh\nexec php-cgi -b 0.0.0.0:8000",
+        "finish": "#!/bin/sh\ntrue"
     },
     "node": {
-        "run": "#!/command/execlineb -P\nnode /var/www/app/server.js",
-        "finish": "#!/command/execlineb -P\ns6-svc -d /run/service/node"
+        "run": "#!/bin/sh\ncd /var/www/app && exec node server.js",
+        "finish": "#!/bin/sh\ntrue"
     },
     "python": {
-        "run": "#!/command/execlineb -P\npython3 /var/www/app/server.py",
-        "finish": "#!/command/execlineb -P\ns6-svc -d /run/service/python"
+        "run": "#!/bin/sh\ncd /var/www/app && exec python3 server.py",
+        "finish": "#!/bin/sh\ntrue"
     }
 }
 
@@ -1991,7 +1991,7 @@ small{color:#334155}
             "image": "apache-3.20",
             "base": "apache-3.20",
             "packages": ["apache2", "curl"],
-            "port": 80,
+            "port": 9090,
             "category": "server",
             "serves_static": True,
             "static_path": "/var/www/localhost/htdocs"
@@ -2191,7 +2191,7 @@ small{color:#334155}
                     _chroot(f'mkdir -p /etc/ank')
                     _write_file(os.path.join(merged, 'etc/ank/service'), 'apache')
                     _write_s6_service(merged, 'apache')
-                    _write_portfwd(merged, 80)
+                    _write_portfwd(merged, 9090)
 
                 elif template_id == "php":
                     php_dir = "/var/www/php"
@@ -2262,6 +2262,7 @@ small{color:#334155}
         workdir = "/"
         volumes = []
         root_password = ""
+        cmd_line = ""
 
         for line in lines:
             line = line.strip()
@@ -2273,6 +2274,8 @@ small{color:#334155}
                 root_password = line[7:].strip()
             elif line.startswith('RUN '):
                 commands.append(line[4:].strip())
+            elif line.startswith('CMD '):
+                cmd_line = line[4:].strip().strip('"').strip("'")
             elif line.startswith('EXPOSE '):
                 try:
                     ports.append(int(line[7:].strip()))
@@ -2382,6 +2385,15 @@ small{color:#334155}
                     else:
                         with open(log_path, "a") as lf:
                             lf.write(f"OK: {output[-300:]}\n")
+
+                if cmd_line:
+                    ank_dir = os.path.join(merged, "etc", "ank")
+                    os.makedirs(ank_dir, exist_ok=True)
+                    with open(os.path.join(ank_dir, "service"), "w") as f:
+                        f.write(cmd_line + "\n")
+                    log(f"Ankfile CMD: {cmd_line}")
+                    with open(log_path, "a") as lf:
+                        lf.write(f"CMD: {cmd_line}\n")
 
                 config = load_container_config(container_name)
                 if config:

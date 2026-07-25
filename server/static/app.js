@@ -395,8 +395,8 @@ function populateImageSelect(images) {
         <optgroup label="--- Templates ---">
             <option value="template:python">Python 3.12 (Alpine + Python)</option>
             <option value="template:nginx">Nginx Static (Web server :8080)</option>
-            <option value="template:apache">Apache Static (Web server :8080)</option>
-            <option value="template:php">PHP 8.2 (Alpine + PHP :8080)</option>
+            <option value="template:apache">Apache Static (Web server :9090)</option>
+            <option value="template:php">PHP 8.2 (Alpine + PHP :8000)</option>
             <option value="template:node">Node.js 20 (Alpine + Node :3000)</option>
         </optgroup>
     `;
