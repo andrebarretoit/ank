@@ -523,6 +523,11 @@ mkdir -p "$ANKFS/opt/ank/static" "$ANK_DIR/core"
 cp "$SRC/server/server.py" "$ANKFS/opt/ank/server.py"
 chmod 755 "$ANKFS/opt/ank/server.py"
 
+# Copy all server modules (stack_manager, node_manager, backup_*, ank_*, etc.)
+for f in "$SRC/server/"*.py; do
+    [ -f "$f" ] && cp "$f" "$ANKFS/opt/ank/" && chmod 755 "$ANKFS/opt/ank/$(basename "$f")"
+done
+
 SC=0
 cp -r "$SRC/server/static/"* "$ANKFS/opt/ank/static/" 2>/dev/null
 SC=$(find "$ANKFS/opt/ank/static/" -type f 2>/dev/null | wc -l)
