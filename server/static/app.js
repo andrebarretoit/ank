@@ -243,6 +243,24 @@ function esc(s) {
     return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
+function copyText(text) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).catch(() => copyTextFallback(text));
+    } else {
+        copyTextFallback(text);
+    }
+}
+function copyTextFallback(text) {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand('copy'); } catch (e) {}
+    document.body.removeChild(ta);
+}
+
 async function loadAll() {
     try {
         const [containers, images, status, info] = await Promise.all([
@@ -665,6 +683,26 @@ async function showContainerDetail(name) {
                     }
                 } catch (e) { clearInterval(pollBuilding); }
             }, 3000);
+        }
+
+        // Poll logs in real-time while modal is open
+        let detailLogTimer = null;
+        const startDetailLogPoll = () => {
+            if (detailLogTimer) return;
+            detailLogTimer = setInterval(async () => {
+                try {
+                    const logs = await api('GET', `/containers/${name}/logs`);
+                    const logText = typeof logs.logs === 'string' ? logs.logs : (Array.isArray(logs.logs) ? logs.logs.join('\n') : '');
+                    const el = document.getElementById('detail-log-output');
+                    if (el) el.textContent = logText || 'No logs available';
+                } catch (e) {}
+            }, 3000);
+        };
+        startDetailLogPoll();
+        const detailModal = document.getElementById('detail-modal');
+        const origClose = detailModal?.close;
+        if (detailModal) {
+            detailModal._logCleanup = () => { if (detailLogTimer) { clearInterval(detailLogTimer); detailLogTimer = null; } };
         }
     } catch (e) { toast(`Failed: ${e.message}`, 'error'); }
 }
@@ -1172,14 +1210,20 @@ async function loadSettings() {
 document.querySelectorAll('.modal-close').forEach(btn => {
     btn.addEventListener('click', () => {
         const modal = btn.closest('.modal');
-        if (modal && modal.id === 'detail-modal') closeContainerTerminal();
+        if (modal && modal.id === 'detail-modal') {
+            closeContainerTerminal();
+            if (modal._logCleanup) modal._logCleanup();
+        }
         modal.classList.add('hidden');
     });
 });
 document.querySelectorAll('.modal-overlay').forEach(ov => {
     ov.addEventListener('click', () => {
         const modal = ov.closest('.modal');
-        if (modal && modal.id === 'detail-modal') closeContainerTerminal();
+        if (modal && modal.id === 'detail-modal') {
+            closeContainerTerminal();
+            if (modal._logCleanup) modal._logCleanup();
+        }
         modal.classList.add('hidden');
     });
 });

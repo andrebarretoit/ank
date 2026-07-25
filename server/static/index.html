@@ -384,7 +384,7 @@ EXPOSE 8080</textarea>
                     <div id="ssh-hint" class="ssh-hint" style="display:none;">
                         <div class="ssh-hint-header"><i class="bi bi-terminal"></i> SSH Access</div>
                         <code id="ssh-hint-cmd" class="ssh-hint-cmd">ssh root@0.0.0.0:0</code>
-                        <button class="btn btn-sm btn-ghost" onclick="navigator.clipboard.writeText(this.previousElementSibling.textContent);toast('Copied!','success')"><i class="bi bi-clipboard"></i></button>
+                        <button class="btn btn-sm btn-ghost" onclick="copyText(this.previousElementSibling.textContent);toast('Copied!','success')"><i class="bi bi-clipboard"></i></button>
                     </div>
                     <div class="detail-logs">
                         <div class="card-header"><h4><i class="bi bi-journal-text"></i> Logs</h4></div>

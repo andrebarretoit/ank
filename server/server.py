@@ -769,6 +769,21 @@ small{color:#334155}
         except Exception:
             pass
 
+    def _ws_send_error(self, code, message):
+        """Send error response during WebSocket upgrade (raw HTTP)."""
+        try:
+            body = json.dumps({"error": message}).encode("utf-8")
+            resp = (
+                f"HTTP/1.1 {code} Error\r\n"
+                f"Content-Type: application/json\r\n"
+                f"Content-Length: {len(body)}\r\n"
+                f"Connection: close\r\n"
+                f"\r\n"
+            ).encode() + body
+            self.request.sendall(resp)
+        except Exception:
+            pass
+
     def send_json(self, data, code=200):
         encoded = json.dumps(data, separators=(',', ':')).encode("utf-8")
         self.send_response(code)
@@ -818,13 +833,14 @@ small{color:#334155}
             upgrade = self.headers.get("Upgrade", "").lower()
             ws_key = self.headers.get("Sec-WebSocket-Key", "")
             if upgrade != "websocket" or not ws_key:
-                self.send_error(400, "Invalid WebSocket upgrade request")
+                self._ws_send_error(400, "Invalid WebSocket upgrade request")
                 return
             # Auth: validate token from query param
             qs = parse_qs(parsed.query)
             ws_token = qs.get("token", [None])[0]
             if not _validate_token(ws_token):
-                self.send_error(401, "Unauthorized")
+                log(f"WS_SHELL: auth failed from {self.client_address[0]} token={ws_token[:8] if ws_token else 'None'}...")
+                self._ws_send_error(401, "Unauthorized")
                 return
             accept = _ws_accept_key(ws_key)
             log(f"WS_SHELL: upgrade from {self.client_address[0]}")
@@ -864,26 +880,27 @@ small{color:#334155}
             upgrade = self.headers.get("Upgrade", "").lower()
             ws_key = self.headers.get("Sec-WebSocket-Key", "")
             if upgrade != "websocket" or not ws_key:
-                self.send_error(400, "Invalid WebSocket upgrade request")
+                self._ws_send_error(400, "Invalid WebSocket upgrade request")
                 return
             # Auth: validate token from query param
             qs = parse_qs(parsed.query)
             ws_token = qs.get("token", [None])[0]
             if not _validate_token(ws_token):
-                self.send_error(401, "Unauthorized")
+                log(f"WS_TERMINAL: auth failed from {self.client_address[0]} token={ws_token[:8] if ws_token else 'None'}...")
+                self._ws_send_error(401, "Unauthorized")
                 return
             container_name = path.split("/")[3]
             # Verify container is actually running
             config = load_container_config(container_name)
             if not config:
-                self.send_error(404, f"Container '{container_name}' not found")
+                self._ws_send_error(404, f"Container '{container_name}' not found")
                 return
             if config.get("status") == "running" and not check_container_running(container_name):
                 config["status"] = "stopped"
                 config["pid"] = None
                 save_container_config(container_name, config)
             if config.get("status") != "running":
-                self.send_error(400, f"Container '{container_name}' is not running (status: {config.get('status', 'unknown')})")
+                self._ws_send_error(400, f"Container '{container_name}' is not running (status: {config.get('status', 'unknown')})")
                 return
             # Accept WebSocket — send 101 on raw socket
             accept = _ws_accept_key(ws_key)
@@ -1995,6 +2012,19 @@ small{color:#334155}
                         r.stderr = f"TIMEOUT after {timeout}s"
                         return r
 
+                def _chroot_bg(cmd):
+                    """Run command in chroot without waiting (for daemons)."""
+                    wrapped = "export PATH=/bin:/sbin:/usr/bin:/usr/sbin; " + cmd
+                    full = f"chroot {merged} /bin/sh -c '{wrapped}'"
+                    try:
+                        subprocess.Popen(
+                            ["/system/bin/sh", "-c", full],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                            start_new_session=True
+                        )
+                    except Exception as e:
+                        log(f"WARNING: _chroot_bg failed: {e}")
+
                 _chroot('mkdir -p /etc; echo "nameserver 8.8.8.8" > /etc/resolv.conf; echo "nameserver 8.8.4.4" >> /etc/resolv.conf')
 
                 config = load_container_config(container_name)
@@ -2023,32 +2053,32 @@ small{color:#334155}
                     _chroot(f'mkdir -p {static_dir} /run/nginx')
                     _write_file(os.path.join(merged, static_dir.lstrip('/'), 'index.html'), ANK_NGINX_HTML)
                     _write_file(os.path.join(merged, 'etc/nginx/nginx.conf'), ANK_NGINX_CONF)
-                    _chroot('nginx -g "daemon off;" &')
+                    _chroot_bg('nginx -g "daemon off;"')
 
                 elif template_id == "apache":
                     static_dir = template["static_path"]
                     _chroot(f'mkdir -p {static_dir}')
                     _write_file(os.path.join(merged, static_dir.lstrip('/'), 'index.html'), ANK_APACHE_HTML)
-                    _chroot('httpd -f -p 8080 -h /var/www/localhost/htdocs &')
+                    _chroot_bg('httpd -f -p 8080 -h /var/www/localhost/htdocs')
 
                 elif template_id == "php":
                     php_dir = "/var/www/php"
                     _chroot(f'mkdir -p {php_dir}')
                     _write_file(os.path.join(merged, php_dir.lstrip('/'), 'index.php'), ANK_PHP_INDEX)
-                    _chroot(f'cd {php_dir} && php82 -S 0.0.0.0:8080 &')
+                    _chroot_bg(f'cd {php_dir} && php82 -S 0.0.0.0:8080')
 
                 elif template_id == "node":
                     node_dir = "/var/www/app"
                     _chroot(f'mkdir -p {node_dir}')
                     _write_file(os.path.join(merged, node_dir.lstrip('/'), 'server.js'), ANK_NODE_SERVER)
                     _write_file(os.path.join(merged, node_dir.lstrip('/'), 'package.json'), '{"name":"ank-node-app","version":"1.0.0","main":"server.js"}')
-                    _chroot(f'cd {node_dir} && node server.js &')
+                    _chroot_bg(f'cd {node_dir} && node server.js')
 
                 elif template_id == "python":
                     py_dir = "/var/www/app"
                     _chroot(f'mkdir -p {py_dir}')
                     _write_file(os.path.join(merged, py_dir.lstrip('/'), 'server.py'), ANK_PYTHON_SERVER)
-                    _chroot(f'cd {py_dir} && python3 server.py &')
+                    _chroot_bg(f'cd {py_dir} && python3 server.py')
 
                 cfg = load_container_config(container_name)
                 if cfg:
