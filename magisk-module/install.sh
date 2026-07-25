@@ -256,14 +256,6 @@ if [ ! -s "$ANKCORE" ]; then
     ANKCORE="$MODPATH/ankfs/ankcore-${ARCH_NAME}.tar.gz"
 fi
 
-# Also check local cache from previous build-from-scratch
-LOCAL_CACHE="$ANK_DIR/cache/ankcore-${ARCH_NAME}.tar.gz"
-if [ ! -s "$ANKCORE" ] && [ -s "$LOCAL_CACHE" ]; then
-    log INFO "Using locally cached tarball"
-    echo "[ANK-INSTALL] Using locally cached tarball..."
-    ANKCORE="$LOCAL_CACHE"
-fi
-
 TARBALL_FOUND=0
 [ -s "$ANKCORE" ] && TARBALL_FOUND=1
 
@@ -358,20 +350,6 @@ else
     rm -rf "$ANKFS"
     mv "$BUILDROOT" "$ANKFS"
     log OK "ankfs built from scratch"
-
-    # Save tarball for future reuse
-    log INFO "Saving ankcore tarball for future installs..."
-    echo "[ANK-INSTALL] Saving ankcore tarball..."
-    mkdir -p "$ANK_DIR/cache"
-    cd "$ANKFS" && tar czf "$ANK_DIR/cache/ankcore-${ARCH_NAME}.tar.gz" . 2>>"$LOG_FILE"; cd /
-    if [ -s "$ANK_DIR/cache/ankcore-${ARCH_NAME}.tar.gz" ]; then
-        TARBALL_SIZE=$(stat -c%s "$ANK_DIR/cache/ankcore-${ARCH_NAME}.tar.gz" 2>/dev/null || echo 0)
-        log OK "ankcore tarball saved (${TARBALL_SIZE} bytes)"
-        echo "[ANK-INSTALL] OK: ankcore tarball saved"
-    else
-        log WARN "Failed to save tarball"
-        echo "[ANK-INSTALL] WARN: Failed to save tarball"
-    fi
 
     # Save clean Alpine as container base image (same download, no packages installed)
     IMG_DIR="$ANK_DIR/images/$BASE_IMAGE"
