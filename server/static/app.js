@@ -1504,11 +1504,11 @@ const ANKFILE_EXAMPLE = `# ANK Example: Cloudreve (personal cloud storage)
 FROM alpine-3.20
 PASSWD ank123
 RUN apk add --allow-untrusted curl tar sqlite
-RUN mkdir -p /data/cloudreve
-RUN curl -L https://github.com/cloudreve/cloudreve/releases/download/4.18.0/cloudreve_4.18.0_linux_armv7.tar.gz | tar xz -C /usr/local/bin
+RUN mkdir -p /opt/cloudreve
+RUN curl -L https://github.com/cloudreve/cloudreve/releases/download/4.18.0/cloudreve_4.18.0_linux_armv7.tar.gz | tar xz -C /opt/cloudreve
 EXPOSE 5212
-WORKDIR /usr/local/bin
-CMD cloudreve --base-dir /data/cloudreve -l :5212`;
+WORKDIR /opt/cloudreve
+CMD /opt/cloudreve/cloudreve`;
 
 document.getElementById('ankfile-build-btn')?.addEventListener('click', async () => {
     const content = document.getElementById('ankfile-content')?.value?.trim();
