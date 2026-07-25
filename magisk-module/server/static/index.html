@@ -417,52 +417,69 @@ EXPOSE 8080</textarea>
                 </div>
                 <div id="mtab-settings" class="mtab">
                     <form id="detail-settings-form">
-                        <div class="form-group"><label class="checkbox-label"><input type="checkbox" id="detail-autostart"><i class="bi bi-power"></i> Autostart on boot</label></div>
-                        <div class="form-row">
-                            <div class="form-group"><label>Root Password</label><input type="password" id="detail-root-password" placeholder="min 4 chars" minlength="4"></div>
-                            <div class="form-group"><label>SSH Port</label><input type="number" id="detail-ssh-port" placeholder="auto" min="1024" max="65535" readonly></div>
-                        </div>
-                        <div class="form-row">
-                            <div class="form-group"><label>Memory Limit</label><select id="detail-mem-limit"><option value="128M">128 MB</option><option value="256M">256 MB</option><option value="512M">512 MB</option><option value="1G">1 GB</option></select></div>
-                            <div class="form-group"><label>CPU %</label><input type="number" id="detail-cpu-limit" value="50" min="1" max="100"></div>
-                        </div>
-                        <div class="form-group">
-                            <label>Network Policies</label>
-                            <div class="checkbox-group">
-                                <label class="checkbox-label"><input type="checkbox" id="detail-p2p"><i class="bi bi-diagram-3"></i> P2P</label>
-                                <label class="checkbox-label"><input type="checkbox" id="detail-host"><i class="bi bi-phone"></i> Host Access</label>
-                                <label class="checkbox-label"><input type="checkbox" id="detail-internet"><i class="bi bi-globe"></i> Internet</label>
+                        <div class="settings-section">
+                            <div class="settings-section-title"><i class="bi bi-gear"></i> General</div>
+                            <div class="form-group"><label class="checkbox-label"><input type="checkbox" id="detail-autostart"><i class="bi bi-power"></i> Autostart on boot</label></div>
+                            <div class="form-group"><label class="checkbox-label"><input type="checkbox" id="detail-s6"><i class="bi bi-box-seam"></i> Enable s6 supervisor</label>
+                                <p class="form-hint">Start s6-overlay for additional custom services</p>
                             </div>
                         </div>
-                        <div class="form-group">
-                            <label>Port Mappings</label>
-                            <div id="port-mappings-list"></div>
-                            <button type="button" id="add-port-btn" class="btn btn-ghost btn-sm"><i class="bi bi-plus-lg"></i> Add Port</button>
+                        <div class="settings-section">
+                            <div class="settings-section-title"><i class="bi bi-key"></i> Access</div>
+                            <div class="form-row">
+                                <div class="form-group"><label>Root Password</label><input type="password" id="detail-root-password" placeholder="min 4 chars" minlength="4"></div>
+                                <div class="form-group"><label>SSH Port</label><input type="number" id="detail-ssh-port" placeholder="auto" min="1024" max="65535" readonly></div>
+                            </div>
                         </div>
-                        <div class="form-group">
-                            <label class="checkbox-label"><input type="checkbox" id="detail-serves-static"><i class="bi bi-globe2"></i> Serves Static Files</label>
+                        <div class="settings-section">
+                            <div class="settings-section-title"><i class="bi bi-cpu"></i> Resources</div>
+                            <div class="form-row">
+                                <div class="form-group"><label>Memory Limit</label><select id="detail-mem-limit"><option value="128M">128 MB</option><option value="256M">256 MB</option><option value="512M">512 MB</option><option value="1G">1 GB</option></select></div>
+                                <div class="form-group"><label>CPU %</label><input type="number" id="detail-cpu-limit" value="50" min="1" max="100"></div>
+                            </div>
                         </div>
-                        <div class="form-group">
-                            <label>Static Files Path</label>
-                            <input type="text" id="detail-static-path" placeholder="/var/www/html">
-                            <p class="form-hint">Path inside container where static files are served</p>
+                        <div class="settings-section">
+                            <div class="settings-section-title"><i class="bi bi-folder2"></i> Services</div>
+                            <div class="form-group">
+                                <label class="checkbox-label"><input type="checkbox" id="detail-serves-static"><i class="bi bi-globe2"></i> Serves Static Files</label>
+                            </div>
+                            <div class="form-group">
+                                <label>Static Files Path</label>
+                                <input type="text" id="detail-static-path" placeholder="/var/www/html">
+                                <p class="form-hint">Path inside container where static files are served</p>
+                            </div>
                         </div>
                         <button type="submit" class="btn btn-primary"><i class="bi bi-check-lg"></i> Save</button>
                     </form>
                 </div>
                 <div id="mtab-network" class="mtab">
                     <form id="detail-network-form">
-                        <div class="form-group">
-                            <label>Container IP</label>
-                            <input type="text" id="detail-container-ip" placeholder="10.20.30.2" readonly>
-                            <p class="form-hint">IP assigned from the container subnet</p>
+                        <div class="settings-section">
+                            <div class="settings-section-title"><i class="bi bi-info-circle"></i> Info</div>
+                            <div class="form-group">
+                                <label>Container IP</label>
+                                <input type="text" id="detail-container-ip" placeholder="10.20.30.2" readonly>
+                            </div>
+                            <div class="form-group">
+                                <label>Subnet</label>
+                                <input type="text" id="detail-container-subnet" placeholder="10.20.30.0/24" readonly>
+                                <p class="form-hint">Read-only — configured in global network settings</p>
+                            </div>
                         </div>
-                        <div class="form-group">
-                            <label>Subnet</label>
-                            <input type="text" id="detail-container-subnet" placeholder="10.20.30.0/24" readonly>
-                            <p class="form-hint">Read-only — configured in global network settings</p>
+                        <div class="settings-section">
+                            <div class="settings-section-title"><i class="bi bi-plug"></i> Port Mappings</div>
+                            <div id="port-mappings-list"></div>
+                            <button type="button" id="add-port-btn" class="btn btn-ghost btn-sm"><i class="bi bi-plus-lg"></i> Add Port</button>
                         </div>
-                        <button type="submit" class="btn btn-primary"><i class="bi bi-check-lg"></i> Save Network Settings</button>
+                        <div class="settings-section">
+                            <div class="settings-section-title"><i class="bi bi-shield-lock"></i> Policies</div>
+                            <div class="checkbox-group">
+                                <label class="checkbox-label"><input type="checkbox" id="detail-p2p"><i class="bi bi-diagram-3"></i> Inter-container P2P</label>
+                                <label class="checkbox-label"><input type="checkbox" id="detail-host"><i class="bi bi-phone"></i> Host Access</label>
+                                <label class="checkbox-label"><input type="checkbox" id="detail-internet"><i class="bi bi-globe"></i> Internet Access</label>
+                            </div>
+                        </div>
+                        <button type="submit" class="btn btn-primary"><i class="bi bi-check-lg"></i> Save Network</button>
                     </form>
                 </div>
                 <div id="mtab-terminal" class="mtab">

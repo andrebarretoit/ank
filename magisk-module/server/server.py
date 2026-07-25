@@ -27,6 +27,8 @@ from http.server import HTTPServer, ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs, unquote
 from datetime import datetime, timedelta
 
+_port_lock = threading.Lock()
+
 ANK_DIR = os.environ.get("ANK_DIR", "/data/local/ank")
 ANK_SDCARD = "/sdcard/AndroidKonteiner"
 CONTAINERS_DIR = os.path.join(ANK_DIR, "containers")
@@ -381,11 +383,11 @@ S6_SERVICES = {
         "finish": "#!/bin/sh\ntrue"
     },
     "apache": {
-        "run": "#!/bin/sh\nexec httpd -D FOREGROUND -f /etc/apache2/httpd.conf",
+        "run": "#!/bin/sh\nexec httpd -D FOREGROUND",
         "finish": "#!/bin/sh\ntrue"
     },
     "php": {
-        "run": "#!/bin/sh\nexec php-cgi -b 0.0.0.0:8000",
+        "run": "#!/bin/sh\nexec php82-cgi -b 0.0.0.0:8000",
         "finish": "#!/bin/sh\ntrue"
     },
     "node": {
@@ -416,6 +418,16 @@ def _write_portfwd(merged, container_port, protocol="tcp"):
     os.makedirs(ank_dir, exist_ok=True)
     with open(os.path.join(ank_dir, "portfwd.conf"), "w") as f:
         f.write(f"{container_port} {protocol}\n")
+
+def _write_ank_config(merged, service, port, static_path="", s6="false"):
+    """Write unified /etc/ank/config into merged dir."""
+    ank_dir = os.path.join(merged, "etc/ank")
+    os.makedirs(ank_dir, exist_ok=True)
+    with open(os.path.join(ank_dir, "config"), "w") as f:
+        f.write(f"service={service}\n")
+        f.write(f"port={port}\n")
+        f.write(f"static_path={static_path}\n")
+        f.write(f"s6={s6}\n")
 
 # check_auth replaced by _check_auth() token-based authentication (see security section above)
 
@@ -735,37 +747,37 @@ def _ws_shell_session(handler, cols=80, rows=24):
 class AnkHandler(BaseHTTPRequestHandler):
 
     def _find_free_port(self, start=2200):
-        """Find a free port starting from 'start', checking existing containers."""
-        used = set()
-        for cfg_file in glob.glob(os.path.join(CONTAINERS_DIR, "*/config.json")):
-            try:
-                with open(cfg_file) as f:
-                    cfg = json.load(f)
-                    p = cfg.get("ssh_port")
-                    if p:
-                        used.add(int(p))
-                    for pm in cfg.get("port_mappings", []):
-                        hp = pm.get("host_port")
-                        if hp:
-                            used.add(int(hp))
-            except Exception:
-                pass
-        port = start
-        while port < 65000:
-            if port not in used:
-                # Quick check if port is actually in use on host
-                import socket
+        """Find a free port starting from 'start', checking existing containers. Thread-safe."""
+        with _port_lock:
+            used = set()
+            for cfg_file in glob.glob(os.path.join(CONTAINERS_DIR, "*/config.json")):
                 try:
-                    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                    s.settimeout(0.1)
-                    result = s.connect_ex(('127.0.0.1', port))
-                    s.close()
-                    if result != 0:
-                        return port
+                    with open(cfg_file) as f:
+                        cfg = json.load(f)
+                        p = cfg.get("ssh_port")
+                        if p:
+                            used.add(int(p))
+                        for pm in cfg.get("port_mappings", []):
+                            hp = pm.get("host_port")
+                            if hp:
+                                used.add(int(hp))
                 except Exception:
-                    return port
-            port += 1
-        return start
+                    pass
+            port = start
+            while port < 65000:
+                if port not in used:
+                    import socket
+                    try:
+                        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                        s.settimeout(0.1)
+                        result = s.connect_ex(('127.0.0.1', port))
+                        s.close()
+                        if result != 0:
+                            return port
+                    except Exception:
+                        return port
+                port += 1
+            return start
 
     def send_security_headers(self):
         self.send_header('X-Content-Type-Options', 'nosniff')
@@ -1849,6 +1861,8 @@ small{color:#334155}
             config["serves_static"] = data["serves_static"]
         if "static_path" in data:
             config["static_path"] = data["static_path"]
+        if "s6" in data:
+            config["s6"] = data["s6"]
         if "root_password" in data and data["root_password"]:
             new_pass = data["root_password"]
             if len(new_pass) < 4:
@@ -1888,6 +1902,16 @@ small{color:#334155}
                     except Exception:
                         pass
         save_container_config(name, config)
+        merged = os.path.join(CONTAINERS_DIR, name, "merged")
+        if os.path.isdir(merged):
+            _service = config.get("template", "")
+            _port = ""
+            _pm = config.get("port_mappings", [])
+            if _pm:
+                _port = str(_pm[0].get("container_port", ""))
+            _sp = config.get("static_path", "")
+            _s6 = "true" if config.get("s6", False) else "false"
+            _write_ank_config(merged, _service, _port, _sp, _s6)
         self.send_json({"message": f"Container '{name}' updated"})
 
     def api_pull_image(self, data):
@@ -2081,7 +2105,8 @@ small{color:#334155}
             "port_mappings": [],
             "root_password": root_password,
             "template": template_id,
-            "template_name": template["name"]
+            "template_name": template["name"],
+            "s6": False
         }
         save_container_config(container_name, stub_config)
 
@@ -2146,6 +2171,7 @@ small{color:#334155}
                 _chroot('mkdir -p /etc; echo "nameserver 8.8.8.8" > /etc/resolv.conf; echo "nameserver 8.8.4.4" >> /etc/resolv.conf')
 
                 config = load_container_config(container_name)
+                _s6_enabled = config.get("s6", False) if config else False
                 if config:
                     config["template"] = template_id
                     config["template_name"] = template["name"]
@@ -2179,47 +2205,32 @@ small{color:#334155}
                     _chroot(f'mkdir -p {static_dir} /run/nginx')
                     _write_file(os.path.join(merged, static_dir.lstrip('/'), 'index.html'), ANK_NGINX_HTML)
                     _write_file(os.path.join(merged, 'etc/nginx/nginx.conf'), ANK_NGINX_CONF)
-                    _chroot(f'mkdir -p /etc/ank')
-                    _write_file(os.path.join(merged, 'etc/ank/service'), 'nginx')
-                    _write_s6_service(merged, 'nginx')
-                    _write_portfwd(merged, 8080)
+                    _write_ank_config(merged, 'nginx', 8080, static_dir, "true" if _s6_enabled else "false")
 
                 elif template_id == "apache":
                     static_dir = template["static_path"]
                     _chroot(f'mkdir -p {static_dir}')
                     _write_file(os.path.join(merged, static_dir.lstrip('/'), 'index.html'), ANK_APACHE_HTML)
-                    _chroot(f'mkdir -p /etc/ank')
-                    _write_file(os.path.join(merged, 'etc/ank/service'), 'apache')
-                    _write_s6_service(merged, 'apache')
-                    _write_portfwd(merged, 9090)
+                    _write_ank_config(merged, 'apache', 9090, static_dir, "true" if _s6_enabled else "false")
 
                 elif template_id == "php":
                     php_dir = "/var/www/php"
                     _chroot(f'mkdir -p {php_dir}')
                     _write_file(os.path.join(merged, php_dir.lstrip('/'), 'index.php'), ANK_PHP_INDEX)
-                    _chroot(f'mkdir -p /etc/ank')
-                    _write_file(os.path.join(merged, 'etc/ank/service'), 'php')
-                    _write_s6_service(merged, 'php')
-                    _write_portfwd(merged, 8000)
+                    _write_ank_config(merged, 'php', 8000, php_dir, "true" if _s6_enabled else "false")
 
                 elif template_id == "node":
                     node_dir = "/var/www/app"
                     _chroot(f'mkdir -p {node_dir}')
                     _write_file(os.path.join(merged, node_dir.lstrip('/'), 'server.js'), ANK_NODE_SERVER)
                     _write_file(os.path.join(merged, node_dir.lstrip('/'), 'package.json'), '{"name":"ank-node-app","version":"1.0.0","main":"server.js"}')
-                    _chroot(f'mkdir -p /etc/ank')
-                    _write_file(os.path.join(merged, 'etc/ank/service'), 'node')
-                    _write_s6_service(merged, 'node')
-                    _write_portfwd(merged, 3000)
+                    _write_ank_config(merged, 'node', 3000, node_dir, "true" if _s6_enabled else "false")
 
                 elif template_id == "python":
                     py_dir = "/var/www/app"
                     _chroot(f'mkdir -p {py_dir}')
                     _write_file(os.path.join(merged, py_dir.lstrip('/'), 'server.py'), ANK_PYTHON_SERVER)
-                    _chroot(f'mkdir -p /etc/ank')
-                    _write_file(os.path.join(merged, 'etc/ank/service'), 'python')
-                    _write_s6_service(merged, 'python')
-                    _write_portfwd(merged, 5000)
+                    _write_ank_config(merged, 'python', 5000, py_dir, "true" if _s6_enabled else "false")
 
                 cfg = load_container_config(container_name)
                 if cfg:
@@ -2387,10 +2398,7 @@ small{color:#334155}
                             lf.write(f"OK: {output[-300:]}\n")
 
                 if cmd_line:
-                    ank_dir = os.path.join(merged, "etc", "ank")
-                    os.makedirs(ank_dir, exist_ok=True)
-                    with open(os.path.join(ank_dir, "service"), "w") as f:
-                        f.write(cmd_line + "\n")
+                    _write_ank_config(merged, cmd_line, ports[0] if ports else "", "", "false")
                     log(f"Ankfile CMD: {cmd_line}")
                     with open(log_path, "a") as lf:
                         lf.write(f"CMD: {cmd_line}\n")

@@ -653,6 +653,7 @@ async function showContainerDetail(name) {
         renderPortMappings(c.port_mappings || []);
         document.getElementById('detail-serves-static').checked = c.serves_static || false;
         document.getElementById('detail-static-path').value = c.static_path || '';
+        document.getElementById('detail-s6').checked = c.s6 || false;
         document.getElementById('detail-container-ip').value = c.ip_address || '-';
         document.getElementById('detail-container-subnet').value = (await api('GET', '/config')).network?.subnet || '-';
         const sshHint = document.getElementById('ssh-hint');
@@ -787,8 +788,9 @@ document.getElementById('detail-settings-form')?.addEventListener('submit', asyn
             const updateData = {
                 autostart: document.getElementById('detail-autostart').checked,
                 resources: { memory_limit: document.getElementById('detail-mem-limit').value, cpu_limit_percent: parseInt(document.getElementById('detail-cpu-limit').value) },
-                policies: { inter_container_p2p: document.getElementById('detail-p2p').checked, allow_host_access: document.getElementById('detail-host').checked, allow_internet: document.getElementById('detail-internet').checked },
-                port_mappings: ports
+                serves_static: document.getElementById('detail-serves-static').checked,
+                static_path: document.getElementById('detail-static-path').value || '',
+                s6: document.getElementById('detail-s6').checked
             };
             const newPass = document.getElementById('detail-root-password').value;
             if (newPass && newPass.length >= 4) updateData.root_password = newPass;
@@ -803,10 +805,20 @@ document.getElementById('detail-network-form')?.addEventListener('submit', async
     e.preventDefault();
     if (!currentContainer) return;
     const name = currentContainer.name;
+    const rows = document.querySelectorAll('#port-mappings-list .port-row');
+    const ports = [];
+    rows.forEach(row => {
+        const hp = row.querySelector('[data-field="host_port"]');
+        const cp = row.querySelector('[data-field="container_port"]');
+        const pr = row.querySelector('[data-field="protocol"]');
+        if (hp && cp && (hp.value || cp.value)) {
+            ports.push({ host_port: parseInt(hp.value)||0, container_port: parseInt(cp.value)||0, protocol: pr.value });
+        }
+    });
     try {
         await api('POST', `/containers/${name}/update`, {
-            serves_static: document.getElementById('detail-serves-static').checked,
-            static_path: document.getElementById('detail-static-path').value || ''
+            port_mappings: ports,
+            policies: { inter_container_p2p: document.getElementById('detail-p2p').checked, allow_host_access: document.getElementById('detail-host').checked, allow_internet: document.getElementById('detail-internet').checked }
         });
         toast(`Network settings saved for "${name}"`, 'success');
         showContainerDetail(name);

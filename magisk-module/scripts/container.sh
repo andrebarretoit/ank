@@ -698,17 +698,45 @@ cmd_start() {
         else
             echo "[ANK-INIT] WARN: sshd not found"
         fi
-        if [ -f /etc/ank/service ]; then
+        _svc=""
+        _port=""
+        _path=""
+        _s6="false"
+        if [ -f /etc/ank/config ]; then
+            _svc=$(grep "^service=" /etc/ank/config 2>/dev/null | cut -d= -f2)
+            _port=$(grep "^port=" /etc/ank/config 2>/dev/null | cut -d= -f2)
+            _path=$(grep "^static_path=" /etc/ank/config 2>/dev/null | cut -d= -f2)
+            _s6=$(grep "^s6=" /etc/ank/config 2>/dev/null | cut -d= -f2)
+        elif [ -f /etc/ank/service ]; then
             _svc=$(cat /etc/ank/service 2>/dev/null)
-            echo "[ANK-INIT] Starting service: $_svc"
+        fi
+        if [ -n "$_svc" ]; then
+            echo "[ANK-INIT] Starting service: $_svc (port: $_port, path: $_path)"
             case "$_svc" in
-                nginx)  mkdir -p /run/nginx 2>/dev/null; nginx 2>/dev/null & ;;
-                apache) httpd -f -p 9090 -h /var/www/localhost/htdocs 2>/dev/null & ;;
-                php)    php -S 0.0.0.0:8000 -t /var/www/php 2>/dev/null & ;;
-                node)   cd /var/www/app 2>/dev/null; node server.js 2>/dev/null & ;;
-                python) cd /var/www/app 2>/dev/null; python3 server.py 2>/dev/null & ;;
-                *)      echo "$_svc" | sh 2>/dev/null & ;;
+                nginx)
+                    mkdir -p /run/nginx 2>/dev/null
+                    nginx -g "daemon off;" -p "${_port:-8080}" 2>/dev/null & ;;
+                apache)
+                    httpd -C "Listen ${_port:-9090}" \
+                          -c "ServerName localhost" \
+                          -c "DocumentRoot ${_path:-/var/www/localhost/htdocs}" \
+                          -c "<Directory ${_path:-/var/www/localhost/htdocs}>" \
+                          -c "Require all granted" \
+                          -c "</Directory>" \
+                          -DFOREGROUND 2>/dev/null & ;;
+                php)
+                    php82 -S 0.0.0.0:"${_port:-8000}" -t "${_path:-/var/www/php}" 2>/dev/null & ;;
+                node)
+                    cd "${_path:-/var/www/app}" 2>/dev/null; node server.js 2>/dev/null & ;;
+                python)
+                    cd "${_path:-/var/www/app}" 2>/dev/null; python3 server.py 2>/dev/null & ;;
+                *)
+                    echo "$_svc" | sh 2>/dev/null & ;;
             esac
+        fi
+        if [ "$_s6" = "true" ] && [ -x /init ]; then
+            echo "[ANK-INIT] Starting s6-overlay..."
+            /init &
         fi
         echo "[ANK-INIT] Container ready"
         while [ "$_ank_exit" = "0" ]; do
@@ -879,22 +907,38 @@ cmd_stop() {
             kill -9 "$pid" 2>/dev/null && KILL_COUNT=$((KILL_COUNT+1))
         fi
     done
-    echo "  All processes stopped"
+
+    # Wait and re-scan for orphaned processes
+    sleep 1
+    for pid_dir in /proc/[0-9]*; do
+        local pid=$(basename "$pid_dir" 2>/dev/null)
+        [ -z "$pid" ] && continue
+        local root_link=$(readlink "$pid_dir/root" 2>/dev/null)
+        local exe=$(readlink "$pid_dir/exe" 2>/dev/null)
+        local cwd=$(readlink "$pid_dir/cwd" 2>/dev/null)
+        local hit=false
+        [ "$root_link" = "$ROOTFS" ] && hit=true
+        case "$exe" in ${ROOTFS}/*) hit=true ;; esac
+        case "$cwd" in ${ROOTFS}/*) hit=true ;; esac
+        if [ "$hit" = true ]; then
+            kill -9 "$pid" 2>/dev/null && KILL_COUNT=$((KILL_COUNT+1))
+        fi
+    done
+    echo "  All processes stopped (killed: $KILL_COUNT)"
 
     # === Phase 2: Unmount ALL chroot mounts ===
     if [ "$MODE" != "lite" ]; then
         echo "  Unmounting filesystems..."
-        # Unmount in reverse order of what init script mounts
         umount "$ROOTFS/dev/pts" 2>/dev/null
         umount "$ROOTFS/dev/shm" 2>/dev/null
         umount "$ROOTFS/dev" 2>/dev/null
         umount "$ROOTFS/proc" 2>/dev/null
         umount "$ROOTFS/sys" 2>/dev/null
-        # Lazy unmount if still busy
         umount -l "$ROOTFS/dev/pts" 2>/dev/null
         umount -l "$ROOTFS/dev" 2>/dev/null
         umount -l "$ROOTFS/proc" 2>/dev/null
         umount -l "$ROOTFS/sys" 2>/dev/null
+        umount -l "$ROOTFS" 2>/dev/null
         echo "  Filesystems unmounted"
     fi
 
