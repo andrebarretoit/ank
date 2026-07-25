@@ -192,7 +192,7 @@ def save_container_config(name, config):
     except Exception:
         pass
 
-def run_script(script, *args):
+def run_script(script, *args, timeout=60):
     script_path = os.path.join(SCRIPTS_DIR, script)
     cmd_parts = ["/system/bin/sh", script_path] + list(args)
     cmd_str = " ".join(f"'{a}'" for a in cmd_parts)
@@ -200,12 +200,12 @@ def run_script(script, *args):
         if os.geteuid() != 0:
             result = subprocess.run(
                 ["su", "-c", cmd_str],
-                capture_output=True, text=True, timeout=60
+                capture_output=True, text=True, timeout=timeout
             )
         else:
             result = subprocess.run(
                 cmd_parts,
-                capture_output=True, text=True, timeout=60
+                capture_output=True, text=True, timeout=timeout
             )
         return result.stdout.strip(), result.returncode
     except subprocess.TimeoutExpired:
@@ -1883,7 +1883,7 @@ small{color:#334155}
             "image": "nginx-3.20",
             "base": "nginx-3.20",
             "packages": ["nginx", "curl"],
-            "port": 8080,
+            "port": 80,
             "category": "server",
             "serves_static": True,
             "static_path": "/var/www/html"
@@ -1897,7 +1897,7 @@ small{color:#334155}
             "image": "apache-3.20",
             "base": "apache-3.20",
             "packages": ["apache2", "curl"],
-            "port": 8080,
+            "port": 80,
             "category": "server",
             "serves_static": True,
             "static_path": "/var/www/localhost/htdocs"
@@ -1905,13 +1905,13 @@ small{color:#334155}
         {
             "id": "php",
             "name": "PHP 8.2",
-            "description": "Alpine + PHP 8.2. For dynamic PHP apps (built-in server :8080).",
+            "description": "Alpine + PHP 8.2. For dynamic PHP apps (built-in server :80).",
             "icon": "bi-filetype-php",
             "color": "#777BB4",
             "image": "php-3.20",
             "base": "php-3.20",
             "packages": ["php82", "php82-mbstring", "php82-json", "php82-cgi"],
-            "port": 8080,
+            "port": 80,
             "category": "runtime",
             "serves_static": True,
             "static_path": "/var/www/php"
@@ -1999,12 +1999,23 @@ small{color:#334155}
                     lf.flush()
 
                 pkgs = " ".join(template.get("packages", []))
-                output, code = run_script("container.sh", "create", container_name, "alpine-3.20", str(root_password), str(ssh_port), pkgs)
+                output, code = run_script("container.sh", "create", container_name, "alpine-3.20", str(root_password), str(ssh_port), pkgs, timeout=300)
                 with open(log_path, "a") as lf:
                     lf.write(output + "\n")
                     lf.flush()
 
                 merged = os.path.join(CONTAINERS_DIR, container_name, "merged")
+
+                # Check if container was actually created
+                if not os.path.isdir(merged):
+                    log(f"ERROR: container.sh create failed for {container_name} (code={code})")
+                    with open(log_path, "a") as lf:
+                        lf.write(f"ERROR: Container creation failed (merged dir not found)\n")
+                    cfg = load_container_config(container_name)
+                    if cfg:
+                        cfg["status"] = "failed"
+                        save_container_config(container_name, cfg)
+                    return
 
                 def _chroot(cmd, timeout=30):
                     wrapped = "export PATH=/bin:/sbin:/usr/bin:/usr/sbin; " + cmd
@@ -2209,12 +2220,23 @@ small{color:#334155}
                         pkgs = " ".join(t.get("packages", []))
                         break
 
-                output, code = run_script("container.sh", "create", container_name, base_image, root_password, str(ssh_port), pkgs)
+                output, code = run_script("container.sh", "create", container_name, base_image, root_password, str(ssh_port), pkgs, timeout=300)
                 with open(log_path, "a") as lf:
                     lf.write(output + "\n")
                     lf.flush()
 
                 merged = os.path.join(CONTAINERS_DIR, container_name, "merged")
+
+                # Check if container was actually created
+                if not os.path.isdir(merged):
+                    log(f"ERROR: container.sh create failed for {container_name} (code={code})")
+                    with open(log_path, "a") as lf:
+                        lf.write(f"ERROR: Container creation failed (merged dir not found)\n")
+                    cfg = load_container_config(container_name)
+                    if cfg:
+                        cfg["status"] = "failed"
+                        save_container_config(container_name, cfg)
+                    return
 
                 def _chroot(cmd, timeout=60):
                     wrapped = "export PATH=/bin:/sbin:/usr/bin:/usr/sbin; " + cmd
