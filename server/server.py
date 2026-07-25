@@ -1125,6 +1125,31 @@ small{color:#334155}
             self.api_get_logs(parsed)
         elif path == "/api/config":
             self.api_get_config()
+        elif path == "/api/stacks":
+            self.api_list_stacks()
+        elif path.startswith("/api/stacks/") and path.endswith("/logs"):
+            self.api_stack_logs(path.split("/")[3], parsed)
+        elif path.startswith("/api/stacks/") and path.endswith("/metrics"):
+            self.api_stack_metrics(path.split("/")[3])
+        elif path.startswith("/api/stacks/"):
+            self.api_stack_inspect(path.split("/")[3])
+        elif path == "/api/backups":
+            self.api_list_backups()
+        elif path.startswith("/api/backups/") and "browse" in path:
+            qs = parsed.query
+            self.api_backup_browse(path.split("/")[3], qs)
+        elif path.startswith("/api/backups/"):
+            self.api_backup_inspect(path.split("/")[3])
+        elif path == "/api/nodes":
+            self.api_list_nodes()
+        elif path.startswith("/api/nodes/") and path.endswith("/containers"):
+            self.api_node_containers(path.split("/")[3])
+        elif path.startswith("/api/nodes/") and path.endswith("/stacks"):
+            self.api_node_stacks(path.split("/")[3])
+        elif path.startswith("/api/nodes/"):
+            self.api_node_inspect(path.split("/")[3])
+        elif path == "/api/system/dashboard":
+            self.api_system_dashboard()
         else:
             self.send_error(404, "Not Found")
 
@@ -1183,6 +1208,28 @@ small{color:#334155}
             self.api_update_config(data)
         elif path == "/api/system/uninstall":
             self.api_uninstall()
+        elif path == "/api/stacks":
+            self.api_create_stack(data)
+        elif path.startswith("/api/stacks/") and path.endswith("/scale"):
+            self.api_scale_stack(path.split("/")[3], data)
+        elif path.startswith("/api/stacks/") and path.endswith("/scale-down"):
+            self.api_scale_down_stack(path.split("/")[3], data)
+        elif path.startswith("/api/stacks/") and path.endswith("/delete"):
+            self.api_delete_stack(path.split("/")[3])
+        elif path.startswith("/api/stacks/") and path.endswith("/update"):
+            self.api_update_stack(path.split("/")[3], data)
+        elif path == "/api/backups":
+            self.api_create_backup_routine(data)
+        elif path.startswith("/api/backups/") and path.endswith("/execute"):
+            self.api_execute_backup(path.split("/")[3])
+        elif path.startswith("/api/backups/") and path.endswith("/delete"):
+            self.api_delete_backup_routine(path.split("/")[3])
+        elif path == "/api/nodes":
+            self.api_add_node(data)
+        elif path.startswith("/api/nodes/") and path.endswith("/delete"):
+            self.api_delete_node(path.split("/")[3])
+        elif path.startswith("/api/nodes/") and path.endswith("/refresh"):
+            self.api_refresh_node(path.split("/")[3])
         else:
             self.send_error(404, "Not Found")
 
@@ -1198,6 +1245,12 @@ small{color:#334155}
             self.api_delete_container(parts[3])
         elif len(parts) >= 4 and parts[2] == "networks":
             self.api_delete_network(parts[3])
+        elif len(parts) >= 4 and parts[2] == "backups":
+            self.api_delete_backup_routine(parts[3])
+        elif len(parts) >= 4 and parts[2] == "nodes":
+            self.api_delete_node(parts[3])
+        elif len(parts) >= 4 and parts[2] == "stacks":
+            self.api_delete_stack(parts[3])
         else:
             self.send_error(404, "Not Found")
 
@@ -3220,6 +3273,341 @@ small{color:#334155}
             return "-"
 
     # ============================================================
+    # Stacks API
+    # ============================================================
+
+    def _get_stack_manager(self):
+        try:
+            from stack_manager import StackManager
+            return StackManager(ANK_DIR)
+        except Exception:
+            return None
+
+    def api_list_stacks(self):
+        sm = self._get_stack_manager()
+        if not sm:
+            self.send_json({"stacks": [], "error": "stack_manager not available"})
+            return
+        stacks = sm.list_stacks()
+        self.send_json({"stacks": stacks})
+
+    def api_stack_inspect(self, name):
+        sm = self._get_stack_manager()
+        if not sm:
+            self.send_json({"error": "stack_manager not available"}, 500)
+            return
+        stack = sm.get_stack(name)
+        if not stack:
+            self.send_json({"error": f"Stack '{name}' not found"}, 404)
+            return
+        self.send_json(stack)
+
+    def api_stack_logs(self, name, parsed):
+        sm = self._get_stack_manager()
+        if not sm:
+            self.send_json({"lines": []})
+            return
+        lines = sm.get_stack_logs(name, 200)
+        self.send_json({"lines": lines})
+
+    def api_stack_metrics(self, name):
+        sm = self._get_stack_manager()
+        if not sm:
+            self.send_json({"error": "stack_manager not available"}, 500)
+            return
+        metrics = sm.get_stack_metrics(name)
+        self.send_json(metrics)
+
+    def api_create_stack(self, data):
+        sm = self._get_stack_manager()
+        if not sm:
+            self.send_json({"error": "stack_manager not available"}, 500)
+            return
+        name = data.get("name", "").strip()
+        image = data.get("image", "")
+        if not name or not image:
+            self.send_json({"error": "name and image required"}, 400)
+            return
+        result = sm.create_stack(name, image, data)
+        if "error" in result:
+            self.send_json(result, 400)
+        else:
+            self.send_json(result)
+
+    def api_scale_stack(self, name, data):
+        sm = self._get_stack_manager()
+        if not sm:
+            self.send_json({"error": "stack_manager not available"}, 500)
+            return
+        count = data.get("count", 1)
+        result = sm.scale_up(name, count)
+        if "error" in result:
+            self.send_json(result, 400)
+        else:
+            self.send_json(result)
+
+    def api_scale_down_stack(self, name, data):
+        sm = self._get_stack_manager()
+        if not sm:
+            self.send_json({"error": "stack_manager not available"}, 500)
+            return
+        count = data.get("count", 1)
+        result = sm.scale_down(name, count)
+        if "error" in result:
+            self.send_json(result, 400)
+        else:
+            self.send_json(result)
+
+    def api_delete_stack(self, name):
+        sm = self._get_stack_manager()
+        if not sm:
+            self.send_json({"error": "stack_manager not available"}, 500)
+            return
+        result = sm.delete_stack(name)
+        if "error" in result:
+            self.send_json(result, 400)
+        else:
+            self.send_json(result)
+
+    def api_update_stack(self, name, data):
+        sm = self._get_stack_manager()
+        if not sm:
+            self.send_json({"error": "stack_manager not available"}, 500)
+            return
+        result = sm.update_stack(name, data)
+        if "error" in result:
+            self.send_json(result, 400)
+        else:
+            self.send_json(result)
+
+    # ============================================================
+    # Backups API
+    # ============================================================
+
+    def _get_backup_manager(self):
+        try:
+            from backup_manager import BackupManager
+            return BackupManager(ANK_DIR)
+        except Exception:
+            return None
+
+    def api_list_backups(self):
+        bm = self._get_backup_manager()
+        if not bm:
+            self.send_json({"routines": []})
+            return
+        routines = bm.list_routines()
+        self.send_json({"routines": routines})
+
+    def api_backup_inspect(self, routine_id):
+        bm = self._get_backup_manager()
+        if not bm:
+            self.send_json({"error": "backup_manager not available"}, 500)
+            return
+        routine = bm.get_routine(routine_id)
+        if not routine:
+            self.send_json({"error": "Routine not found"}, 404)
+            return
+        self.send_json(routine)
+
+    def api_backup_browse(self, routine_id, query):
+        from urllib.parse import parse_qs
+        params = parse_qs(query)
+        remote_path = params.get("path", ["/"])[0]
+        try:
+            from backup_browser import BackupBrowser
+            bb = BackupBrowser(ANK_DIR)
+            files = bb.browse(routine_id, remote_path)
+            self.send_json({"files": files, "path": remote_path})
+        except Exception as e:
+            self.send_json({"error": str(e)}, 500)
+
+    def api_create_backup_routine(self, data):
+        bm = self._get_backup_manager()
+        if not bm:
+            self.send_json({"error": "backup_manager not available"}, 500)
+            return
+        name = data.get("name", "").strip()
+        if not name:
+            self.send_json({"error": "name required"}, 400)
+            return
+        result = bm.create_routine(name, data)
+        if "error" in result:
+            self.send_json(result, 400)
+        else:
+            self.send_json(result)
+
+    def api_execute_backup(self, routine_id):
+        try:
+            from backup_runner import BackupRunner
+            br = BackupRunner(ANK_DIR)
+            result = br.execute(routine_id)
+            self.send_json(result)
+        except Exception as e:
+            self.send_json({"error": str(e)}, 500)
+
+    def api_delete_backup_routine(self, routine_id):
+        bm = self._get_backup_manager()
+        if not bm:
+            self.send_json({"error": "backup_manager not available"}, 500)
+            return
+        result = bm.delete_routine(routine_id)
+        if "error" in result:
+            self.send_json(result, 400)
+        else:
+            self.send_json(result)
+
+    # ============================================================
+    # Nodes API
+    # ============================================================
+
+    def _get_node_manager(self):
+        try:
+            from node_manager import NodeManager
+            return NodeManager(ANK_DIR)
+        except Exception:
+            return None
+
+    def api_list_nodes(self):
+        nm = self._get_node_manager()
+        if not nm:
+            self.send_json({"nodes": []})
+            return
+        nodes = nm.list_nodes()
+        self.send_json({"nodes": nodes})
+
+    def api_node_inspect(self, node_id):
+        nm = self._get_node_manager()
+        if not nm:
+            self.send_json({"error": "node_manager not available"}, 500)
+            return
+        node = nm.get_node(node_id)
+        if not node:
+            self.send_json({"error": "Node not found"}, 404)
+            return
+        self.send_json(node)
+
+    def api_node_containers(self, node_id):
+        nm = self._get_node_manager()
+        if not nm:
+            self.send_json({"containers": []})
+            return
+        try:
+            from node_proxy import NodeProxy
+            proxy = NodeProxy(nm)
+            containers = proxy.get_containers(node_id)
+            self.send_json(containers)
+        except Exception as e:
+            self.send_json({"error": str(e)}, 500)
+
+    def api_node_stacks(self, node_id):
+        nm = self._get_node_manager()
+        if not nm:
+            self.send_json({"stacks": []})
+            return
+        try:
+            from node_proxy import NodeProxy
+            proxy = NodeProxy(nm)
+            stacks = proxy.get_stacks(node_id)
+            self.send_json(stacks)
+        except Exception as e:
+            self.send_json({"error": str(e)}, 500)
+
+    def api_add_node(self, data):
+        nm = self._get_node_manager()
+        if not nm:
+            self.send_json({"error": "node_manager not available"}, 500)
+            return
+        hostname = data.get("hostname", "").strip()
+        if not hostname:
+            self.send_json({"error": "hostname required"}, 400)
+            return
+        result = nm.add_node(hostname, data)
+        if "error" in result:
+            self.send_json(result, 400)
+        else:
+            self.send_json(result)
+
+    def api_delete_node(self, node_id):
+        nm = self._get_node_manager()
+        if not nm:
+            self.send_json({"error": "node_manager not available"}, 500)
+            return
+        result = nm.delete_node(node_id)
+        if "error" in result:
+            self.send_json(result, 400)
+        else:
+            self.send_json(result)
+
+    def api_refresh_node(self, node_id):
+        nm = self._get_node_manager()
+        if not nm:
+            self.send_json({"error": "node_manager not available"}, 500)
+            return
+        result = nm.refresh_node(node_id)
+        self.send_json(result)
+
+    # ============================================================
+    # System Dashboard (aggregate across nodes)
+    # ============================================================
+
+    def api_system_dashboard(self):
+        nm = self._get_node_manager()
+        sm = self._get_stack_manager()
+        dashboard = {
+            "total_containers": 0,
+            "running_containers": 0,
+            "stopped_containers": 0,
+            "total_stacks": 0,
+            "nodes": []
+        }
+        try:
+            containers = self._list_containers_dict()
+            dashboard["total_containers"] = len(containers)
+            dashboard["running_containers"] = sum(1 for c in containers if c.get("status") == "running")
+            dashboard["stopped_containers"] = sum(1 for c in containers if c.get("status") != "running")
+        except Exception:
+            pass
+        try:
+            stacks = sm.list_stacks() if sm else []
+            dashboard["total_stacks"] = len(stacks)
+        except Exception:
+            pass
+        try:
+            nodes = nm.list_nodes() if nm else []
+            for n in nodes:
+                dashboard["nodes"].append({
+                    "id": n.get("id", ""),
+                    "hostname": n.get("hostname", ""),
+                    "status": n.get("status", "unknown"),
+                    "containers": n.get("containers", 0),
+                    "cpu": n.get("cpu", "-"),
+                    "ram": n.get("ram", "-"),
+                    "disk": n.get("disk", "-"),
+                    "uptime": n.get("uptime", "-")
+                })
+        except Exception:
+            pass
+        self.send_json(dashboard)
+
+    def _list_containers_dict(self):
+        containers_dir = os.path.join(ANK_DIR, "containers")
+        result = []
+        if not os.path.isdir(containers_dir):
+            return result
+        for name in os.listdir(containers_dir):
+            config_path = os.path.join(containers_dir, name, "config.json")
+            if os.path.isfile(config_path):
+                try:
+                    with open(config_path, "r") as f:
+                        cfg = json.load(f)
+                    cfg["name"] = name
+                    result.append(cfg)
+                except Exception:
+                    pass
+        return result
+
+    # ============================================================
     # Logs API
     # ============================================================
 
@@ -3414,6 +3802,17 @@ def main():
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
     print(f"Ank Container Engine v2.0.0")
     print(f"Starting server on 0.0.0.0:{PORT}...")
+
+    # Start auto-scaling orchestrator
+    try:
+        from ank_orchestrator import Orchestrator as _Orchestrator
+        from stack_manager import StackManager as _StackManager
+        _sm = _StackManager(ANK_DIR)
+        _orch = _Orchestrator(_sm)
+        _orch.start(interval=10)
+        print("Orchestrator started (auto-scaling enabled)")
+    except Exception as _oe:
+        print(f"Orchestrator not started: {_oe}")
 
     server = ThreadingHTTPServer(("0.0.0.0", PORT), AnkHandler)
 

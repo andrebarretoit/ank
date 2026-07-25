@@ -68,6 +68,9 @@
                 <a href="#" class="nav-item" data-tab="containers"><i class="bi bi-grid-3x3-gap"></i><span>Containers</span></a>
                 <a href="#" class="nav-item" data-tab="images"><i class="bi bi-hdd-stack"></i><span>Images</span></a>
                 <a href="#" class="nav-item" data-tab="networks"><i class="bi bi-hdd-network"></i><span>Networks</span></a>
+                <a href="#" class="nav-item" data-tab="stacks"><i class="bi bi-stack"></i><span>Stacks</span></a>
+                <a href="#" class="nav-item" data-tab="backups"><i class="bi bi-cloud-arrow-up"></i><span>Backups</span></a>
+                <a href="#" class="nav-item" data-tab="nodes"><i class="bi bi-pc-display-horizontal"></i><span>Nodes</span></a>
                 <a href="#" class="nav-item" data-tab="logs"><i class="bi bi-journal-text"></i><span>Logs</span></a>
                 <a href="#" class="nav-item" data-tab="shell"><i class="bi bi-terminal"></i><span>Shell</span></a>
                 <a href="#" class="nav-item" data-tab="settings"><i class="bi bi-gear"></i><span>Settings</span></a>
@@ -216,6 +219,33 @@ EXPOSE 8080</textarea>
                 </div>
                 <div id="networks-list"></div>
                 <div id="network-info-panel"></div>
+            </section>
+
+            <!-- Stacks -->
+            <section id="tab-stacks" class="tab">
+                <div class="page-header">
+                    <h2><i class="bi bi-stack"></i> Stacks</h2>
+                    <button class="btn btn-primary" onclick="showCreateStackModal()"><i class="bi bi-plus-circle"></i> New Stack</button>
+                </div>
+                <div id="stacks-list"></div>
+            </section>
+
+            <!-- Backups -->
+            <section id="tab-backups" class="tab">
+                <div class="page-header">
+                    <h2><i class="bi bi-cloud-arrow-up"></i> Backups</h2>
+                    <button class="btn btn-primary" onclick="showCreateBackupModal()"><i class="bi bi-plus-circle"></i> New Routine</button>
+                </div>
+                <div id="backups-list"></div>
+            </section>
+
+            <!-- Nodes -->
+            <section id="tab-nodes" class="tab">
+                <div class="page-header">
+                    <h2><i class="bi bi-pc-display-horizontal"></i> Nodes</h2>
+                    <button class="btn btn-primary" onclick="showAddNodeModal()"><i class="bi bi-plus-circle"></i> Add Node</button>
+                </div>
+                <div id="nodes-list"></div>
             </section>
 
             <!-- Logs -->
@@ -388,6 +418,7 @@ EXPOSE 8080</textarea>
                 <button class="modal-tab" data-mtab="network"><i class="bi bi-hdd-network"></i> Networks</button>
                 <button class="modal-tab" data-mtab="terminal"><i class="bi bi-terminal"></i> Terminal</button>
                 <button class="modal-tab" data-mtab="files"><i class="bi bi-folder2-open"></i> Files</button>
+                <button class="modal-tab" data-mtab="backup"><i class="bi bi-cloud-arrow-up"></i> Backup</button>
             </div>
             <div class="modal-body">
                 <div id="mtab-overview" class="mtab active">
@@ -514,6 +545,20 @@ EXPOSE 8080</textarea>
                         <textarea id="file-editor-content" class="file-editor-content" spellcheck="false"></textarea>
                     </div>
                 </div>
+                <div id="mtab-backup" class="mtab">
+                    <div style="padding:16px 0">
+                        <p style="color:var(--text-muted);font-size:13px;margin-bottom:16px;">Create a backup routine for this container's data.</p>
+                        <div style="display:grid;gap:12px;max-width:400px">
+                            <div><label style="color:var(--text-muted);font-size:12px;display:block;margin-bottom:4px">Source Path</label><input id="detail-backup-source" type="text" class="custom-modal-field" placeholder="/var/www/data" style="width:100%"></div>
+                            <div><label style="color:var(--text-muted);font-size:12px;display:block;margin-bottom:4px">Remote Host</label><input id="detail-backup-host" type="text" class="custom-modal-field" placeholder="192.168.1.100" style="width:100%"></div>
+                            <div><label style="color:var(--text-muted);font-size:12px;display:block;margin-bottom:4px">Remote Path</label><input id="detail-backup-rpath" type="text" class="custom-modal-field" placeholder="/backups" style="width:100%"></div>
+                            <div><label style="color:var(--text-muted);font-size:12px;display:block;margin-bottom:4px">SSH Password</label><input id="detail-backup-pass" type="password" class="custom-modal-field" style="width:100%"></div>
+                            <div><label style="color:var(--text-muted);font-size:12px;display:block;margin-bottom:4px">Schedule (cron)</label><input id="detail-backup-cron" type="text" class="custom-modal-field" placeholder="0 2 * * *" style="width:100%"></div>
+                            <div><label style="color:var(--text-muted);font-size:12px;display:block;margin-bottom:4px">Retention (days)</label><input id="detail-backup-retention" type="number" class="custom-modal-field" value="30" min="1" style="width:100%"></div>
+                            <button class="btn btn-primary" onclick="createBackupFromDetail()" style="margin-top:8px"><i class="bi bi-cloud-arrow-up"></i> Create Routine</button>
+                        </div>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
@@ -536,6 +581,67 @@ EXPOSE 8080</textarea>
                     <button type="submit" class="btn btn-primary"><i class="bi bi-check-lg"></i> Apply</button>
                 </div>
             </form>
+        </div>
+    </div>
+
+    <!-- Create Stack Modal -->
+    <div id="create-stack-modal" class="modal hidden">
+        <div class="modal-overlay"></div>
+        <div class="modal-content">
+            <div class="modal-header"><h3><i class="bi bi-stack"></i> New Stack</h3><button class="modal-close"><i class="bi bi-x-lg"></i></button></div>
+            <div class="modal-body">
+                <div class="form-group"><label>Stack Name</label><input type="text" id="stack-name" placeholder="my-stack" required></div>
+                <div class="form-group"><label>Image</label><select id="stack-image"><option value="nginx">nginx</option><option value="apache">apache</option><option value="php">php</option><option value="node">node</option><option value="python">python</option></select></div>
+                <div class="form-group"><label>Instances</label><input type="number" id="stack-instances" value="1" min="1" max="10"></div>
+                <div class="form-group"><label>LB Port (30000-39999)</label><input type="number" id="stack-lb-port" value="30000" min="30000" max="39999"></div>
+                <div class="form-group"><label class="checkbox-label"><input type="checkbox" id="stack-volume" checked><i class="bi bi-hdd"></i> Mount shared data/ volume</label></div>
+                <div class="form-group"><label>Trigger (auto-scale)</label><select id="stack-trigger"><option value="none">Disabled</option><option value="requests">Requests/sec</option><option value="cpu">CPU</option><option value="mem">Memory</option></select></div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-ghost modal-close">Cancel</button>
+                <button type="button" class="btn btn-primary" onclick="createStack()"><i class="bi bi-check-lg"></i> Create</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Create Backup Modal -->
+    <div id="create-backup-modal" class="modal hidden">
+        <div class="modal-overlay"></div>
+        <div class="modal-content">
+            <div class="modal-header"><h3><i class="bi bi-cloud-arrow-up"></i> New Backup Routine</h3><button class="modal-close"><i class="bi bi-x-lg"></i></button></div>
+            <div class="modal-body">
+                <div class="form-group"><label>Routine Name</label><input type="text" id="backup-name" placeholder="routine-1" required></div>
+                <div class="form-group"><label>Source Path</label><input type="text" id="backup-source" placeholder="/data/local/ank/stacks"></div>
+                <div class="form-group"><label>Remote Host</label><input type="text" id="backup-remote-host" placeholder="192.168.1.100"></div>
+                <div class="form-group"><label>Remote Path</label><input type="text" id="backup-remote-path" placeholder="/backups/ank"></div>
+                <div class="form-group"><label>SSH User</label><input type="text" id="backup-ssh-user" value="root"></div>
+                <div class="form-group"><label>SSH Password</label><input type="password" id="backup-ssh-pass"></div>
+                <div class="form-group"><label>Schedule (cron)</label><input type="text" id="backup-schedule" placeholder="0 2 * * *"></div>
+                <div class="form-group"><label>Retention (days)</label><input type="number" id="backup-retention" value="30" min="1"></div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-ghost modal-close">Cancel</button>
+                <button type="button" class="btn btn-primary" onclick="createBackup()"><i class="bi bi-check-lg"></i> Create</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Add Node Modal -->
+    <div id="add-node-modal" class="modal hidden">
+        <div class="modal-overlay"></div>
+        <div class="modal-content">
+            <div class="modal-header"><h3><i class="bi bi-pc-display-horizontal"></i> Add Node</h3><button class="modal-close"><i class="bi bi-x-lg"></i></button></div>
+            <div class="modal-body">
+                <div class="form-group"><label>Hostname / IP</label><input type="text" id="node-hostname" placeholder="192.168.1.101" required></div>
+                <div class="form-group"><label>SSH Port</label><input type="number" id="node-ssh-port" value="22"></div>
+                <div class="form-group"><label>SSH Password</label><input type="password" id="node-ssh-pass"></div>
+                <div class="form-group"><label>Root Password</label><input type="password" id="node-root-pass"></div>
+                <div class="form-group"><label>Device Name</label><input type="text" id="node-device" placeholder="Galaxy S24"></div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-ghost modal-close">Cancel</button>
+                <button type="button" class="btn btn-primary" onclick="addNode()"><i class="bi bi-check-lg"></i> Add Node</button>
+            </div>
         </div>
     </div>
 

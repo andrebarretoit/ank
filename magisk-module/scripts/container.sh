@@ -624,6 +624,18 @@ cmd_start() {
     mount -t devpts devpts "$ROOTFS/dev/pts" 2>/dev/null
     mount -t tmpfs -o size=16m tmpfs "$ROOTFS/dev/shm" 2>/dev/null
 
+    # Shared volume mount for stack containers
+    local STACK_NAME=$(grep -o '"stack":"[^"]*"' "$CONFIG" 2>/dev/null | cut -d'"' -f4)
+    if [ -n "$STACK_NAME" ]; then
+        local STACK_DATA="$ANK_DIR/stacks/$STACK_NAME/data"
+        mkdir -p "$STACK_DATA" 2>/dev/null
+        local MOUNT_POINT="$ROOTFS/var/www/data"
+        mkdir -p "$MOUNT_POINT" 2>/dev/null
+        mount --bind "$STACK_DATA" "$MOUNT_POINT" 2>/dev/null && \
+            echo "Stack volume: $STACK_DATA -> $MOUNT_POINT" || \
+            echo "WARN: Failed to mount stack volume"
+    fi
+
     # Set root password before starting sshd
     local ROOT_PASS=$(tr -d ' ' < "$CONFIG" 2>/dev/null | grep -o '"root_password":"[^"]*"' | cut -d'"' -f4)
     if [ -n "$ROOT_PASS" ]; then

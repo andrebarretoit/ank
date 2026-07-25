@@ -212,6 +212,9 @@ document.querySelectorAll('.nav-item').forEach(item => {
         item.classList.add('active');
         document.getElementById(`tab-${item.dataset.tab}`).classList.add('active');
         if (item.dataset.tab === 'networks') loadNetworks();
+        if (item.dataset.tab === 'stacks') loadStacks();
+        if (item.dataset.tab === 'backups') loadBackups();
+        if (item.dataset.tab === 'nodes') loadNodes();
         if (item.dataset.tab === 'logs') { logsOffset = 0; loadLogs(false); startLogsPoll(); }
         if (item.dataset.tab === 'shell') initCoreTerminal();
         if (item.dataset.tab !== 'logs') stopLogsPoll();
@@ -332,6 +335,9 @@ async function loadAll() {
         populateImageSelect(images);
         renderDashboardContainers(containers);
         loadTemplates();
+        loadStacks();
+        loadBackups();
+        loadNodes();
     } catch (e) { console.error('Load failed:', e); }
 }
 
@@ -1539,6 +1545,224 @@ document.getElementById('ankfile-example-btn')?.addEventListener('click', () => 
     document.getElementById('ankfile-name').value = 'cloudreve';
     toast('Example Ankfile loaded', 'info');
 });
+
+/* ============================================================
+   Stacks
+   ============================================================ */
+
+async function loadStacks() {
+    try {
+        const data = await api('GET', '/stacks');
+        const stacks = data.stacks || [];
+        const el = document.getElementById('stacks-list');
+        if (!el) return;
+        if (!stacks.length) { el.innerHTML = '<div class="empty-state"><i class="bi bi-stack"></i><p>No stacks yet</p></div>'; return; }
+        el.innerHTML = stacks.map(s => {
+            const running = (s.containers || []).filter(c => c.status === 'running').length;
+            const total = (s.containers || []).length;
+            const statusColor = running === total && total > 0 ? 'var(--success)' : running > 0 ? 'var(--warning)' : 'var(--danger)';
+            return `<div class="card-hover" style="background:var(--bg-secondary);border:1px solid var(--border);border-radius:12px;padding:16px;margin-bottom:12px">
+                <div style="display:flex;justify-content:space-between;align-items:center">
+                    <div>
+                        <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
+                            <span style="width:8px;height:8px;border-radius:50%;background:${statusColor};flex-shrink:0"></span>
+                            <strong style="color:var(--text-primary)">${esc(s.name)}</strong>
+                            <span style="color:var(--text-muted);font-size:12px">${esc(s.image || '')}</span>
+                        </div>
+                        <div style="color:var(--text-muted);font-size:12px">${running}/${total} running &middot; LB port ${s.lb_port || '-'}</div>
+                    </div>
+                    <div style="display:flex;gap:6px">
+                        <button class="btn btn-sm btn-ghost" onclick="scaleStackUp('${esc(s.name)}')" title="Scale Up"><i class="bi bi-plus-lg"></i></button>
+                        <button class="btn btn-sm btn-ghost" onclick="scaleStackDown('${esc(s.name)}')" title="Scale Down"><i class="bi bi-dash-lg"></i></button>
+                        <button class="btn btn-sm btn-danger" onclick="deleteStack('${esc(s.name)}')" title="Delete"><i class="bi bi-trash"></i></button>
+                    </div>
+                </div>
+            </div>`;
+        }).join('');
+    } catch (e) { console.error('loadStacks', e); }
+}
+
+function showCreateStackModal() { showModal('create-stack-modal'); }
+
+async function createStack() {
+    const name = document.getElementById('stack-name')?.value?.trim();
+    const image = document.getElementById('stack-image')?.value;
+    const instances = parseInt(document.getElementById('stack-instances')?.value || '1');
+    const lbPort = parseInt(document.getElementById('stack-lb-port')?.value || '30000');
+    const volume = document.getElementById('stack-volume')?.checked;
+    const trigger = document.getElementById('stack-trigger')?.value;
+    if (!name) { toast('Stack name required', 'error'); return; }
+    try {
+        toast(`Creating stack "${name}"...`, 'info');
+        await api('POST', '/stacks', { name, image, instances, lb_port: lbPort, shared_volume: volume, trigger: trigger === 'none' ? null : trigger });
+        hideModal('create-stack-modal');
+        toast(`Stack "${name}" created`, 'success');
+        loadStacks();
+    } catch (e) { toast(`Failed: ${e.message}`, 'error'); }
+}
+
+async function scaleStackUp(name) {
+    try { await api('POST', `/stacks/${encodeURIComponent(name)}/scale`, { count: 1 }); toast(`Scaled up "${name}"`, 'success'); loadStacks(); } catch (e) { toast(`Failed: ${e.message}`, 'error'); }
+}
+
+async function scaleStackDown(name) {
+    try { await api('POST', `/stacks/${encodeURIComponent(name)}/scale-down`, { count: 1 }); toast(`Scaled down "${name}"`, 'success'); loadStacks(); } catch (e) { toast(`Failed: ${e.message}`, 'error'); }
+}
+
+async function deleteStack(name) {
+    const ok = await confirm(`Delete stack "${name}"? This will stop and remove all containers.`, 'Delete Stack');
+    if (!ok) return;
+    try { await api('POST', `/stacks/${encodeURIComponent(name)}/delete`); toast(`Stack "${name}" deleted`, 'success'); loadStacks(); } catch (e) { toast(`Failed: ${e.message}`, 'error'); }
+}
+
+/* ============================================================
+   Backups
+   ============================================================ */
+
+async function loadBackups() {
+    try {
+        const data = await api('GET', '/backups');
+        const routines = data.routines || [];
+        const el = document.getElementById('backups-list');
+        if (!el) return;
+        if (!routines.length) { el.innerHTML = '<div class="empty-state"><i class="bi bi-cloud-arrow-up"></i><p>No backup routines yet</p></div>'; return; }
+        el.innerHTML = routines.map(r => {
+            const lastRun = r.last_run ? new Date(r.last_run).toLocaleString() : 'Never';
+            const statusColor = r.last_status === 'success' ? 'var(--success)' : r.last_status === 'failed' ? 'var(--danger)' : 'var(--text-muted)';
+            return `<div style="background:var(--bg-secondary);border:1px solid var(--border);border-radius:12px;padding:16px;margin-bottom:12px">
+                <div style="display:flex;justify-content:space-between;align-items:center">
+                    <div>
+                        <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
+                            <span style="width:8px;height:8px;border-radius:50%;background:${statusColor};flex-shrink:0"></span>
+                            <strong style="color:var(--text-primary)">${esc(r.name)}</strong>
+                        </div>
+                        <div style="color:var(--text-muted);font-size:12px">${esc(r.source || '')} &rarr; ${esc(r.remote_host || '')}:${esc(r.remote_path || '')} &middot; Last: ${lastRun}</div>
+                        <div style="color:var(--text-muted);font-size:12px;margin-top:4px">Schedule: ${esc(r.schedule || '-')} &middot; Retention: ${r.retention || 30}d</div>
+                    </div>
+                    <div style="display:flex;gap:6px">
+                        <button class="btn btn-sm btn-primary" onclick="executeBackup('${esc(r.id || r.name)}')" title="Run Now"><i class="bi bi-play-fill"></i></button>
+                        <button class="btn btn-sm btn-danger" onclick="deleteBackup('${esc(r.id || r.name)}')" title="Delete"><i class="bi bi-trash"></i></button>
+                    </div>
+                </div>
+            </div>`;
+        }).join('');
+    } catch (e) { console.error('loadBackups', e); }
+}
+
+function showCreateBackupModal() { showModal('create-backup-modal'); }
+
+async function createBackup() {
+    const name = document.getElementById('backup-name')?.value?.trim();
+    if (!name) { toast('Routine name required', 'error'); return; }
+    try {
+        toast(`Creating routine "${name}"...`, 'info');
+        await api('POST', '/backups', {
+            name,
+            source: document.getElementById('backup-source')?.value || '',
+            remote_host: document.getElementById('backup-remote-host')?.value || '',
+            remote_path: document.getElementById('backup-remote-path')?.value || '/backups/ank',
+            ssh_user: document.getElementById('backup-ssh-user')?.value || 'root',
+            ssh_pass: document.getElementById('backup-ssh-pass')?.value || '',
+            schedule: document.getElementById('backup-schedule')?.value || '',
+            retention: parseInt(document.getElementById('backup-retention')?.value || '30')
+        });
+        hideModal('create-backup-modal');
+        toast(`Routine "${name}" created`, 'success');
+        loadBackups();
+    } catch (e) { toast(`Failed: ${e.message}`, 'error'); }
+}
+
+async function executeBackup(id) {
+    try { toast('Running backup...', 'info'); const r = await api('POST', `/backups/${encodeURIComponent(id)}/execute`); toast(r.message || 'Backup complete', 'success'); loadBackups(); } catch (e) { toast(`Failed: ${e.message}`, 'error'); }
+}
+
+async function deleteBackup(id) {
+    const ok = await confirm(`Delete backup routine "${id}"?`, 'Delete Routine');
+    if (!ok) return;
+    try { await api('POST', `/backups/${encodeURIComponent(id)}/delete`); toast('Routine deleted', 'success'); loadBackups(); } catch (e) { toast(`Failed: ${e.message}`, 'error'); }
+}
+
+async function createBackupFromDetail() {
+    const containerName = document.getElementById('detail-name')?.textContent || '';
+    const source = document.getElementById('detail-backup-source')?.value || '';
+    const remoteHost = document.getElementById('detail-backup-host')?.value || '';
+    const remotePath = document.getElementById('detail-backup-rpath')?.value || '/backups';
+    const pass = document.getElementById('detail-backup-pass')?.value || '';
+    const cron = document.getElementById('detail-backup-cron')?.value || '0 2 * * *';
+    const retention = parseInt(document.getElementById('detail-backup-retention')?.value || '30');
+    if (!source || !remoteHost) { toast('Source and remote host required', 'error'); return; }
+    try {
+        toast('Creating backup routine...', 'info');
+        await api('POST', '/backups', { name: `container-${containerName}`, source, remote_host: remoteHost, remote_path: remotePath, ssh_user: 'root', ssh_pass: pass, schedule: cron, retention });
+        toast('Backup routine created', 'success');
+    } catch (e) { toast(`Failed: ${e.message}`, 'error'); }
+}
+
+/* ============================================================
+   Nodes
+   ============================================================ */
+
+async function loadNodes() {
+    try {
+        const data = await api('GET', '/nodes');
+        const nodes = data.nodes || [];
+        const el = document.getElementById('nodes-list');
+        if (!el) return;
+        if (!nodes.length) { el.innerHTML = '<div class="empty-state"><i class="bi bi-pc-display-horizontal"></i><p>No remote nodes configured</p><p style="color:var(--text-muted);font-size:12px;margin-top:4px">Add a remote ANK device to manage it from here</p></div>'; return; }
+        el.innerHTML = nodes.map(n => {
+            const statusColor = n.status === 'online' ? 'var(--success)' : n.status === 'degraded' ? 'var(--warning)' : 'var(--danger)';
+            const statusLabel = n.status === 'online' ? 'Online' : n.status === 'degraded' ? 'Degraded' : 'Offline';
+            return `<div style="background:var(--bg-secondary);border:1px solid var(--border);border-radius:12px;padding:16px;margin-bottom:12px">
+                <div style="display:flex;justify-content:space-between;align-items:center">
+                    <div>
+                        <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
+                            <span style="width:8px;height:8px;border-radius:50%;background:${statusColor};flex-shrink:0"></span>
+                            <strong style="color:var(--text-primary)">${esc(n.hostname)}</strong>
+                            <span style="color:var(--text-muted);font-size:12px">${statusLabel}</span>
+                            ${n.device ? `<span style="color:var(--text-muted);font-size:11px">${esc(n.device)}</span>` : ''}
+                        </div>
+                        <div style="color:var(--text-muted);font-size:12px">CPU: ${esc(n.cpu || '-')} &middot; RAM: ${esc(n.ram || '-')} &middot; Disk: ${esc(n.disk || '-')} &middot; Uptime: ${esc(n.uptime || '-')}</div>
+                        <div style="color:var(--text-muted);font-size:12px;margin-top:2px">Containers: ${n.containers || 0} &middot; Stacks: ${n.stacks || 0}</div>
+                    </div>
+                    <div style="display:flex;gap:6px">
+                        <button class="btn btn-sm btn-ghost" onclick="refreshNode('${esc(n.id)}')" title="Refresh"><i class="bi bi-arrow-clockwise"></i></button>
+                        <button class="btn btn-sm btn-danger" onclick="deleteNode('${esc(n.id)}')" title="Remove"><i class="bi bi-trash"></i></button>
+                    </div>
+                </div>
+            </div>`;
+        }).join('');
+    } catch (e) { console.error('loadNodes', e); }
+}
+
+function showAddNodeModal() { showModal('add-node-modal'); }
+
+async function addNode() {
+    const hostname = document.getElementById('node-hostname')?.value?.trim();
+    if (!hostname) { toast('Hostname required', 'error'); return; }
+    try {
+        toast(`Adding node "${hostname}"...`, 'info');
+        await api('POST', '/nodes', {
+            hostname,
+            ssh_port: parseInt(document.getElementById('node-ssh-port')?.value || '22'),
+            ssh_pass: document.getElementById('node-ssh-pass')?.value || '',
+            root_pass: document.getElementById('node-root-pass')?.value || '',
+            device: document.getElementById('node-device')?.value || ''
+        });
+        hideModal('add-node-modal');
+        toast(`Node "${hostname}" added`, 'success');
+        loadNodes();
+    } catch (e) { toast(`Failed: ${e.message}`, 'error'); }
+}
+
+async function refreshNode(id) {
+    try { toast('Refreshing node...', 'info'); await api('POST', `/nodes/${encodeURIComponent(id)}/refresh`); toast('Node refreshed', 'success'); loadNodes(); } catch (e) { toast(`Failed: ${e.message}`, 'error'); }
+}
+
+async function deleteNode(id) {
+    const ok = await confirm(`Remove this node?`, 'Remove Node');
+    if (!ok) return;
+    try { await api('POST', `/nodes/${encodeURIComponent(id)}/delete`); toast('Node removed', 'success'); loadNodes(); } catch (e) { toast(`Failed: ${e.message}`, 'error'); }
+}
 
 /* ============================================================
    Theme (dark/light)

@@ -383,7 +383,7 @@ if [ ! -d "$ANKBASE/bin" ]; then
         echo "127.0.0.1 localhost" > "$ANKBASE/etc/hosts"
         echo "[ANK-INSTALL] Installing openssh, bash, s6 in ank-alpinebase-3.20..."
         mount -t proc proc "$ANKBASE/proc" 2>/dev/null
-        APK_PKGS="busybox bash shadow openssh openssl s6"
+        APK_PKGS="busybox bash shadow openssh openssl s6 sshpass nginx"
         APK_RETRIES=3
         RET=1
         for attempt in 1 2 3; do
