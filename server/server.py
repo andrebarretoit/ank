@@ -1980,10 +1980,20 @@ small{color:#334155}
                 def _chroot(cmd, timeout=30):
                     wrapped = "export PATH=/bin:/sbin:/usr/bin:/usr/sbin; " + cmd
                     full = f"chroot {merged} /bin/sh -c '{wrapped}'"
-                    return subprocess.run(
-                        ["/system/bin/sh", "-c", full],
-                        capture_output=True, text=True, timeout=timeout
-                    )
+                    try:
+                        return subprocess.run(
+                            ["/system/bin/sh", "-c", full],
+                            capture_output=True, text=True, timeout=timeout
+                        )
+                    except subprocess.TimeoutExpired as e:
+                        partial_out = (e.stdout or "") + (e.stderr or "")
+                        class _Result:
+                            pass
+                        r = _Result()
+                        r.returncode = -1
+                        r.stdout = partial_out
+                        r.stderr = f"TIMEOUT after {timeout}s"
+                        return r
 
                 _chroot('mkdir -p /etc; echo "nameserver 8.8.8.8" > /etc/resolv.conf; echo "nameserver 8.8.4.4" >> /etc/resolv.conf')
 
@@ -2003,9 +2013,10 @@ small{color:#334155}
                 if template.get("packages"):
                     pkg_list = " ".join(template["packages"])
                     log(f"Installing packages: {pkg_list} in {container_name}")
-                    r = _chroot(f"apk update && apk add --allow-untrusted {pkg_list}", timeout=120)
+                    r = _chroot(f"apk update && apk add --allow-untrusted {pkg_list}", timeout=180)
+                    output = (r.stdout or "") + (r.stderr or "")
                     if r.returncode != 0:
-                        log(f"WARNING: apk install output: {r.stderr[-500:] if r.stderr else r.stdout[-500:]}")
+                        log(f"WARNING: apk install output: {output[-500:]}")
 
                 if template_id == "nginx":
                     static_dir = template["static_path"]
@@ -2152,10 +2163,21 @@ small{color:#334155}
                 def _chroot(cmd, timeout=60):
                     wrapped = "export PATH=/bin:/sbin:/usr/bin:/usr/sbin; " + cmd
                     full = f"chroot {merged} /bin/sh -c '{wrapped}'"
-                    return subprocess.run(
-                        ["/system/bin/sh", "-c", full],
-                        capture_output=True, text=True, timeout=timeout
-                    )
+                    try:
+                        return subprocess.run(
+                            ["/system/bin/sh", "-c", full],
+                            capture_output=True, text=True, timeout=timeout
+                        )
+                    except subprocess.TimeoutExpired as e:
+                        # Return partial output so user can see what happened
+                        partial_out = (e.stdout or "") + (e.stderr or "")
+                        class _Result:
+                            pass
+                        r = _Result()
+                        r.returncode = -1
+                        r.stdout = partial_out
+                        r.stderr = f"TIMEOUT after {timeout}s"
+                        return r
 
                 _chroot('mkdir -p /etc; echo "nameserver 8.8.8.8" > /etc/resolv.conf; echo "nameserver 8.8.4.4" >> /etc/resolv.conf')
 
@@ -2163,11 +2185,16 @@ small{color:#334155}
                     log(f"Ankfile RUN: {cmd}")
                     with open(log_path, "a") as lf:
                         lf.write(f"RUN: {cmd}\n")
-                    r = _chroot(cmd, timeout=120)
+                        lf.flush()
+                    r = _chroot(cmd, timeout=300)
+                    output = (r.stdout or "") + (r.stderr or "")
                     if r.returncode != 0:
-                        log(f"Ankfile RUN failed: {r.stderr[-300:]}")
+                        log(f"Ankfile RUN failed: {output[-500:]}")
                         with open(log_path, "a") as lf:
-                            lf.write(f"FAILED: {r.stderr[-300:]}\n")
+                            lf.write(f"FAILED (rc={r.returncode}): {output[-500:]}\n")
+                    else:
+                        with open(log_path, "a") as lf:
+                            lf.write(f"OK: {output[-300:]}\n")
 
                 config = load_container_config(container_name)
                 if config:

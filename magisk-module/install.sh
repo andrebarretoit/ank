@@ -4,7 +4,7 @@ ANK_DIR="/data/local/ank"
 ANKFS="$ANK_DIR/ankfs"
 ANK_SDCARD="/sdcard/AndroidKonteiner"
 LOG_FILE="$ANK_DIR/logs/install.log"
-REPO="https://mirror.uepg.br/alpine/v3.22"
+REPO="http://dl-cdn.alpinelinux.org/alpine/v3.20"
 BASE_IMAGE="alpine-3.20"
 
 init_log() {
@@ -15,7 +15,7 @@ init_log() {
 log() {
     local level="$1"; shift
     echo "[$level] $*" >> "$LOG_FILE"
-    ui_print "[$level] $*"
+    [ "$level" != "INFO" ] && ui_print "[$level] $*"
 }
 
 die() {
@@ -110,11 +110,11 @@ detect_arch() {
 find_dl_tool() {
     DL=""
     if command -v curl >/dev/null 2>&1; then
-        DL="curl -L --connect-timeout 15 --max-time 300 -f -o"
+        DL="env -u LD_PRELOAD curl -L --connect-timeout 15 --max-time 300 -f -o"
     elif command -v wget >/dev/null 2>&1; then
-        DL="wget --timeout=300 -q -O"
+        DL="wget --timeout=300 -O"
     elif [ -f /system/bin/toybox ] && /system/bin/toybox wget --help >/dev/null 2>&1; then
-        DL="/system/bin/toybox wget --timeout=300 -q -O"
+        DL="/system/bin/toybox wget --timeout=300 -O"
     fi
     [ -z "$DL" ] && return 1
     return 0
@@ -122,47 +122,44 @@ find_dl_tool() {
 
 download_alpine() {
     local OUT_TAR="$1"
+    # Android su injects LD_PRELOAD=libsigchain.so which breaks curl SSL
+    unset LD_PRELOAD 2>/dev/null
     find_dl_tool || die "No download tool (wget/curl)"
-    # BR mirrors first (3.22/3.21), then international (3.20)
-    for VER_URL in \
-        "3.22.3|https://mirror.uepg.br/alpine/v3.22/releases/${ARCH_NAME}" \
-        "3.22.3|http://alpinelinux.c3sl.ufpr.br/alpine/v3.22/releases/${ARCH_NAME}" \
-        "3.21.7|https://mirror.uepg.br/alpine/v3.21/releases/${ARCH_NAME}" \
-        "3.21.7|http://alpinelinux.c3sl.ufpr.br/alpine/v3.21/releases/${ARCH_NAME}" \
-        "3.20.2|https://mirror.uepg.br/alpine/v3.20/releases/${ARCH_NAME}" \
-        "3.20.2|https://dl-cdn.alpinelinux.org/alpine/v3.20/releases/${ARCH_NAME}" \
-        "3.20.2|https://dl-ftp.alpinelinux.org/alpine/v3.20/releases/${ARCH_NAME}" \
-        "3.20.2|https://mirror.init7.net/alpine/v3.20/releases/${ARCH_NAME}" \
-        "3.20.2|https://alpine.global.ssl.fastly.net/alpine/v3.20/releases/${ARCH_NAME}" \
-        "3.20.1|https://dl-cdn.alpinelinux.org/alpine/v3.20/releases/${ARCH_NAME}" \
-        "3.20.0|https://dl-cdn.alpinelinux.org/alpine/v3.20/releases/${ARCH_NAME}" \
-        "3.19.1|https://dl-cdn.alpinelinux.org/alpine/v3.20/releases/${ARCH_NAME}"; do
-        local VER=$(echo "$VER_URL" | cut -d'|' -f1)
-        local BASE_URL=$(echo "$VER_URL" | cut -d'|' -f2)
-        local URL="${BASE_URL}/alpine-minirootfs-${VER}-${ARCH_NAME}.tar.gz"
-        log INFO "Downloading Alpine ${VER} ${ARCH_NAME}..."
-        log INFO "URL: $URL"
-        rm -f "$OUT_TAR"
+    for VER in "3.20.2" "3.20.1" "3.20.0" "3.19.1"; do
+        # Multiple mirrors for faster download (ordered by reliability)
+        for BASE_URL in \
+            "https://dl-cdn.alpinelinux.org/alpine/v3.20/releases/${ARCH_NAME}" \
+            "https://mirror.init7.net/alpine/v3.20/releases/${ARCH_NAME}" \
+            "https://uk.alpinelinux.org/alpine/v3.20/releases/${ARCH_NAME}" \
+            "https://mirror.uepg.br/alpine/v3.20/releases/${ARCH_NAME}" \
+            "https://alpine.mirror.lstn.net/alpine/v3.20/releases/${ARCH_NAME}"; do
+            local URL="${BASE_URL}/alpine-minirootfs-${VER}-${ARCH_NAME}.tar.gz"
+            log INFO "Downloading Alpine ${VER} ${ARCH_NAME}..."
+            log INFO "URL: $URL"
+            rm -f "$OUT_TAR"
         echo "[ANK-INSTALL] Downloading Alpine ${VER} for ${ARCH_NAME}..."
         echo "[ANK-INSTALL] URL: $URL"
-        $DL "$OUT_TAR" "$URL" 2>>"$LOG_FILE"
-        local DL_RC=$?
-        echo "[ANK-INSTALL] Download exit code: $DL_RC"
-        if [ -s "$OUT_TAR" ]; then
-            local FSIZE=$(stat -c%s "$OUT_TAR" 2>/dev/null || echo 0)
-            if [ "$FSIZE" -gt 100000 ]; then
-                local HEAD=$(dd if="$OUT_TAR" bs=1 count=2 2>/dev/null | od -A n -t x1 | tr -d ' ')
-                if [ "$HEAD" = "1f8b" ]; then
-                    log OK "Alpine ${VER} downloaded (${FSIZE} bytes)"
-                    echo "[ANK-INSTALL] OK: Alpine ${VER} downloaded (${FSIZE} bytes)"
-                    return 0
+        $DL "$OUT_TAR" "$URL" 2>&1
+        echo "[ANK-INSTALL] Download exit code: $?"
+            if [ -s "$OUT_TAR" ]; then
+                local FSIZE=$(stat -c%s "$OUT_TAR" 2>/dev/null || echo 0)
+                if [ "$FSIZE" -gt 100000 ]; then
+                    local HEAD=$(dd if="$OUT_TAR" bs=1 count=2 2>/dev/null | od -A n -t x1 | tr -d ' ')
+                    if [ "$HEAD" = "1f8b" ]; then
+                        log OK "Alpine ${VER} downloaded (${FSIZE} bytes)"
+                        echo "[ANK-INSTALL] OK: Alpine ${VER} downloaded (${FSIZE} bytes)"
+                        return 0
+                    fi
                 fi
+                echo "[ANK-INSTALL] WARN: Invalid download for ${VER} from $(echo $URL | cut -d/ -f3) (${FSIZE} bytes)"
+                rm -f "$OUT_TAR"
+            else
+                echo "[ANK-INSTALL] WARN: Download failed from $(echo $URL | cut -d/ -f3), retrying..."
+                sleep 2
             fi
-            echo "[ANK-INSTALL] WARN: Invalid download for ${VER} from $(echo $URL | cut -d/ -f3) (${FSIZE} bytes)"
-            rm -f "$OUT_TAR"
-        else
-            echo "[ANK-INSTALL] WARN: Download failed from $(echo $URL | cut -d/ -f3), trying next mirror..."
-        fi
+        done
+        log WARN "Invalid download for ${VER}, trying next version..."
+        echo "[ANK-INSTALL] WARN: All mirrors failed for ${VER}, trying next version..."
     done
     return 1
 }
@@ -202,6 +199,9 @@ extract_rootfs() {
 # ============================================================
 # MAIN
 # ============================================================
+
+# Android su injects LD_PRELOAD=libsigchain.so which breaks curl SSL
+unset LD_PRELOAD 2>/dev/null
 
 mkdir -p "$ANK_DIR/logs" "$ANK_DIR/cache"
 init_log
@@ -255,9 +255,7 @@ if [ ! -s "$ANKCORE" ]; then
     rm -rf "$MODPATH/META-INF"
     ANKCORE="$MODPATH/ankfs/ankcore-${ARCH_NAME}.tar.gz"
 fi
-if [ ! -s "$ANKCORE" ]; then
-    die "ankcore tarball not found in ZIP"
-fi
+
 TARBALL_FOUND=0
 [ -s "$ANKCORE" ] && TARBALL_FOUND=1
 
@@ -298,12 +296,8 @@ if [ "$TARBALL_FOUND" -eq 1 ]; then
         extract_rootfs "$ALPINE_CACHE" "$IMG_DIR" || die "Failed to extract container base image"
         # Configure repos + DNS on image
         mkdir -p "$IMG_DIR/etc/apk" "$IMG_DIR/var/cache/apk"
-        echo "https://mirror.uepg.br/alpine/v3.22/main" > "$IMG_DIR/etc/apk/repositories"
-        echo "https://mirror.uepg.br/alpine/v3.22/community" >> "$IMG_DIR/etc/apk/repositories"
-        echo "http://alpinelinux.c3sl.ufpr.br/alpine/v3.22/main" >> "$IMG_DIR/etc/apk/repositories"
-        echo "http://alpinelinux.c3sl.ufpr.br/alpine/v3.22/community" >> "$IMG_DIR/etc/apk/repositories"
-        echo "https://dl-cdn.alpinelinux.org/alpine/v3.20/main" >> "$IMG_DIR/etc/apk/repositories"
-        echo "https://dl-cdn.alpinelinux.org/alpine/v3.20/community" >> "$IMG_DIR/etc/apk/repositories"
+        echo "http://dl-cdn.alpinelinux.org/alpine/v3.20/main" > "$IMG_DIR/etc/apk/repositories"
+        echo "http://dl-cdn.alpinelinux.org/alpine/v3.20/community" >> "$IMG_DIR/etc/apk/repositories"
         echo "nameserver 8.8.8.8" > "$IMG_DIR/etc/resolv.conf"
         echo "nameserver 8.8.4.4" >> "$IMG_DIR/etc/resolv.conf"
         echo "127.0.0.1 localhost" > "$IMG_DIR/etc/hosts"
@@ -332,18 +326,15 @@ else
     echo "nameserver 8.8.8.8" > "$BUILDROOT/etc/resolv.conf"
     echo "nameserver 8.8.4.4" >> "$BUILDROOT/etc/resolv.conf"
     echo "127.0.0.1 localhost" > "$BUILDROOT/etc/hosts"
-    echo "https://mirror.uepg.br/alpine/v3.22/main" > "$BUILDROOT/etc/apk/repositories"
-    echo "https://mirror.uepg.br/alpine/v3.22/community" >> "$BUILDROOT/etc/apk/repositories"
-    echo "http://alpinelinux.c3sl.ufpr.br/alpine/v3.22/main" >> "$BUILDROOT/etc/apk/repositories"
-    echo "http://alpinelinux.c3sl.ufpr.br/alpine/v3.22/community" >> "$BUILDROOT/etc/apk/repositories"
-    echo "https://dl-cdn.alpinelinux.org/alpine/v3.20/main" >> "$BUILDROOT/etc/apk/repositories"
+    echo "https://dl-cdn.alpinelinux.org/alpine/v3.20/main" > "$BUILDROOT/etc/apk/repositories"
     echo "https://dl-cdn.alpinelinux.org/alpine/v3.20/community" >> "$BUILDROOT/etc/apk/repositories"
 
     # Install python3 + deps in ankfs
     log INFO "Installing python3, openssl, openssh in chroot..."
     echo "[ANK-INSTALL] Installing python3, openssl, openssh, bash..."
     mount -t proc proc "$BUILDROOT/proc" 2>/dev/null
-    chroot "$BUILDROOT" /bin/sh -c "apk update && apk add --no-cache python3 openssl openssh bash busybox shadow" 2>>"$LOG_FILE"
+    # apk is in /sbin on Alpine minirootfs — set PATH explicitly
+    chroot "$BUILDROOT" /bin/sh -c "export PATH=/sbin:/usr/sbin:/bin:/usr/bin; apk update && apk add --no-cache python3 openssl openssh bash busybox shadow" 2>>"$LOG_FILE"
     RET=$?
     umount "$BUILDROOT/proc" 2>/dev/null
     [ $RET -ne 0 ] && die "Failed to install packages in chroot"
@@ -364,12 +355,8 @@ else
     IMG_DIR="$ANK_DIR/images/$BASE_IMAGE"
     extract_rootfs "$ALPINE_CACHE" "$IMG_DIR" || die "Failed to extract container base image"
     mkdir -p "$IMG_DIR/etc/apk" "$IMG_DIR/var/cache/apk"
-    echo "https://mirror.uepg.br/alpine/v3.22/main" > "$IMG_DIR/etc/apk/repositories"
-    echo "https://mirror.uepg.br/alpine/v3.22/community" >> "$IMG_DIR/etc/apk/repositories"
-    echo "http://alpinelinux.c3sl.ufpr.br/alpine/v3.22/main" >> "$IMG_DIR/etc/apk/repositories"
-    echo "http://alpinelinux.c3sl.ufpr.br/alpine/v3.22/community" >> "$IMG_DIR/etc/apk/repositories"
-    echo "https://dl-cdn.alpinelinux.org/alpine/v3.20/main" >> "$IMG_DIR/etc/apk/repositories"
-    echo "https://dl-cdn.alpinelinux.org/alpine/v3.20/community" >> "$IMG_DIR/etc/apk/repositories"
+    echo "http://dl-cdn.alpinelinux.org/alpine/v3.20/main" > "$IMG_DIR/etc/apk/repositories"
+    echo "http://dl-cdn.alpinelinux.org/alpine/v3.20/community" >> "$IMG_DIR/etc/apk/repositories"
     echo "nameserver 8.8.8.8" > "$IMG_DIR/etc/resolv.conf"
     echo "nameserver 8.8.4.4" >> "$IMG_DIR/etc/resolv.conf"
     echo "127.0.0.1 localhost" > "$IMG_DIR/etc/hosts"
@@ -537,7 +524,8 @@ cp "$SRC/server/server.py" "$ANKFS/opt/ank/server.py"
 chmod 755 "$ANKFS/opt/ank/server.py"
 
 SC=0
-for f in "$SRC/server/static/"*; do [ -f "$f" ] && cp "$f" "$ANKFS/opt/ank/static/" && SC=$((SC+1)); done
+cp -r "$SRC/server/static/"* "$ANKFS/opt/ank/static/" 2>/dev/null
+SC=$(find "$ANKFS/opt/ank/static/" -type f 2>/dev/null | wc -l)
 
 SHC=0
 for f in "$SRC/scripts/"*.sh; do
@@ -550,7 +538,7 @@ done
 mkdir -p "$ANKFS/opt/ank/scripts"
 for f in "$SRC/scripts/"*.sh; do [ -f "$f" ] && cp "$f" "$ANKFS/opt/ank/scripts/"; done
 mkdir -p "$ANK_DIR/core/static"
-for f in "$SRC/server/static/"*; do [ -f "$f" ] && cp "$f" "$ANK_DIR/core/static/"; done
+cp -r "$SRC/server/static/"* "$ANK_DIR/core/static/" 2>/dev/null
 mkdir -p "$ANK_DIR/images"
 
 [ "$SHC" -eq 0 ] && die "No scripts found"
