@@ -564,8 +564,6 @@ async function pollContainerStatus(name, attempt) {
         }
     } catch (e) { loadAll(); }
 }
-    } catch (e) { loadAll(); }
-}
 
 async function startContainer(name) {
     setContainerLoading(name, 'start');
