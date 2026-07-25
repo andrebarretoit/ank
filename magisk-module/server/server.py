@@ -671,18 +671,24 @@ def _ws_shell_session(handler, cols=80, rows=24):
                 shell = s
                 break
 
-        log(f"WS_SHELL: fork (shell={shell})")
+        profile = os.path.join(ANK_DIR, "ankfs/opt/ank/ank-profile.sh")
+        has_profile = os.path.isfile(profile)
+
+        log(f"WS_SHELL: fork (shell={shell}, profile={has_profile})")
         pid, master_fd = pty.fork()
         if pid == 0:
             for k in ("TERM", "PATH", "HOME", "LANG", "USER", "SHELL"):
                 os.environ.pop(k, None)
             os.environ["TERM"] = "xterm-256color"
-            os.environ["PATH"] = "/system/bin:/system/xbin:/sbin:/vendor/bin:/bin:/usr/bin"
+            os.environ["PATH"] = f"{ANK_DIR}/ankfs/opt/ank/bin:/system/bin:/system/xbin:/sbin:/vendor/bin:/bin:/usr/bin"
             os.environ["HOME"] = "/root"
             os.environ["USER"] = "root"
             os.environ["SHELL"] = shell
             try:
-                os.execv(shell, [shell])
+                if has_profile:
+                    os.execl(shell, shell, "-c", f". {profile}; exec {shell} --login")
+                else:
+                    os.execv(shell, [shell])
             except Exception:
                 os.execv("/system/bin/sh", ["/system/bin/sh"])
         else:

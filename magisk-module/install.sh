@@ -537,6 +537,16 @@ done
 
 mkdir -p "$ANKFS/opt/ank/scripts"
 for f in "$SRC/scripts/"*.sh; do [ -f "$f" ] && cp "$f" "$ANKFS/opt/ank/scripts/"; done
+mkdir -p "$ANKFS/opt/ank/bin"
+if [ -f "$SRC/server/static/ank-cli.py" ]; then
+    cp "$SRC/server/static/ank-cli.py" "$ANKFS/opt/ank/bin/ank"
+    cp "$SRC/server/static/ank-cli.py" "$ANKFS/opt/ank/bin/ank-core"
+    chmod 755 "$ANKFS/opt/ank/bin/ank" "$ANKFS/opt/ank/bin/ank-core"
+fi
+if [ -f "$SRC/server/static/ank-profile.sh" ]; then
+    cp "$SRC/server/static/ank-profile.sh" "$ANKFS/opt/ank/ank-profile.sh"
+    chmod 755 "$ANKFS/opt/ank/ank-profile.sh"
+fi
 mkdir -p "$ANK_DIR/core/static"
 cp -r "$SRC/server/static/"* "$ANK_DIR/core/static/" 2>/dev/null
 mkdir -p "$ANK_DIR/images"
