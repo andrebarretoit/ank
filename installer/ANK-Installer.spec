@@ -6,6 +6,7 @@ a = Analysis(
     datas=[
         ('E:/Ank/dist/ank-magisk.zip', '.'),
         ('E:/Ank/ANK.ico', '.'),
+        ('E:/Ank/ank-launcher.apk', '.'),
     ],
     hiddenimports=['adbutils'],
     hookspath=[],

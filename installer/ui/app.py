@@ -30,6 +30,7 @@ class InstallerWindow(QMainWindow):
         self.detection_result = None
         self._detection_result = None
         self.recommended_tier = None
+        self.install_mode = "native"  # "native" or "ank_ui"
         self.install_complete = False
         self.install_failed = False
         self.reboot_complete = False

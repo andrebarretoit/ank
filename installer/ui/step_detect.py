@@ -3,7 +3,7 @@ ANK Installer - Step 2: Detect Compatibility (PySide6)
 """
 
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QLabel, QFrame, QTextEdit, QProgressBar, QPushButton
+    QWidget, QVBoxLayout, QLabel, QFrame, QTextEdit, QProgressBar, QComboBox
 )
 from PySide6.QtCore import Qt, QThread, Signal
 from ui.theme import COLORS, FONTS, TIER_COLORS
@@ -65,13 +65,6 @@ class StepDetect(QWidget):
         self.log.setMaximumHeight(200)
         layout.addWidget(self.log)
 
-        # Re-run button
-        self.rerun_btn = QPushButton("Executar novamente")
-        self.rerun_btn.setFixedWidth(180)
-        self.rerun_btn.clicked.connect(self._start_detection)
-        self.rerun_btn.hide()
-        layout.addWidget(self.rerun_btn, alignment=Qt.AlignLeft)
-
         # Tier recommendation card (hidden initially)
         self.tier_frame = QFrame()
         self.tier_frame.setObjectName("card")
@@ -92,6 +85,30 @@ class StepDetect(QWidget):
 
         self.tier_frame.hide()
         layout.addWidget(self.tier_frame)
+
+        # Installation Mode selector (hidden initially)
+        self.mode_frame = QFrame()
+        self.mode_frame.setObjectName("card")
+        mode_layout = QVBoxLayout(self.mode_frame)
+        mode_layout.setContentsMargins(16, 16, 16, 16)
+
+        self.mode_label = QLabel("Modo de Instalacao")
+        self.mode_label.setObjectName("subtitle")
+        mode_layout.addWidget(self.mode_label)
+
+        self.mode_combo = QComboBox()
+        self.mode_combo.addItem("Nativo - Engine ANK (acesso via web)")
+        self.mode_combo.addItem("ANK UI - Launcher (interface Android)")
+        self.mode_combo.currentIndexChanged.connect(self._on_mode_changed)
+        mode_layout.addWidget(self.mode_combo)
+
+        self.mode_desc = QLabel("")
+        self.mode_desc.setObjectName("subtitle")
+        self.mode_desc.setWordWrap(True)
+        mode_layout.addWidget(self.mode_desc)
+
+        self.mode_frame.hide()
+        layout.addWidget(self.mode_frame)
 
         layout.addStretch()
 
@@ -124,32 +141,54 @@ class StepDetect(QWidget):
             "isolated": ("Isolated", "NETNS + PIDNS + Overlay"),
             "shared_network": ("Shared Network", "PIDNS + Overlay (host network)"),
             "shared_host": ("Shared Host", "Chroot apenas"),
-            "native_host": ("Native Host", "Sem containerizacao"),
+            "native_host": ("Native Host", "Chroot sem namespace/overlay"),
             "lite": ("Lite", "PRoot userspace (sem root)"),
         }
         name, desc = tier_info.get(tier, (tier, ""))
 
-        # Add root manager info if available
-        if hasattr(self.app, '_detection_result') and self.app._detection_result:
-            result = self.app._detection_result
-            if result.root_manager:
-                desc += f" ({result.root_manager})"
-            if result.has_termux:
+        # Add root manager info (handle both dict and object)
+        if result_dict:
+            root_manager = result_dict.get("root_manager", "") if isinstance(result_dict, dict) else getattr(result_dict, "root_manager", "")
+            has_termux = result_dict.get("has_termux", False) if isinstance(result_dict, dict) else getattr(result_dict, "has_termux", False)
+            if root_manager:
+                desc += f" ({root_manager})"
+            if has_termux:
                 desc += " [Termux]"
 
         self.tier_name.setText(f"{name}")
         self.tier_name.setStyleSheet(f"color: {TIER_COLORS.get(tier, '#fff')}; font-size: 18px; font-weight: bold;")
         self.tier_desc.setText(desc)
         self.tier_frame.show()
-        self.rerun_btn.show()
         self.app._update_buttons()
+
+        # Show installation mode selector
+        self._update_mode_desc()
+        self.mode_frame.show()
+
+    def _on_mode_changed(self, index):
+        self._update_mode_desc()
+        # Store selected mode in app
+        self.app.install_mode = "native" if index == 0 else "ank_ui"
+
+    def _update_mode_desc(self):
+        index = self.mode_combo.currentIndex()
+        if index == 0:
+            self.mode_desc.setText(
+                "Instala apenas a engine ANK (server + chroot). "
+                "Acesso via web normal pelo browser. Nao interfere no Android."
+            )
+        else:
+            self.mode_desc.setText(
+                "Instala o ANK Launcher que substitui o launcher padrao do Android. "
+                "Transforma o device em device proprio para containerizacao. "
+                "Altera a UI do Android para a interface do ANK."
+            )
 
     def _start_detection(self):
         """Start compatibility detection."""
         self.log.clear()
         self.progress.setValue(0)
         self.tier_frame.hide()
-        self.rerun_btn.hide()
         self.app.recommended_tier = None
         self.app._update_buttons()
 
@@ -169,11 +208,10 @@ class StepDetect(QWidget):
             self._add_log("Erro", False, str(e))
 
     def on_show(self):
-        """Check cache first, then run detection if needed."""
+        """Auto-run detection (check cache first)."""
         self.log.clear()
-        self.progress.setValue(100)
+        self.progress.setValue(0)
         self.tier_frame.hide()
-        self.rerun_btn.hide()
 
         device = self.app.device_data
         if not device:
@@ -185,6 +223,11 @@ class StepDetect(QWidget):
         cached = load_detection(device.serial)
         if cached:
             self._add_log("Cache", True, "Resultados anteriores encontrados")
+            # Populate log from cached checks
+            for check in cached.get("checks", []):
+                if len(check) >= 3:
+                    self._add_log(check[0], check[1], check[2])
+            self.progress.setValue(100)
             self.app.recommended_tier = cached.get("recommended_tier", "lite")
             self._on_finished(self.app.recommended_tier, cached)
             return

@@ -1287,11 +1287,12 @@ small{color:#334155}
         def _do_create():
             log_path = os.path.join(ANK_DIR, "logs", f"{name}.log")
             try:
-                pkgs = ""
+                template = None
                 for t in self.IMAGE_TEMPLATES:
                     if t["base"] == image or t["image"] == image:
-                        pkgs = " ".join(t.get("packages", []))
+                        template = t
                         break
+                pkgs = " ".join(template.get("packages", [])) if template else ""
                 with open(log_path, "w") as lf:
                     lf.write(f"Creating container '{name}' (image: {image})...\n")
                     lf.flush()
@@ -1306,6 +1307,10 @@ small{color:#334155}
                     else:
                         log(f"Container {name} created")
                         cfg["status"] = "stopped"
+                        cfg["image"] = image
+                        if template:
+                            cfg["template"] = template["id"]
+                            cfg["template_name"] = template["name"]
                     save_container_config(name, cfg)
             except Exception as e:
                 log(f"ERROR: create thread {name}: {e}")
@@ -1993,7 +1998,6 @@ small{color:#334155}
                     lf.write(f"Deploying template '{template['name']}' as '{container_name}'...\n")
                     lf.flush()
 
-                ssh_port = self._find_free_port(2200)
                 pkgs = " ".join(template.get("packages", []))
                 output, code = run_script("container.sh", "create", container_name, "alpine-3.20", str(root_password), str(ssh_port), pkgs)
                 with open(log_path, "a") as lf:
@@ -2070,32 +2074,37 @@ small{color:#334155}
                     _chroot(f'mkdir -p {static_dir} /run/nginx')
                     _write_file(os.path.join(merged, static_dir.lstrip('/'), 'index.html'), ANK_NGINX_HTML)
                     _write_file(os.path.join(merged, 'etc/nginx/nginx.conf'), ANK_NGINX_CONF)
-                    _chroot_bg('nginx -g "daemon off;"')
+                    _chroot(f'mkdir -p /etc/ank')
+                    _write_file(os.path.join(merged, 'etc/ank/service'), 'nginx')
 
                 elif template_id == "apache":
                     static_dir = template["static_path"]
                     _chroot(f'mkdir -p {static_dir}')
                     _write_file(os.path.join(merged, static_dir.lstrip('/'), 'index.html'), ANK_APACHE_HTML)
-                    _chroot_bg('httpd -f -p 8080 -h /var/www/localhost/htdocs')
+                    _chroot(f'mkdir -p /etc/ank')
+                    _write_file(os.path.join(merged, 'etc/ank/service'), 'apache')
 
                 elif template_id == "php":
                     php_dir = "/var/www/php"
                     _chroot(f'mkdir -p {php_dir}')
                     _write_file(os.path.join(merged, php_dir.lstrip('/'), 'index.php'), ANK_PHP_INDEX)
-                    _chroot_bg(f'cd {php_dir} && php82 -S 0.0.0.0:8080')
+                    _chroot(f'mkdir -p /etc/ank')
+                    _write_file(os.path.join(merged, 'etc/ank/service'), 'php')
 
                 elif template_id == "node":
                     node_dir = "/var/www/app"
                     _chroot(f'mkdir -p {node_dir}')
                     _write_file(os.path.join(merged, node_dir.lstrip('/'), 'server.js'), ANK_NODE_SERVER)
                     _write_file(os.path.join(merged, node_dir.lstrip('/'), 'package.json'), '{"name":"ank-node-app","version":"1.0.0","main":"server.js"}')
-                    _chroot_bg(f'cd {node_dir} && node server.js')
+                    _chroot(f'mkdir -p /etc/ank')
+                    _write_file(os.path.join(merged, 'etc/ank/service'), 'node')
 
                 elif template_id == "python":
                     py_dir = "/var/www/app"
                     _chroot(f'mkdir -p {py_dir}')
                     _write_file(os.path.join(merged, py_dir.lstrip('/'), 'server.py'), ANK_PYTHON_SERVER)
-                    _chroot_bg(f'cd {py_dir} && python3 server.py')
+                    _chroot(f'mkdir -p /etc/ank')
+                    _write_file(os.path.join(merged, 'etc/ank/service'), 'python')
 
                 cfg = load_container_config(container_name)
                 if cfg:

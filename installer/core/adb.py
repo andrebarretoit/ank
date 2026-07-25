@@ -242,23 +242,30 @@ class ADB:
         output, _ = self.shell(serial, "pm list packages 2>/dev/null | grep ank")
         return bool(output and "ank" in output.lower())
 
-    def uninstall_ank_ui(self, serial: str) -> bool:
+    def uninstall_ank_ui(self, serial: str, callback=None) -> bool:
         """Uninstall ANK UI (launcher) from the device."""
+        if callback:
+            callback("Removendo ANK UI...")
         output, _ = self.shell(serial, "pm list packages 2>/dev/null | grep ank")
         if output:
             for line in output.strip().split("\n"):
                 pkg = line.replace("package:", "").strip()
                 if pkg:
+                    if callback:
+                        callback(f"Desinstalando {pkg}...")
                     self.shell(serial, f"pm uninstall {pkg}")
         return True
 
-    def uninstall_ank_full(self, serial: str, rooted: bool = True) -> bool:
+    def uninstall_ank_full(self, serial: str, rooted: bool = True, callback=None) -> bool:
         """Full uninstall of ANK from the device."""
-        if rooted:
-            self.shell_su(serial, "rm -rf /data/local/ank")
-            self.shell_su(serial, "rm -rf /sdcard/AndroidKonteiner")
-        else:
-            self.shell(serial, "rm -rf /data/local/ank")
-            self.shell(serial, "rm -rf /sdcard/AndroidKonteiner")
-        self.uninstall_ank_ui(serial)
+        steps = [
+            ("Removendo /data/local/ank...", lambda: self.shell_su(serial, "rm -rf /data/local/ank") if rooted else self.shell(serial, "rm -rf /data/local/ank")),
+            ("Removendo /sdcard/AndroidKonteiner...", lambda: self.shell_su(serial, "rm -rf /sdcard/AndroidKonteiner") if rooted else self.shell(serial, "rm -rf /sdcard/AndroidKonteiner")),
+            ("Removendo ANK UI...", lambda: self.uninstall_ank_ui(serial, callback)),
+            ("Limpando caches...", lambda: self.shell(serial, "rm -rf /data/local/tmp/ank* 2>/dev/null")),
+        ]
+        for msg, func in steps:
+            if callback:
+                callback(msg)
+            func()
         return True

@@ -28,37 +28,60 @@ class InstallThread(QThread):
 
     def run(self):
         try:
-            tier = self.app.recommended_tier
-            if tier == "native_host":
-                self._install_native()
-            elif self.app.device_data and getattr(self.app.device_data, 'is_rooted', False):
+            install_mode = getattr(self.app, 'install_mode', 'native')
+            device = self.app.device_data
+            has_magisk = self.app._detection_result.get("has_magisk", False) if isinstance(self.app._detection_result, dict) else getattr(self.app._detection_result, "has_magisk", False) if self.app._detection_result else False
+
+            if install_mode == "ank_ui":
+                self._install_ank_ui_mode()
+            elif device and not getattr(device, 'is_rooted', False):
+                self._install_lite()
+            elif has_magisk:
                 self._install_rooted()
             else:
-                self._install_lite()
+                self._install_manual()
             self.done.emit(True, "Instalacao concluida!")
         except Exception as e:
             self.done.emit(False, str(e))
 
-    def _install_native(self):
-        from core.installer_native import NativeInstaller
-
-        def callback(step, message, progress_val):
-            self.progress.emit(progress_val, message)
-            self.log.emit(message)
-
-        installer = NativeInstaller(self.adb, self.serial, callback=callback)
-        success = installer.install()
-        if not success:
-            raise Exception("Instalacao nativa falhou")
-
-        # Install ANK UI APK if available
+    def _install_ank_ui_mode(self):
+        """Install ANK engine + ANK UI launcher."""
         import sys
+        import os
+
         if getattr(sys, 'frozen', False):
             base_path = sys._MEIPASS
             exe_dir = os.path.dirname(sys.executable)
         else:
             base_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
             exe_dir = os.path.join(base_path, "..")
+
+        # 1. Install ANK engine
+        tier = self.app.recommended_tier
+        device = self.app.device_data
+        has_magisk = self.app._detection_result.get("has_magisk", False) if isinstance(self.app._detection_result, dict) else getattr(self.app._detection_result, "has_magisk", False) if self.app._detection_result else False
+
+        def callback(step, message, progress_val):
+            self.progress.emit(progress_val * 0.7, message)
+            self.log.emit(message)
+
+        if device and not getattr(device, 'is_rooted', False):
+            from core.installer_lite import LiteInstaller
+            installer = LiteInstaller(self.adb, self.serial, callback=callback)
+            if not installer.install():
+                raise Exception("Instalacao Lite falhou")
+        elif has_magisk:
+            self._install_rooted()
+            return
+        else:
+            from core.installer_manual import ManualInstaller
+            installer = ManualInstaller(self.adb, self.serial, callback=callback)
+            if not installer.install():
+                raise Exception("Instalacao manual falhou")
+
+        # 2. Install ANK UI APK
+        self.progress.emit(0.75, "Instalando ANK UI...")
+        self.log.emit("Buscando ank-launcher.apk...")
 
         apk_candidates = [
             os.path.join(exe_dir, "ank-launcher.apk"),
@@ -70,11 +93,39 @@ class InstallThread(QThread):
                 apk_path = c
                 break
 
-        if apk_path:
-            self.log.emit("Instalando ANK UI...")
-            installer.install_ank_ui(apk_path)
-        else:
-            self.log.emit("ank-launcher.apk nao encontrado - ANK UI nao instalado")
+        if not apk_path:
+            self.log.emit("WARN: ank-launcher.apk nao encontrado - ANK UI nao instalado")
+            return
+
+        self.progress.emit(0.8, "Instalando ANK Launcher...")
+        self.log.emit(f"Instalando: {apk_path}")
+        result = self.adb._run_device(self.serial, ["install", "-r", apk_path], timeout=60)
+        if result.returncode != 0:
+            self.log.emit(f"WARN: Falha ao instalar ANK UI: {result.stderr}")
+            return
+
+        self.log.emit("OK: ANK Launcher instalado")
+
+        # 3. Set ANK UI as default launcher
+        self.progress.emit(0.9, "Configurando ANK UI como launcher padrao...")
+        self.log.emit("Definindo ANK UI como app de inicio padrao...")
+
+        # Find ANK UI package name
+        output, _ = self.adb.shell(self.serial, "pm list packages 2>/dev/null | grep ank")
+        if output:
+            for line in output.strip().split("\n"):
+                pkg = line.replace("package:", "").strip()
+                if pkg and "launcher" in pkg.lower() or "ank" in pkg.lower():
+                    # Set as default home activity
+                    self.adb.shell(self.serial,
+                        f"cmd package set-home-activity {pkg}/.MainActivity 2>/dev/null")
+                    self.adb.shell(self.serial,
+                        f"input keyevent KEYCODE_HOME 2>/dev/null")
+                    self.log.emit(f"OK: {pkg} definido como launcher padrao")
+                    break
+
+        self.progress.emit(1.0, "Instalacao ANK UI concluida!")
+        self.log.emit("ANK UI instalado com sucesso!")
 
     def _install_rooted(self):
         # 1. Find zip and ankcore from PyInstaller bundle or disk

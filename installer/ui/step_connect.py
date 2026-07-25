@@ -41,6 +41,27 @@ class DevicePollThread(QThread):
         self._running = False
 
 
+class UninstallThread(QThread):
+    """Background thread for uninstall."""
+    progress = Signal(str)
+    done = Signal(bool, str)
+
+    def __init__(self, adb, serial, rooted):
+        super().__init__()
+        self.adb = adb
+        self.serial = serial
+        self.rooted = rooted
+
+    def run(self):
+        try:
+            def callback(msg):
+                self.progress.emit(msg)
+            self.adb.uninstall_ank_full(self.serial, self.rooted, callback)
+            self.done.emit(True, "Desinstalacao concluida!")
+        except Exception as e:
+            self.done.emit(False, str(e))
+
+
 class StepConnect(QWidget):
     """Step 1: Connect Device."""
 
@@ -216,16 +237,39 @@ class StepConnect(QWidget):
                 adb = ADB()
                 device = self.app.device_data
                 if device:
-                    adb.uninstall_ank_full(device.serial, device.is_rooted)
-                    self.ank_frame.hide()
-                    self.status_label.setText("ANK desinstalado com sucesso")
-                    self.status_label.setStyleSheet(f"color: {COLORS['success']};")
+                    self.btn_uninstall.setEnabled(False)
+                    self.btn_uninstall.setText("Desinstalando...")
+                    self.ank_status.setText("Desinstalando ANK...")
+                    self.ank_status.setStyleSheet(f"color: {COLORS['warning']}; font-size: 12px;")
+
+                    self._uninstall_thread = UninstallThread(adb, device.serial, device.is_rooted)
+                    self._uninstall_thread.progress.connect(self._on_uninstall_progress)
+                    self._uninstall_thread.done.connect(self._on_uninstall_done)
+                    self._uninstall_thread.start()
             except Exception as e:
                 self.status_label.setText(f"Erro ao desinstalar: {e}")
                 self.status_label.setStyleSheet(f"color: {COLORS['error']};")
+                self.btn_uninstall.setEnabled(True)
+                self.btn_uninstall.setText("Desinstalar ANK")
+
+    def _on_uninstall_progress(self, msg):
+        self.ank_status.setText(f"Desinstalando ANK...\n{msg}")
+        self.ank_status.setStyleSheet(f"color: {COLORS['warning']}; font-size: 12px;")
+
+    def _on_uninstall_done(self, success, msg):
+        self.btn_uninstall.setEnabled(True)
+        self.btn_uninstall.setText("Desinstalar ANK")
+        if success:
+            self.ank_frame.hide()
+            self.status_label.setText("ANK desinstalado com sucesso")
+            self.status_label.setStyleSheet(f"color: {COLORS['success']};")
+        else:
+            self.ank_status.setText(f"Erro: {msg}")
+            self.ank_status.setStyleSheet(f"color: {COLORS['error']}; font-size: 12px;")
 
     def on_show(self):
-        pass
+        """Auto-start device detection."""
+        self._start_detection()
 
     def on_hide(self):
         if self._thread:

@@ -59,6 +59,7 @@ class StepConfirm(QWidget):
         """Update display with current data."""
         device = self.app.device_data
         tier = self.app.recommended_tier
+        install_mode = getattr(self.app, 'install_mode', 'native')
 
         if device:
             model = getattr(device, 'model', 'Unknown') or 'Unknown'
@@ -82,13 +83,14 @@ class StepConfirm(QWidget):
         self.labels["mode"].setText(f"Modo: {tier_name}")
         self.labels["mode"].setStyleSheet(f"color: {color}; font-size: 13px; font-weight: bold;")
 
-        if tier == "native_host":
-            self.labels["storage"].setText("Armazenamento: ~50MB (servidor apenas)")
+        if install_mode == "ank_ui":
+            self.labels["storage"].setText("Instalacao: ANK UI (launcher)")
             self.desc_label.setText(
                 "O instalador ira:\n"
-                "  1. Configurar o servidor ANK\n"
-                "  2. Instalar ANK UI (launcher)\n"
-                "  3. Criar configuracao inicial"
+                "  1. Instalar a engine ANK (server + chroot)\n"
+                "  2. Instalar o ANK Launcher\n"
+                "  3. Configurar como launcher padrao\n"
+                "  4. Reiniciar o dispositivo"
             )
         elif tier == "lite":
             self.labels["storage"].setText("Armazenamento: ~150MB (rootfs)")
