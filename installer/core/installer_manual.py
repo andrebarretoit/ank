@@ -78,14 +78,14 @@ class ManualInstaller:
             base_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
             exe_dir = os.path.join(base_path, "..")
 
-        # Find tarball
-        tarball_candidates = [
+        # Find zip (contains the tarball)
+        zip_candidates = [
             os.path.join(exe_dir, "ank-magisk.zip"),
             os.path.join(base_path, "ank-magisk.zip"),
         ]
 
         zip_path = None
-        for c in tarball_candidates:
+        for c in zip_candidates:
             if os.path.isfile(c):
                 zip_path = c
                 break
@@ -188,6 +188,10 @@ class ManualInstaller:
                     local = os.path.join(scripts_dir, f)
                     self.adb.push(self.serial, local, f"{remote_scripts}/{f}")
             self.adb.shell_su(self.serial, f"chmod 755 {remote_scripts}/*.sh 2>/dev/null")
+
+        # Images directory (for Alpine base + container base)
+        self.adb.shell_su(self.serial, f"mkdir -p {ank_dir}/images/alpine-3.20")
+        self.adb.shell_su(self.serial, f"mkdir -p {ank_dir}/images/ank-alpinebase")
 
     def _setup_services(self):
         """Setup Android service scripts in /adb/services.d/."""

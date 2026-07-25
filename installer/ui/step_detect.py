@@ -208,7 +208,7 @@ class StepDetect(QWidget):
             self._add_log("Erro", False, str(e))
 
     def on_show(self):
-        """Auto-run detection (check cache first)."""
+        """Auto-run detection. Cache only when going back from Step 3."""
         self.log.clear()
         self.progress.setValue(0)
         self.tier_frame.hide()
@@ -218,19 +218,20 @@ class StepDetect(QWidget):
             self._add_log("Erro", False, "Nenhum dispositivo selecionado")
             return
 
-        # Check cache
-        from core.cache import load_detection
-        cached = load_detection(device.serial)
-        if cached:
-            self._add_log("Cache", True, "Resultados anteriores encontrados")
-            # Populate log from cached checks
-            for check in cached.get("checks", []):
-                if len(check) >= 3:
-                    self._add_log(check[0], check[1], check[2])
-            self.progress.setValue(100)
-            self.app.recommended_tier = cached.get("recommended_tier", "lite")
-            self._on_finished(self.app.recommended_tier, cached)
-            return
+        # Use cache ONLY when going back from Step 3
+        if self.app._came_from_step3:
+            self.app._came_from_step3 = False
+            from core.cache import load_detection
+            cached = load_detection(device.serial)
+            if cached:
+                self._add_log("Cache", True, "Resultados da sessao anterior")
+                for check in cached.get("checks", []):
+                    if len(check) >= 3:
+                        self._add_log(check[0], check[1], check[2])
+                self.progress.setValue(100)
+                self.app.recommended_tier = cached.get("recommended_tier", "lite")
+                self._on_finished(self.app.recommended_tier, cached)
+                return
 
-        # No cache, run detection
+        # Always run fresh detection
         self._start_detection()

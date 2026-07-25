@@ -258,7 +258,7 @@ class LiteInstaller:
             self.adb.shell(self.serial, cmd, timeout=120)
 
     def _copy_server_files(self):
-        """Copy server.py and static files to the device."""
+        """Copy server.py, static files, and core scripts to the device."""
         script_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         project_dir = os.path.dirname(script_dir)
 
@@ -277,13 +277,33 @@ class LiteInstaller:
                     local = os.path.join(root, f)
                     rel = os.path.relpath(local, static_dir).replace("\\", "/")
                     remote = f"{REMOTE_ROOTFS}/opt/ank/static/{rel}"
-                    # Ensure remote dir exists
                     remote_dir = os.path.dirname(remote)
                     self.adb.shell(self.serial, f"mkdir -p {remote_dir}")
                     self.adb.push(self.serial, local, remote)
 
-        # Core scripts (for lite mode, simplified)
-        self.adb.shell(self.serial, f"mkdir -p {ANK_DIR}/core")
+        # Core scripts
+        scripts_dir = os.path.join(project_dir, "magisk-module", "scripts")
+        remote_scripts = f"{ANK_DIR}/core"
+        self.adb.shell(self.serial, f"mkdir -p {remote_scripts}")
+        if os.path.isdir(scripts_dir):
+            for f in os.listdir(scripts_dir):
+                if f.endswith(".sh"):
+                    local = os.path.join(scripts_dir, f)
+                    self.adb.push(self.serial, local, f"{remote_scripts}/{f}")
+            self.adb.shell(self.serial, f"chmod 755 {remote_scripts}/*.sh 2>/dev/null")
+
+        # Images directory (for Alpine base + container base)
+        self.adb.shell(self.serial, f"mkdir -p {ANK_DIR}/images/alpine-3.20")
+        self.adb.shell(self.serial, f"mkdir -p {ANK_DIR}/images/ank-alpinebase")
+
+        # Containers structure
+        self.adb.shell(self.serial, f"mkdir -p {ANK_DIR}/containers")
+
+        # Logs directory
+        self.adb.shell(self.serial, f"mkdir -p {ANK_DIR}/logs")
+
+        # Cache directory
+        self.adb.shell(self.serial, f"mkdir -p {ANK_DIR}/cache")
 
     def _create_config(self):
         """Create default config.json."""

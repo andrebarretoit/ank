@@ -35,6 +35,7 @@ class InstallerWindow(QMainWindow):
         self.install_failed = False
         self.reboot_complete = False
         self.device_ip = None
+        self._came_from_step3 = False
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -164,22 +165,16 @@ class InstallerWindow(QMainWindow):
     def _update_buttons(self):
         idx = self.current_step
 
-        # Back: blocked after step 2 (confirm). Only exit on install fail.
+        # Back: blocked after step 3 (install started). Only exit on install fail.
         if self.install_failed and idx == 3:
             self.btn_back.setText("\u2190 Sair")
             self.btn_back.setEnabled(True)
-        elif self.install_complete or self.reboot_complete or idx >= 3:
+        elif self.install_complete or self.reboot_complete or idx >= 4:
             self.btn_back.setText("\u2190 Voltar")
             self.btn_back.setEnabled(False)
         elif idx == 0:
             self.btn_back.setText("\u2190 Voltar")
             self.btn_back.setEnabled(False)
-        elif idx == 1:
-            self.btn_back.setText("\u2190 Voltar")
-            self.btn_back.setEnabled(True)
-        elif idx == 2:
-            self.btn_back.setText("\u2190 Voltar")
-            self.btn_back.setEnabled(True)
         else:
             self.btn_back.setText("\u2190 Voltar")
             self.btn_back.setEnabled(True)
@@ -219,7 +214,10 @@ class InstallerWindow(QMainWindow):
             return
         if self.reboot_complete and self.current_step == 4:
             return
-        if self.current_step > 0 and self.current_step <= 2:
+        if self.current_step == 3:
+            self._came_from_step3 = True
+            self.show_step(2)
+        elif self.current_step > 0 and self.current_step <= 2:
             self.show_step(self.current_step - 1)
 
     def _on_next(self):
