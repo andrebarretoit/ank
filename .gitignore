@@ -9,3 +9,5 @@ __pycache__/
 *.svg
 *.apk
 *.tar.gz
+build_zip.py
+build_exe.py
