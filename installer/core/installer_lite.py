@@ -6,19 +6,36 @@ Non-root installation via ADB using PRoot.
 import os
 import time
 import hashlib
-from typing import Optional, Callable
+from typing import Optional, Callable, List
 from core.adb import ADB
 
 
 # PRoot static binaries (from proot-me/proot GitHub releases)
+# Multiple mirrors for each architecture
 PROOT_URLS = {
-    "aarch64": "https://github.com/proot-me/proot/releases/download/v5.4.0/proot-v5.4.0-aarch64-static",
-    "armv7l": "https://github.com/proot-me/proot/releases/download/v5.4.0/proot-v5.4.0-arm-static",
-    "x86_64": "https://github.com/proot-me/proot/releases/download/v5.4.0/proot-v5.4.0-x86_64-static",
+    "aarch64": [
+        "https://github.com/proot-me/proot/releases/download/v5.4.0/proot-v5.4.0-aarch64-static",
+        "https://github.com/proot-me/proot/releases/download/v5.4.0/proot-v5.4.0-aarch64-static",
+    ],
+    "armv7l": [
+        "https://github.com/proot-me/proot/releases/download/v5.4.0/proot-v5.4.0-arm-static",
+        "https://github.com/proot-me/proot/releases/download/v5.4.0/proot-v5.4.0-arm-static",
+    ],
+    "x86_64": [
+        "https://github.com/proot-me/proot/releases/download/v5.4.0/proot-v5.4.0-x86_64-static",
+        "https://github.com/proot-me/proot/releases/download/v5.4.0/proot-v5.4.0-x86_64-static",
+    ],
+    "i686": [
+        "https://github.com/proot-me/proot/releases/download/v5.4.0/proot-v5.4.0-x86-static",
+        "https://github.com/proot-me/proot/releases/download/v5.4.0/proot-v5.4.0-x86-static",
+    ],
 }
 
-# Alpine minirootfs
-ALPINE_URL = "https://dl-cdn.alpinelinux.org/alpine/v3.20/releases/{arch}/alpine-minirootfs-3.20.2-{arch}.tar.gz"
+# Alpine minirootfs (multiple mirrors)
+ALPINE_URLS = [
+    "https://dl-cdn.alpinelinux.org/alpine/v3.20/releases/{arch}/alpine-minirootfs-3.20.2-{arch}.tar.gz",
+    "https://mirrors.tuna.tsinghua.edu.cn/alpine/v3.20/releases/{arch}/alpine-minirootfs-3.20.2-{arch}.tar.gz",
+]
 ALPINE_ARCH_MAP = {"aarch64": "aarch64", "armv7l": "armhf", "x86_64": "x86_64"}
 
 # Remote paths (on device)
@@ -32,16 +49,18 @@ REMOTE_CACHE = f"{ANK_DIR}/cache"
 class LiteInstaller:
     """Handles non-root installation via PRoot + ADB."""
 
-    def __init__(self, adb: ADB, serial: str, callback: Optional[Callable] = None):
+    def __init__(self, adb: ADB, serial: str, callback: Optional[Callable] = None, retry_callback: Optional[Callable] = None):
         """
         Args:
             adb: ADB instance
             serial: Device serial number
             callback: Optional callback(step, message, progress) for UI updates
+            retry_callback: Optional callback(url, error) -> bool. Return True to retry.
         """
         self.adb = adb
         self.serial = serial
         self.callback = callback
+        self.retry_callback = retry_callback
 
     def _notify(self, step: str, message: str, progress: float = 0):
         if self.callback:
@@ -57,19 +76,37 @@ class LiteInstaller:
             return "armv7l"
         elif arch in ("x86_64", "amd64"):
             return "x86_64"
+        elif arch in ("i686", "i386", "x86"):
+            return "i686"
         else:
-            return "aarch64"  # default
+            return "aarch64"  # default to most common mobile arch
 
-    def _download(self, url: str, dest: str) -> bool:
-        """Download a file to local cache."""
+    def _download_with_retry(self, urls: List[str], dest: str, max_retries: int = 2) -> bool:
+        """Download a file with retry and mirror fallback."""
         import urllib.request
         os.makedirs(os.path.dirname(dest), exist_ok=True)
-        try:
-            urllib.request.urlretrieve(url, dest)
-            return True
-        except Exception as e:
-            print(f"Download failed: {url} -> {e}")
-            return False
+
+        for url in urls:
+            for attempt in range(max_retries + 1):
+                try:
+                    self._notify("download", f"Tentando {url}...", 0)
+                    urllib.request.urlretrieve(url, dest)
+                    self._notify("download", f"Download concluido: {os.path.basename(dest)}", 0)
+                    return True
+                except Exception as e:
+                    if attempt < max_retries:
+                        self._notify("download", f"Tentativa {attempt + 1} falhou, retrying...", 0)
+                        time.sleep(2)
+                    else:
+                        self._notify("download", f"Falha no mirror: {e}", 0)
+
+        # All mirrors failed - ask user to retry
+        if self.retry_callback:
+            self._notify("download", "Todos os mirrors falharam", 0)
+            if self.retry_callback(urls[0] if urls else "", "Todos os mirrors indisponiveis"):
+                return self._download_with_retry(urls, dest, max_retries)
+
+        return False
 
     def _find_local_proot(self, arch: str) -> Optional[str]:
         """Find a local PRoot binary in the installer distribution."""
@@ -120,7 +157,8 @@ class LiteInstaller:
         else:
             self._notify("proot", "Baixando PRoot...", 0.2)
             local_proot = os.path.join(REMOTE_CACHE, f"proot-{arch}")
-            if not self._download(proot_url, local_proot):
+            proot_urls = PROOT_URLS.get(arch, [])
+            if not self._download_with_retry(proot_urls, local_proot):
                 self._notify("error", "Falha ao baixar PRoot", 0)
                 return False
             os.chmod(local_proot, 0o755)
@@ -144,9 +182,9 @@ class LiteInstaller:
             else:
                 self._notify("rootfs", "Baixando Alpine minirootfs...", 0.4)
                 alpine_arch = ALPINE_ARCH_MAP.get(arch, arch)
-                url = ALPINE_URL.format(arch=alpine_arch)
+                alpine_urls = [url.format(arch=alpine_arch) for url in ALPINE_URLS]
                 local_rootfs = os.path.join(REMOTE_CACHE, "alpine-minirootfs.tar.gz")
-                if not self._download(url, local_rootfs):
+                if not self._download_with_retry(alpine_urls, local_rootfs):
                     self._notify("error", "Falha ao baixar Alpine rootfs", 0)
                     return False
 

@@ -28,6 +28,7 @@ class InstallerWindow(QMainWindow):
         self.current_step = 0
         self.device_data = None
         self.detection_result = None
+        self._detection_result = None
         self.recommended_tier = None
         self.install_complete = False
         self.install_failed = False

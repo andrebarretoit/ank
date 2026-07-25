@@ -93,6 +93,35 @@ class ADB:
         except subprocess.TimeoutExpired:
             return False
 
+    def check_kernelsu(self, serial: str) -> bool:
+        """Check if KernelSU is installed."""
+        try:
+            # Check for KernelSU binary
+            result = self._run_device(serial, ["shell", "su", "-c", "ksud --version"], timeout=5)
+            if result.returncode == 0 and result.stdout.strip():
+                return True
+            # Check for KernelSU manager
+            result2 = self._run_device(serial, ["shell", "ls /data/adb/ksu 2>/dev/null"], timeout=5)
+            if result2.returncode == 0 and result2.stdout.strip():
+                return True
+            # Check kernel module
+            result3 = self._run_device(serial, ["shell", "lsmod 2>/dev/null | grep ksu"], timeout=5)
+            if result3.returncode == 0 and result3.stdout.strip():
+                return True
+        except subprocess.TimeoutExpired:
+            pass
+        return False
+
+    def get_kernel_su_version(self, serial: str) -> str:
+        """Get KernelSU version."""
+        try:
+            result = self._run_device(serial, ["shell", "su", "-c", "ksud --version"], timeout=5)
+            if result.returncode == 0 and result.stdout.strip():
+                return result.stdout.strip()
+        except subprocess.TimeoutExpired:
+            pass
+        return "Unknown"
+
     def get_magisk_version(self, serial: str) -> str:
         """Get Magisk version."""
         try:
@@ -106,6 +135,27 @@ class ADB:
         except subprocess.TimeoutExpired:
             pass
         return "Unknown"
+
+    def check_proot(self, serial: str) -> bool:
+        """Check if PRoot is available on the device."""
+        # Check if PRoot binary exists in ANK dir
+        output, _ = self.shell(serial, "ls /data/local/ank/proot 2>/dev/null")
+        if output and "proot" in output:
+            return True
+        # Check system-wide
+        output, _ = self.shell(serial, "which proot 2>/dev/null || echo ''")
+        if output:
+            return True
+        # Check Termux
+        output, _ = self.shell(serial, "ls /data/data/com.termux/files/usr/bin/proot 2>/dev/null")
+        if output and "proot" in output:
+            return True
+        return False
+
+    def check_termux(self, serial: str) -> bool:
+        """Check if Termux is installed."""
+        output, _ = self.shell(serial, "ls /data/data/com.termux 2>/dev/null")
+        return bool(output and "com.termux" in output)
 
     def push(self, serial: str, local_path: str, remote_path: str) -> bool:
         """Push a file to the device."""
@@ -169,3 +219,46 @@ class ADB:
             if ip and ip.count('.') == 3 and not ip.startswith("127."):
                 return ip.split('\n')[0].strip()
         return None
+
+    def check_ank_installed(self, serial: str) -> bool:
+        """Check if ANK is installed on the device."""
+        output, _ = self.shell(serial, "ls /data/local/ank/mode 2>/dev/null")
+        return bool(output and "mode" in output)
+
+    def get_ank_mode(self, serial: str) -> Optional[str]:
+        """Get ANK installation mode."""
+        output, _ = self.shell(serial, "cat /data/local/ank/mode 2>/dev/null")
+        if output:
+            try:
+                import json
+                data = json.loads(output.strip())
+                return data.get("mode")
+            except Exception:
+                pass
+        return None
+
+    def check_ank_ui_installed(self, serial: str) -> bool:
+        """Check if ANK UI (launcher) is installed."""
+        output, _ = self.shell(serial, "pm list packages 2>/dev/null | grep ank")
+        return bool(output and "ank" in output.lower())
+
+    def uninstall_ank_ui(self, serial: str) -> bool:
+        """Uninstall ANK UI (launcher) from the device."""
+        output, _ = self.shell(serial, "pm list packages 2>/dev/null | grep ank")
+        if output:
+            for line in output.strip().split("\n"):
+                pkg = line.replace("package:", "").strip()
+                if pkg:
+                    self.shell(serial, f"pm uninstall {pkg}")
+        return True
+
+    def uninstall_ank_full(self, serial: str, rooted: bool = True) -> bool:
+        """Full uninstall of ANK from the device."""
+        if rooted:
+            self.shell_su(serial, "rm -rf /data/local/ank")
+            self.shell_su(serial, "rm -rf /sdcard/AndroidKonteiner")
+        else:
+            self.shell(serial, "rm -rf /data/local/ank")
+            self.shell(serial, "rm -rf /sdcard/AndroidKonteiner")
+        self.uninstall_ank_ui(serial)
+        return True

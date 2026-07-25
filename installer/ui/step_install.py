@@ -17,6 +17,7 @@ class InstallThread(QThread):
     progress = Signal(float, str)
     log = Signal(str)
     done = Signal(bool, str)
+    retry_needed = Signal(str, str)  # url, error message
 
     def __init__(self, adb, serial, tier, app):
         super().__init__()
@@ -27,13 +28,53 @@ class InstallThread(QThread):
 
     def run(self):
         try:
-            if self.app.device_data and getattr(self.app.device_data, 'is_rooted', False):
+            tier = self.app.recommended_tier
+            if tier == "native_host":
+                self._install_native()
+            elif self.app.device_data and getattr(self.app.device_data, 'is_rooted', False):
                 self._install_rooted()
             else:
                 self._install_lite()
             self.done.emit(True, "Instalacao concluida!")
         except Exception as e:
             self.done.emit(False, str(e))
+
+    def _install_native(self):
+        from core.installer_native import NativeInstaller
+
+        def callback(step, message, progress_val):
+            self.progress.emit(progress_val, message)
+            self.log.emit(message)
+
+        installer = NativeInstaller(self.adb, self.serial, callback=callback)
+        success = installer.install()
+        if not success:
+            raise Exception("Instalacao nativa falhou")
+
+        # Install ANK UI APK if available
+        import sys
+        if getattr(sys, 'frozen', False):
+            base_path = sys._MEIPASS
+            exe_dir = os.path.dirname(sys.executable)
+        else:
+            base_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            exe_dir = os.path.join(base_path, "..")
+
+        apk_candidates = [
+            os.path.join(exe_dir, "ank-launcher.apk"),
+            os.path.join(base_path, "ank-launcher.apk"),
+        ]
+        apk_path = None
+        for c in apk_candidates:
+            if os.path.isfile(c):
+                apk_path = c
+                break
+
+        if apk_path:
+            self.log.emit("Instalando ANK UI...")
+            installer.install_ank_ui(apk_path)
+        else:
+            self.log.emit("ank-launcher.apk nao encontrado - ANK UI nao instalado")
 
     def _install_rooted(self):
         # 1. Find zip and ankcore from PyInstaller bundle or disk
@@ -124,13 +165,24 @@ class InstallThread(QThread):
         self.log.emit("Instalacao concluida com sucesso!")
 
     def _install_lite(self):
+        import threading
         from core.installer_lite import LiteInstaller
+
+        self._retry_event = None
+        self._retry_result = False
 
         def callback(step, message, progress_val):
             self.progress.emit(progress_val, message)
             self.log.emit(message)
 
-        installer = LiteInstaller(self.adb, self.serial, callback=callback)
+        def retry_callback(url, error):
+            self._retry_event = threading.Event()
+            self._retry_result = False
+            self.retry_needed.emit(url, error)
+            self._retry_event.wait()
+            return self._retry_result
+
+        installer = LiteInstaller(self.adb, self.serial, callback=callback, retry_callback=retry_callback)
         success = installer.install()
         if not success:
             raise Exception("Instalacao Lite falhou")
@@ -199,6 +251,7 @@ class StepInstall(QWidget):
             self._thread.progress.connect(self._on_progress)
             self._thread.log.connect(self._add_log)
             self._thread.done.connect(self._on_done)
+            self._thread.retry_needed.connect(self._on_retry_needed)
             self._thread.start()
         except Exception as e:
             self._add_log(f"Erro: {e}")
@@ -222,3 +275,17 @@ class StepInstall(QWidget):
             self.app.install_failed = True
         # Refresh bottom bar buttons (Sair on failure, etc.)
         self.app._update_buttons()
+
+    def _on_retry_needed(self, url, error):
+        """Show retry dialog when all mirrors fail."""
+        from PySide6.QtWidgets import QMessageBox
+        reply = QMessageBox.question(
+            self,
+            "Download Falhou",
+            f"Falha ao baixar de todos os mirrors:\n\n{error}\n\nDeseja tentar novamente?",
+            QMessageBox.Retry | QMessageBox.Cancel,
+            QMessageBox.Retry
+        )
+        if self._thread and hasattr(self._thread, '_retry_event'):
+            self._thread._retry_result = (reply == QMessageBox.Retry)
+            self._thread._retry_event.set()

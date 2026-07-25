@@ -3,7 +3,8 @@ ANK Installer - Step 1: Connect Device (PySide6)
 """
 
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QFrame, QComboBox
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QFrame, QComboBox,
+    QMessageBox
 )
 from PySide6.QtCore import Qt, QThread, Signal
 from ui.theme import COLORS, FONTS
@@ -100,6 +101,28 @@ class StepConnect(QWidget):
         self.device_frame.hide()
         layout.addWidget(self.device_frame)
 
+        # ANK detection card (hidden)
+        self.ank_frame = QFrame()
+        self.ank_frame.setObjectName("card")
+        ank_layout = QVBoxLayout(self.ank_frame)
+        ank_layout.setContentsMargins(16, 16, 16, 16)
+
+        self.ank_status = QLabel("")
+        self.ank_status.setObjectName("subtitle")
+        ank_layout.addWidget(self.ank_status)
+
+        btn_layout = QHBoxLayout()
+        self.btn_uninstall = QPushButton("Desinstalar ANK")
+        self.btn_uninstall.setFixedWidth(160)
+        self.btn_uninstall.clicked.connect(self._uninstall_ank)
+        btn_layout.addWidget(self.btn_uninstall)
+
+        btn_layout.addStretch()
+        ank_layout.addLayout(btn_layout)
+
+        self.ank_frame.hide()
+        layout.addWidget(self.ank_frame)
+
         # Refresh button
         self.refresh_btn = QPushButton("Verificar novamente")
         self.refresh_btn.setFixedWidth(180)
@@ -142,7 +165,64 @@ class StepConnect(QWidget):
         self.device_frame.show()
 
         self.app.device_data = device
+
+        # Check if ANK is already installed
+        self._check_ank_installed(device.serial, is_rooted)
+
         self.app._update_buttons()
+
+    def _check_ank_installed(self, serial, is_rooted):
+        """Check if ANK is installed and show uninstall option."""
+        try:
+            from core.adb import ADB
+            adb = ADB()
+
+            ank_installed = adb.check_ank_installed(serial)
+            ank_ui_installed = adb.check_ank_ui_installed(serial)
+
+            if ank_installed or ank_ui_installed:
+                mode = adb.get_ank_mode(serial) if ank_installed else "N/A"
+                status_parts = []
+                if ank_installed:
+                    status_parts.append(f"Servidor ANK: {mode}")
+                if ank_ui_installed:
+                    status_parts.append("ANK UI: Instalado")
+
+                self.ank_status.setText(f"ANK ja instalado:\n" + "\n".join(status_parts))
+                self.ank_status.setStyleSheet(f"color: {COLORS['warning']}; font-size: 12px;")
+                self.ank_frame.show()
+            else:
+                self.ank_frame.hide()
+        except Exception:
+            self.ank_frame.hide()
+
+    def _uninstall_ank(self):
+        """Uninstall ANK from the device."""
+        reply = QMessageBox.question(
+            self,
+            "Desinstalar ANK",
+            "Tem certeza que deseja desinstalar o ANK deste dispositivo?\n\n"
+            "Isso removera:\n"
+            "- Servidor ANK\n"
+            "- ANK UI (launcher)\n"
+            "- Todos os dados do ANK",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+
+        if reply == QMessageBox.Yes:
+            try:
+                from core.adb import ADB
+                adb = ADB()
+                device = self.app.device_data
+                if device:
+                    adb.uninstall_ank_full(device.serial, device.is_rooted)
+                    self.ank_frame.hide()
+                    self.status_label.setText("ANK desinstalado com sucesso")
+                    self.status_label.setStyleSheet(f"color: {COLORS['success']};")
+            except Exception as e:
+                self.status_label.setText(f"Erro ao desinstalar: {e}")
+                self.status_label.setStyleSheet(f"color: {COLORS['error']};")
 
     def on_show(self):
         pass

@@ -4,6 +4,9 @@
 # Initialization
 #################
 
+# Android su injects LD_PRELOAD=libsigchain.so which breaks curl SSL
+unset LD_PRELOAD 2>/dev/null
+
 umask 022
 
 OUTFD=$2

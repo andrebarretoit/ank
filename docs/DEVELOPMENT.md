@@ -225,3 +225,58 @@ Ao final de cada rodada, preencher:
 5. Avaliacao: preencher notas
 6. Commit: formatar com notas
 7. Proxima rodada: verificar pendencias
+
+---
+
+## Rodada 4 — GUI Installer & Universalidade
+
+**Escopo**: Mascarar o GUI installer, modos de instalacao e suporte universal
+
+### Tarefas
+
+| # | Tarefa | Arquivos | Status |
+|---|--------|----------|--------|
+| R4.1 | Cache de compat test (evita re-executar deteccao) | `core/cache.py`, `ui/step_detect.py` | ✅ |
+| R4.2 | Modo Nativo + ANK UI | `core/installer_native.py`, `ui/step_install.py`, `ui/step_confirm.py` | ✅ |
+| R4.3 | Modal retry quando mirrors falham | `core/installer_lite.py`, `ui/step_install.py` | ✅ |
+| R4.4 | Uninstall detecta ANK UI | `core/adb.py`, `ui/step_connect.py` | ✅ |
+| R4.5 | Universalidade (root/proot/qualquer arch) | `core/adb.py`, `core/detector.py`, `core/installer_lite.py` | ✅ |
+
+### Detalhamento
+
+#### R4.1 Cache de compat test
+
+- Arquivo `core/cache.py` gerencia cache JSON em `~/.ank-installer/cache/`
+- TTL de 24 horas
+- step_detect.py mostra resultados do cache e botao "Executar novamente"
+- Evita re-execucao da deteccao a cada troca de aba
+
+#### R4.2 Modo Nativo + ANK UI
+
+- `installer_native.py`: instalacao sem containerizacao
+- Copia server.py + static direto para /data/local/ank
+- Detecta e instala ANK UI (ank-launcher.apk)
+- step_confirm.py mostra descricaes especificas por tier
+
+#### R4.3 Modal retry downloads
+
+- _download_with_retry() tenta multiplos mirrors
+- Callback retry_callback notifica UI quando todos falham
+- Modal QMessageBox com opcao Retry/Cancel
+- StepInstall gerencia thread com threading.Event
+
+#### R4.4 Uninstall detecta ANK
+
+- adb.py: check_ank_installed(), check_ank_ui_installed(), get_ank_mode()
+- adb.py: uninstall_ank_ui(), uninstall_ank_full()
+- step_connect.py: card mostra ANK instalado + botao desinstalar
+- Confirmacao antes de desinstalar
+
+#### R4.5 Universalidade
+
+- KernelSU detectado via ksud, /data/adb/ksu, lsmod
+- PRoot detectado via /data/local/ank/proot, which proot, Termux
+- Termux detectado via /data/data/com.termux
+- Arquiteturas: aarch64, armv7l, x86_64, i686
+- Multi-mirror para downloads (GitHub + Tsinghua)
+- DetectionResult inclui root_manager, has_kernelsu, has_termux

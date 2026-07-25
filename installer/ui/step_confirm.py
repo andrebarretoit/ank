@@ -48,16 +48,10 @@ class StepConfirm(QWidget):
         layout.addWidget(card)
 
         # Description
-        desc = QLabel(
-            "O instalador ira:\n"
-            "  1. Enviar o modulo Magisk para o device\n"
-            "  2. Instalar o modulo via Magisk Manager\n"
-            "  3. Configurar o servidor ANK\n"
-            "  4. Reiniciar o dispositivo"
-        )
-        desc.setObjectName("subtitle")
-        desc.setWordWrap(True)
-        layout.addWidget(desc)
+        self.desc_label = QLabel("")
+        self.desc_label.setObjectName("subtitle")
+        self.desc_label.setWordWrap(True)
+        layout.addWidget(self.desc_label)
 
         layout.addStretch()
 
@@ -88,7 +82,38 @@ class StepConfirm(QWidget):
         self.labels["mode"].setText(f"Modo: {tier_name}")
         self.labels["mode"].setStyleSheet(f"color: {color}; font-size: 13px; font-weight: bold;")
 
-        if device and getattr(device, 'is_rooted', False):
+        if tier == "native_host":
+            self.labels["storage"].setText("Armazenamento: ~50MB (servidor apenas)")
+            self.desc_label.setText(
+                "O instalador ira:\n"
+                "  1. Configurar o servidor ANK\n"
+                "  2. Instalar ANK UI (launcher)\n"
+                "  3. Criar configuracao inicial"
+            )
+        elif tier == "lite":
+            self.labels["storage"].setText("Armazenamento: ~150MB (rootfs)")
+            self.desc_label.setText(
+                "O instalador ira:\n"
+                "  1. Instalar PRoot no device\n"
+                "  2. Baixar Alpine rootfs\n"
+                "  3. Configurar Python3 e servidor\n"
+                "  4. Criar configuracao inicial"
+            )
+        elif device and getattr(device, 'is_rooted', False):
             self.labels["storage"].setText("Armazenamento: ~200MB (rootfs + containeres)")
+            self.desc_label.setText(
+                "O instalador ira:\n"
+                "  1. Enviar o modulo Magisk para o device\n"
+                "  2. Instalar o modulo via Magisk Manager\n"
+                "  3. Configurar o servidor ANK\n"
+                "  4. Reiniciar o dispositivo"
+            )
         else:
             self.labels["storage"].setText("Armazenamento: ~150MB (rootfs)")
+            self.desc_label.setText(
+                "O instalador ira:\n"
+                "  1. Enviar o modulo Magisk para o device\n"
+                "  2. Instalar o modulo via Magisk Manager\n"
+                "  3. Configurar o servidor ANK\n"
+                "  4. Reiniciar o dispositivo"
+            )
