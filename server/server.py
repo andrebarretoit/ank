@@ -365,7 +365,53 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         pass
 
-HTTPServer(('0.0.0.0', 5000), Handler).serve_forever()"""
+HTTPServer(('0.0.0.0', 8000), Handler).serve_forever()"""
+
+# ============================================================
+# S6 service definitions for templates
+# ============================================================
+
+S6_SERVICES = {
+    "nginx": {
+        "run": "#!/command/execlineb -P\nnginx -g \"daemon off;\"",
+        "finish": "#!/command/execlineb -P\ns6-svc -d /run/service/nginx"
+    },
+    "apache": {
+        "run": "#!/command/execlineb -P\nhttpd -D FOREGROUND -f /etc/apache2/httpd.conf",
+        "finish": "#!/command/execlineb -P\ns6-svc -d /run/service/apache"
+    },
+    "php": {
+        "run": "#!/command/execlineb -P\nphp-cgi -b 0.0.0.0:8000",
+        "finish": "#!/command/execlineb -P\ns6-svc -d /run/service/php"
+    },
+    "node": {
+        "run": "#!/command/execlineb -P\nnode /var/www/app/server.js",
+        "finish": "#!/command/execlineb -P\ns6-svc -d /run/service/node"
+    },
+    "python": {
+        "run": "#!/command/execlineb -P\npython3 /var/www/app/server.py",
+        "finish": "#!/command/execlineb -P\ns6-svc -d /run/service/python"
+    }
+}
+
+def _write_s6_service(merged, service_name):
+    """Write s6 service definitions into merged dir."""
+    import stat
+    svc_dir = os.path.join(merged, "etc/services.d", service_name)
+    os.makedirs(svc_dir, exist_ok=True)
+    if service_name in S6_SERVICES:
+        for script_name in ("run", "finish"):
+            path = os.path.join(svc_dir, script_name)
+            with open(path, "w") as f:
+                f.write(S6_SERVICES[service_name][script_name])
+            os.chmod(path, os.stat(path).st_mode | stat.S_IEXEC)
+
+def _write_portfwd(merged, container_port, protocol="tcp"):
+    """Write portfwd.conf into merged dir for the container."""
+    ank_dir = os.path.join(merged, "etc/ank")
+    os.makedirs(ank_dir, exist_ok=True)
+    with open(os.path.join(ank_dir, "portfwd.conf"), "w") as f:
+        f.write(f"{container_port} {protocol}\n")
 
 # check_auth replaced by _check_auth() token-based authentication (see security section above)
 
@@ -1841,6 +1887,24 @@ small{color:#334155}
         if code != 0:
             self.send_error(500, f"Failed to pull image: {output}")
             return
+        # Generate ank-alpinebase-{version} from downloaded alpine
+        alpine_dir = os.path.join(IMAGES_DIR, f"alpine-{version}")
+        ankbase_dir = os.path.join(IMAGES_DIR, f"ank-alpinebase-{version}")
+        if os.path.isdir(alpine_dir) and not os.path.isdir(ankbase_dir):
+            try:
+                import shutil
+                shutil.copytree(alpine_dir, ankbase_dir)
+                # Install basic packages into the new ank-alpinebase
+                merged = ankbase_dir
+                _merged_write = os.path.join(merged, "etc/resolv.conf")
+                os.makedirs(os.path.dirname(_merged_write), exist_ok=True)
+                with open(_merged_write, "w") as f:
+                    f.write("nameserver 8.8.8.8\nnameserver 8.8.4.4\n")
+                # Mark as ank-alpinebase
+                with open(os.path.join(merged, ".ank-base"), "w") as f:
+                    f.write(f"ank-alpinebase-{version}\n")
+            except Exception:
+                pass
         self.send_json({"message": f"Image 'alpine-{version}' downloaded"})
 
     # ============================================================
@@ -1883,7 +1947,7 @@ small{color:#334155}
             "image": "nginx-3.20",
             "base": "nginx-3.20",
             "packages": ["nginx", "curl"],
-            "port": 80,
+            "port": 8080,
             "category": "server",
             "serves_static": True,
             "static_path": "/var/www/html"
@@ -1905,13 +1969,13 @@ small{color:#334155}
         {
             "id": "php",
             "name": "PHP 8.2",
-            "description": "Alpine + PHP 8.2. For dynamic PHP apps (built-in server :80).",
+            "description": "Alpine + PHP 8.2. For dynamic PHP apps (built-in server :8000).",
             "icon": "bi-filetype-php",
             "color": "#777BB4",
             "image": "php-3.20",
             "base": "php-3.20",
             "packages": ["php82", "php82-mbstring", "php82-json", "php82-cgi"],
-            "port": 80,
+            "port": 8000,
             "category": "runtime",
             "serves_static": True,
             "static_path": "/var/www/php"
@@ -2087,6 +2151,8 @@ small{color:#334155}
                     _write_file(os.path.join(merged, 'etc/nginx/nginx.conf'), ANK_NGINX_CONF)
                     _chroot(f'mkdir -p /etc/ank')
                     _write_file(os.path.join(merged, 'etc/ank/service'), 'nginx')
+                    _write_s6_service(merged, 'nginx')
+                    _write_portfwd(merged, 8080)
 
                 elif template_id == "apache":
                     static_dir = template["static_path"]
@@ -2094,6 +2160,8 @@ small{color:#334155}
                     _write_file(os.path.join(merged, static_dir.lstrip('/'), 'index.html'), ANK_APACHE_HTML)
                     _chroot(f'mkdir -p /etc/ank')
                     _write_file(os.path.join(merged, 'etc/ank/service'), 'apache')
+                    _write_s6_service(merged, 'apache')
+                    _write_portfwd(merged, 80)
 
                 elif template_id == "php":
                     php_dir = "/var/www/php"
@@ -2101,6 +2169,8 @@ small{color:#334155}
                     _write_file(os.path.join(merged, php_dir.lstrip('/'), 'index.php'), ANK_PHP_INDEX)
                     _chroot(f'mkdir -p /etc/ank')
                     _write_file(os.path.join(merged, 'etc/ank/service'), 'php')
+                    _write_s6_service(merged, 'php')
+                    _write_portfwd(merged, 8000)
 
                 elif template_id == "node":
                     node_dir = "/var/www/app"
@@ -2109,6 +2179,8 @@ small{color:#334155}
                     _write_file(os.path.join(merged, node_dir.lstrip('/'), 'package.json'), '{"name":"ank-node-app","version":"1.0.0","main":"server.js"}')
                     _chroot(f'mkdir -p /etc/ank')
                     _write_file(os.path.join(merged, 'etc/ank/service'), 'node')
+                    _write_s6_service(merged, 'node')
+                    _write_portfwd(merged, 3000)
 
                 elif template_id == "python":
                     py_dir = "/var/www/app"
@@ -2116,6 +2188,8 @@ small{color:#334155}
                     _write_file(os.path.join(merged, py_dir.lstrip('/'), 'server.py'), ANK_PYTHON_SERVER)
                     _chroot(f'mkdir -p /etc/ank')
                     _write_file(os.path.join(merged, 'etc/ank/service'), 'python')
+                    _write_s6_service(merged, 'python')
+                    _write_portfwd(merged, 5000)
 
                 cfg = load_container_config(container_name)
                 if cfg:
@@ -2281,6 +2355,8 @@ small{color:#334155}
                     config["status"] = "stopped"
                     if ports:
                         config["port_mappings"] = [{"host_port": port, "container_port": port, "protocol": "tcp"} for port in ports]
+                        for p in ports:
+                            _write_portfwd(merged, p)
                     save_container_config(container_name, config)
                 log(f"Ankfile built as '{container_name}'")
                 with open(log_path, "a") as lf:
@@ -2918,6 +2994,15 @@ small{color:#334155}
             except Exception:
                 pass
 
+        disk_info = {"total": 0, "used": 0, "free": 0}
+        try:
+            st = os.statvfs("/")
+            disk_info["total"] = st.f_blocks * st.f_frsize
+            disk_info["free"] = st.f_bavail * st.f_frsize
+            disk_info["used"] = disk_info["total"] - disk_info["free"]
+        except Exception:
+            pass
+
         self.send_json({
             "version": config.get("version", "0.1"),
             "uptime": uptime_sec,
@@ -2925,14 +3010,15 @@ small{color:#334155}
             "cpu_cores": cpu_cores,
             "containers_total": total,
             "containers_running": running,
-            "containers_stopped": stopped
+            "containers_stopped": stopped,
+            "disk": disk_info
         })
 
     def api_list_images(self):
         images = []
         if os.path.exists(IMAGES_DIR):
             for name in os.listdir(IMAGES_DIR):
-                if name == "ankfs":
+                if name == "ankfs" or name.startswith("ank-alpinebase"):
                     continue
                 p = os.path.join(IMAGES_DIR, name)
                 if os.path.isdir(p):
@@ -2948,7 +3034,8 @@ small{color:#334155}
                         "name": name,
                         "complete": has_python and has_sh,
                         "has_python": has_python,
-                        "size": size
+                        "size": size,
+                        "size_human": self._fmt_size(size)
                     })
         self.send_json(images)
 

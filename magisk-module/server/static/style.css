@@ -260,8 +260,13 @@ html[data-theme="light"] .icon-toggle .bi-moon-stars { display: inline; }
 .stat-icon.image { background: rgba(6,182,212,.15); color: var(--info); }
 .stat-icon.uptime { background: rgba(245,158,11,.15); color: var(--warning); }
 .stat-icon.cpu { background: rgba(139,92,246,.15); color: var(--brand-violet); }
+.stat-icon.memory { background: rgba(34,197,94,.15); color: var(--success); }
+.stat-icon.disk { background: rgba(6,182,212,.15); color: var(--info); }
 .stat-value { font-size: 23px; font-weight: 800; display: block; line-height: 1.2; letter-spacing: -.3px; }
 .stat-label { font-size: 12px; color: var(--text-secondary); font-weight: 500; }
+.dash-section { margin-bottom: 18px; }
+.dash-section-title { font-size: 14px; font-weight: 600; color: var(--text-secondary); margin-bottom: 10px; display: flex; align-items: center; gap: 6px; }
+.dash-section-title i { font-size: 16px; }
 
 /* Compat warning */
 .compat-warning {

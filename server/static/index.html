@@ -93,44 +93,63 @@
                     <i class="bi bi-info-circle-fill"></i>
                     <div><strong id="mode-notice-title"></strong> — <span id="mode-notice-body"></span></div>
                 </div>
-                <div class="stats-grid">
-                    <div class="stat-card">
-                        <div class="stat-icon running"><i class="bi bi-play-circle"></i></div>
-                        <div class="stat-body"><span class="stat-value" id="stat-running">0</span><span class="stat-label">Running</span></div>
-                    </div>
-                    <div class="stat-card">
-                        <div class="stat-icon stopped"><i class="bi bi-stop-circle"></i></div>
-                        <div class="stat-body"><span class="stat-value" id="stat-stopped">0</span><span class="stat-label">Stopped</span></div>
-                    </div>
-                    <div class="stat-card">
-                        <div class="stat-icon total"><i class="bi bi-grid-3x3-gap"></i></div>
-                        <div class="stat-body"><span class="stat-value" id="stat-total">0</span><span class="stat-label">Total</span></div>
-                    </div>
-                    <div class="stat-card">
-                        <div class="stat-icon image"><i class="bi bi-hdd-stack"></i></div>
-                        <div class="stat-body"><span class="stat-value" id="stat-images">0</span><span class="stat-label">Images</span></div>
-                    </div>
-                    <div class="stat-card">
-                        <div class="stat-icon uptime"><i class="bi bi-clock-history"></i></div>
-                        <div class="stat-body"><span class="stat-value" id="stat-uptime">-</span><span class="stat-label">Uptime</span></div>
-                    </div>
-                    <div class="stat-card">
-                        <div class="stat-icon cpu"><i class="bi bi-cpu"></i></div>
-                        <div class="stat-body"><span class="stat-value" id="stat-cpu">-</span><span class="stat-label"><span id="stat-cpu-cores"></span>CPU</span></div>
+                <!-- Containers Section -->
+                <div class="dash-section">
+                    <h3 class="dash-section-title"><i class="bi bi-box-seam"></i> Containers</h3>
+                    <div class="stats-grid">
+                        <div class="stat-card">
+                            <div class="stat-icon running"><i class="bi bi-play-circle"></i></div>
+                            <div class="stat-body"><span class="stat-value" id="stat-running">0</span><span class="stat-label">Running</span></div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-icon stopped"><i class="bi bi-stop-circle"></i></div>
+                            <div class="stat-body"><span class="stat-value" id="stat-stopped">0</span><span class="stat-label">Stopped</span></div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-icon total"><i class="bi bi-grid-3x3-gap"></i></div>
+                            <div class="stat-body"><span class="stat-value" id="stat-total">0</span><span class="stat-label">Total</span></div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-icon image"><i class="bi bi-hdd-stack"></i></div>
+                            <div class="stat-body"><span class="stat-value" id="stat-images">0</span><span class="stat-label">Images</span></div>
+                        </div>
                     </div>
                 </div>
+                <!-- Server Section -->
+                <div class="dash-section">
+                    <h3 class="dash-section-title"><i class="bi bi-server"></i> Server</h3>
+                    <div class="stats-grid">
+                        <div class="stat-card">
+                            <div class="stat-icon cpu"><i class="bi bi-cpu"></i></div>
+                            <div class="stat-body"><span class="stat-value" id="stat-cpu">-</span><span class="stat-label"><span id="stat-cpu-cores"></span>CPU</span></div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-icon memory"><i class="bi bi-memory"></i></div>
+                            <div class="stat-body"><span class="stat-value" id="stat-memory">-</span><span class="stat-label">Memory</span></div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-icon uptime"><i class="bi bi-clock-history"></i></div>
+                            <div class="stat-body"><span class="stat-value" id="stat-uptime">-</span><span class="stat-label">Uptime</span></div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-icon disk"><i class="bi bi-device-hdd"></i></div>
+                            <div class="stat-body"><span class="stat-value" id="stat-disk">-</span><span class="stat-label">Disk</span></div>
+                        </div>
+                    </div>
+                </div>
+                <!-- System Info Section -->
                 <div class="card">
-                    <div class="card-header"><h3><i class="bi bi-hdd-stack"></i> System Info</h3></div>
+                    <div class="card-header"><h3><i class="bi bi-info-circle"></i> System Info</h3></div>
                     <div class="card-body">
                         <div class="info-grid">
                             <div class="info-item"><span class="info-label">Device</span><span id="info-device">-</span></div>
                             <div class="info-item"><span class="info-label">Kernel</span><span id="info-kernel">-</span></div>
-                            <div class="info-item"><span class="info-label">Memory</span><span id="info-memory">-</span></div>
-                            <div class="info-item"><span class="info-label">Subnet</span><span id="info-subnet">-</span></div>
                             <div class="info-item"><span class="info-label">Battery</span><span id="info-battery">-</span></div>
+                            <div class="info-item"><span class="info-label">Subnet</span><span id="info-subnet">-</span></div>
                         </div>
                     </div>
                 </div>
+                <!-- Containers List -->
                 <div class="card" style="margin-top:16px;">
                     <div class="card-header"><h3><i class="bi bi-grid-3x3-gap"></i> Containers</h3></div>
                     <div class="card-body" id="dashboard-containers"></div>

@@ -311,15 +311,23 @@ async function loadAll() {
         const memA = info.memory?.available_kb || 0;
         if (memT > 0 && memA > 0) {
             const used = memT - memA;
-            document.getElementById('info-memory').textContent = `${fmtBytes(used * 1024)} used / ${fmtBytes(memT * 1024)} total (${Math.round(used/memT*100)}%)`;
+            const pct = Math.round(used / memT * 100);
+            document.getElementById('stat-memory').textContent = `${fmtBytes(used * 1024)} / ${fmtBytes(memT * 1024)} (${pct}%)`;
         } else if (memT > 0) {
-            document.getElementById('info-memory').textContent = `${fmtBytes(memT * 1024)} total (usage N/A)`;
+            document.getElementById('stat-memory').textContent = fmtBytes(memT * 1024);
         } else {
-            document.getElementById('info-memory').textContent = '-';
+            document.getElementById('stat-memory').textContent = '-';
         }
         document.getElementById('info-subnet').textContent = (info.network?.subnet || '-') + '/24';
         const bat = info.battery;
         document.getElementById('info-battery').textContent = (bat != null && bat >= 0) ? bat + '%' : '-';
+        const disk = status.disk;
+        if (disk && disk.total > 0) {
+            const diskUsedPct = Math.round(disk.used / disk.total * 100);
+            document.getElementById('stat-disk').textContent = `${fmtBytes(disk.used)} / ${fmtBytes(disk.total)} (${diskUsedPct}%)`;
+        } else {
+            document.getElementById('stat-disk').textContent = '-';
+        }
         renderContainers(containers);
         renderImages(images);
         populateImageSelect(images);
@@ -375,7 +383,7 @@ function renderImages(images) {
             <div class="image-icon"><i class="bi bi-hdd-stack"></i></div>
             <div class="image-info">
                 <span class="image-name">${esc(img.name)}</span>
-                <span class="image-size">${img.size || 'Unknown'}</span>
+                <span class="image-size">${img.size_human || fmtBytes(img.size || 0)}</span>
             </div>
         </div>
     `).join('');
