@@ -28,6 +28,8 @@ from urllib.parse import urlparse, parse_qs, unquote
 from datetime import datetime, timedelta
 
 _port_lock = threading.Lock()
+_build_lock = threading.Lock()
+_building = False
 
 ANK_DIR = os.environ.get("ANK_DIR", "/data/local/ank")
 ANK_SDCARD = "/sdcard/AndroidKonteiner"
@@ -2064,10 +2066,14 @@ small{color:#334155}
         self.send_json(templates)
 
     def api_deploy_template(self, data):
+        global _building
         template_id = data.get("template")
         container_name = data.get("name")
         if not template_id or not container_name:
             self.send_error(400, "template and name required")
+            return
+        if _building:
+            self.send_error(409, "A build is already in progress. Please wait for it to finish.")
             return
 
         template = None
@@ -2111,6 +2117,8 @@ small{color:#334155}
         save_container_config(container_name, stub_config)
 
         def _do_deploy():
+            global _building
+            _building = True
             log_path = os.path.join(ANK_DIR, "logs", f"{container_name}.log")
             try:
                 with open(log_path, "w") as lf:
@@ -2251,15 +2259,21 @@ small{color:#334155}
                 if cfg:
                     cfg["status"] = "failed"
                     save_container_config(container_name, cfg)
+            finally:
+                _building = False
 
         threading.Thread(target=_do_deploy, daemon=True).start()
         self.send_json({"message": f"Deploying template '{template['name']}' as '{container_name}'...", "name": container_name}, 201)
 
     def api_build_ankfile(self, data):
+        global _building
         ankfile_content = data.get("content", "")
         container_name = data.get("name", "")
         if not ankfile_content:
             self.send_error(400, "Ankfile content required")
+            return
+        if _building:
+            self.send_error(409, "A build is already in progress. Please wait for it to finish.")
             return
         if not container_name:
             import re
@@ -2326,6 +2340,8 @@ small{color:#334155}
         save_container_config(container_name, stub_config)
 
         def _do_build():
+            global _building
+            _building = True
             log_path = os.path.join(ANK_DIR, "logs", f"{container_name}.log")
             try:
                 with open(log_path, "w") as lf:
@@ -2429,6 +2445,8 @@ small{color:#334155}
                 if cfg:
                     cfg["status"] = "failed"
                     save_container_config(container_name, cfg)
+            finally:
+                _building = False
 
         threading.Thread(target=_do_build, daemon=True).start()
         self.send_json({"message": f"Building Ankfile as '{container_name}'...", "name": container_name}, 201)
@@ -3060,7 +3078,8 @@ small{color:#334155}
             "containers_total": total,
             "containers_running": running,
             "containers_stopped": stopped,
-            "disk": disk_info
+            "disk": disk_info,
+            "building": _building
         })
 
     def api_list_images(self):
@@ -3321,7 +3340,7 @@ small{color:#334155}
         except TimeoutError:
             self.close_connection = True
         except Exception:
-            self.handle_error()
+            pass
 
     def finish(self):
         if getattr(self, '_is_websocket', False):
