@@ -323,8 +323,7 @@ async function loadAll() {
         document.getElementById('info-battery').textContent = (bat != null && bat >= 0) ? bat + '%' : '-';
         const disk = status.disk;
         if (disk && disk.total > 0) {
-            const diskUsedPct = Math.round(disk.used / disk.total * 100);
-            document.getElementById('stat-disk').textContent = `${fmtBytes(disk.used)} / ${fmtBytes(disk.total)} (${diskUsedPct}%)`;
+            document.getElementById('stat-disk').textContent = `${disk.used} / ${disk.total} GB`;
         } else {
             document.getElementById('stat-disk').textContent = '-';
         }
