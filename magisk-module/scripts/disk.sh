@@ -1,0 +1,2 @@
+#!/system/bin/sh
+T="$(df -k | while read F S U A P M; do case "$M" in /system|/data|/cache|/preload) echo "$S $U $A";; esac; done)"; TT=0; UU=0; AA=0; c=0; for i in $T; do case $((c++%3)) in 0) TT=$((TT+i));; 1) UU=$((UU+i));; 2) AA=$((AA+i));; esac; done; echo "$((TT/1024/1024)).$((((TT%1048576)*10)/1048576)) GB|$((UU/1024/1024)).$((((UU%1048576)*10)/1048576)) GB|$((AA/1024/1024)).$((((AA%1048576)*10)/1048576)) GB"

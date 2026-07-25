@@ -18,30 +18,43 @@ get_mode() {
 }
 
 # ============================================================
-# Lazy build ank-alpinebase if missing (streams output to stdout)
+# Lazy build ank-alpinebase-{version} if missing (streams output to stdout)
 # ============================================================
 _ensure_ankbase() {
-    local ANKBASE="$IMAGES_DIR/ank-alpinebase"
-    local ALPINE="$IMAGES_DIR/alpine-3.20"
+    local VERSION="${1:-3.20}"
+    local ANKBASE="$IMAGES_DIR/ank-alpinebase-${VERSION}"
+    local ALPINE="$IMAGES_DIR/alpine-${VERSION}"
 
     # Already exists? Check for /bin/sh or /bin/busybox
     if [ -e "$ANKBASE/bin/sh" ] || [ -L "$ANKBASE/bin/sh" ] || [ -e "$ANKBASE/bin/busybox" ]; then
         return 0
     fi
 
-    echo "ank-alpinebase not found, building..."
+    # Fallback: migrate old unversioned name
+    local OLD_BASE="$IMAGES_DIR/ank-alpinebase"
+    if [ -e "$OLD_BASE/bin/sh" ] || [ -L "$OLD_BASE/bin/sh" ] || [ -e "$OLD_BASE/bin/busybox" ]; then
+        if [ "$OLD_BASE" != "$ANKBASE" ]; then
+            echo "Migrating ank-alpinebase -> ank-alpinebase-${VERSION}..."
+            mv "$OLD_BASE" "$ANKBASE" 2>/dev/null || cp -a "$OLD_BASE" "$ANKBASE" 2>/dev/null
+            if [ -e "$ANKBASE/bin/sh" ] || [ -L "$ANKBASE/bin/sh" ]; then
+                return 0
+            fi
+        fi
+    fi
 
-    # Need alpine-3.20 as source
+    echo "ank-alpinebase-${VERSION} not found, building..."
+
+    # Need alpine as source
     if [ ! -e "$ALPINE/bin/sh" ] && [ ! -L "$ALPINE/bin/sh" ] && [ ! -e "$ALPINE/bin/busybox" ]; then
-        echo "alpine-3.20 not found, downloading..."
-        sh "$SCRIPTS_DIR/download-rootfs.sh" 3.20
+        echo "alpine-${VERSION} not found, downloading..."
+        sh "$SCRIPTS_DIR/download-rootfs.sh" "$VERSION"
         if [ ! -e "$ALPINE/bin/sh" ] && [ ! -L "$ALPINE/bin/sh" ]; then
             echo "ERROR: Failed to download Alpine base image"
             return 1
         fi
     fi
 
-    echo "Creating ank-alpinebase from alpine-3.20..."
+    echo "Creating ank-alpinebase-${VERSION} from alpine-${VERSION}..."
     cp -a "$ALPINE" "$ANKBASE" 2>/dev/null
     if [ $? -ne 0 ]; then
         echo "ERROR: Failed to copy alpine-3.20"
@@ -69,7 +82,7 @@ _ensure_ankbase() {
 
     if [ $RC -ne 0 ]; then
         echo "ERROR: apk install failed (rc=$RC)"
-        echo "Cleaning up failed ank-alpinebase..."
+        echo "Cleaning up failed ank-alpinebase-${VERSION}..."
         rm -rf "$ANKBASE"
         return 1
     fi
@@ -115,10 +128,10 @@ SSHEOF
 
     # Verify
     if [ -e "$ANKBASE/usr/sbin/sshd" ] && [ -e "$ANKBASE/bin/bash" ]; then
-        echo "ank-alpinebase built successfully (openssh, bash, busybox, shadow, s6)"
+        echo "ank-alpinebase-${VERSION} built successfully (openssh, bash, busybox, shadow, s6)"
         return 0
     else
-        echo "ERROR: ank-alpinebase build incomplete"
+        echo "ERROR: ank-alpinebase-${VERSION} build incomplete"
         rm -rf "$ANKBASE"
         return 1
     fi
@@ -266,24 +279,32 @@ PYTHPY
 # ============================================================
 cmd_create() {
     local NAME="$1"
-    local IMAGE="${2:-ank-alpinebase}"
+    local IMAGE="${2:-ank-alpinebase-3.20}"
     local ROOT_PASS="${3:-}"
     local SSH_PORT="${4:-}"
     local PKGS="${5:-}"
     local CONTAINER_DIR="$CONTAINERS_DIR/$NAME"
     local MODE=$(get_mode)
 
-    # FROM alias: alpine-3.20 -> ank-alpinebase (clean alpine has no openssh)
-    [ "$IMAGE" = "alpine-3.20" ] && IMAGE="ank-alpinebase"
+    # FROM alias: alpine-X.XX -> ank-alpinebase-X.XX (clean alpine has no openssh)
+    case "$IMAGE" in
+        alpine-*)
+            local _ver="${IMAGE#alpine-}"
+            IMAGE="ank-alpinebase-${_ver}"
+            ;;
+    esac
 
-    # Lazy build ank-alpinebase if missing
-    if [ "$IMAGE" = "ank-alpinebase" ]; then
-        _ensure_ankbase
-        if [ $? -ne 0 ]; then
-            echo "ERROR: Failed to build ank-alpinebase"
-            exit 1
-        fi
-    fi
+    # Lazy build ank-alpinebase-{version} if missing
+    case "$IMAGE" in
+        ank-alpinebase-*)
+            local _ver="${IMAGE#ank-alpinebase-}"
+            _ensure_ankbase "$_ver"
+            if [ $? -ne 0 ]; then
+                echo "ERROR: Failed to build $IMAGE"
+                exit 1
+            fi
+            ;;
+    esac
 
     if [ -d "$CONTAINER_DIR/merged" ] && [ -f "$CONTAINER_DIR/config.json" ]; then
         # Only fail if already fully created (has merged/ dir)
@@ -299,9 +320,9 @@ cmd_create() {
 
     local BASE_DIR="$IMAGES_DIR/$IMAGE"
 
-    # If image doesn't exist but has packages, build it from ank-alpinebase
+    # If image doesn't exist but has packages, build it from its ank-alpinebase
     if [ ! -d "$BASE_DIR" ] && [ -n "$PKGS" ]; then
-        local ANKBASE="$IMAGES_DIR/ank-alpinebase"
+        local ANKBASE="$IMAGES_DIR/ank-alpinebase-3.20"
         if [ -d "$ANKBASE" ]; then
             echo "Building image '$IMAGE' from ank-alpinebase (packages: $PKGS)..."
             cp -a "$ANKBASE" "$BASE_DIR" 2>/dev/null
@@ -439,7 +460,7 @@ cmd_create() {
     # Setup cgroups
     sh "$SCRIPTS_DIR/resources.sh" setup "$NAME" 268435456 50 2>/dev/null
 
-    # Setup rootfs (ank-alpinebase already has openssh/bash/busybox/shadow)
+    # Setup rootfs (ank-alpinebase-3.20 already has openssh/bash/busybox/shadow)
     local ROOTFS="$CONTAINER_DIR/merged"
     echo "Setting up container: $NAME..."
     # Ensure DNS works inside chroot

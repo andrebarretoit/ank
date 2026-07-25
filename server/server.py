@@ -39,7 +39,7 @@ PORT = 8001
 _device_cache = None
 
 _cpu_usage_cache = 0.0
-_disk_usage_cache = {}
+_disk_usage_cache = {"total": 0, "used": 0, "free": 0}
 
 def _cpu_sampler_loop():
     global _cpu_usage_cache
@@ -58,29 +58,33 @@ def _cpu_sampler_loop():
         except Exception:
             time.sleep(10)
 
-def _disk_usage_loop():
-    global _disk_usage_cache
-    while True:
-        try:
-            result = {}
-            try:
-                out = os.popen("df -B1 /data 2>/dev/null").read().strip().split("\n")
-                if len(out) > 1:
-                    parts = out[1].split()
-                    if len(parts) >= 4:
-                        result["disk_total"] = int(parts[1])
-                        result["disk_used"] = int(parts[2])
-            except Exception:
-                pass
-            _disk_usage_cache = result
-        except Exception:
-            pass
-        time.sleep(60)
+def _get_disk_usage():
+    """Call disk.sh to get accurate disk usage (total/used/free in GB)."""
+    script = os.path.join(SCRIPTS_DIR, "disk.sh")
+    if not os.path.isfile(script):
+        return {"total": 0, "used": 0, "free": 0}
+    try:
+        result = subprocess.run(
+            ["/system/bin/sh", script],
+            capture_output=True, text=True, timeout=10
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            # Output: "229.6 GB|52.2 GB|177.3 GB"
+            parts = result.stdout.strip().split("|")
+            if len(parts) == 3:
+                def parse_gb(s):
+                    s = s.strip().replace(" GB", "")
+                    return float(s)
+                total = parse_gb(parts[0])
+                used = parse_gb(parts[1])
+                free = parse_gb(parts[2])
+                return {"total": total, "used": used, "free": free}
+    except Exception:
+        pass
+    return {"total": 0, "used": 0, "free": 0}
 
 _cpu_thread = threading.Thread(target=_cpu_sampler_loop, daemon=True)
 _cpu_thread.start()
-_disk_thread = threading.Thread(target=_disk_usage_loop, daemon=True)
-_disk_thread.start()
 
 # ============================================================
 # Security: Token storage, rate limiting, client detection
@@ -1333,16 +1337,21 @@ small{color:#334155}
         def _do_create():
             log_path = os.path.join(ANK_DIR, "logs", f"{name}.log")
             try:
+                # Map alpine-X.XX -> ank-alpinebase-X.XX
+                mapped_image = image
+                if image.startswith("alpine-"):
+                    mapped_image = f"ank-alpinebase-{image[7:]}"
+
                 template = None
                 for t in self.IMAGE_TEMPLATES:
-                    if t["base"] == image or t["image"] == image:
+                    if t["base"] == image or t["image"] == image or t["base"] == mapped_image or t["image"] == mapped_image:
                         template = t
                         break
                 pkgs = " ".join(template.get("packages", [])) if template else ""
                 with open(log_path, "w") as lf:
-                    lf.write(f"Creating container '{name}' (image: {image})...\n")
+                    lf.write(f"Creating container '{name}' (image: {mapped_image})...\n")
                     lf.flush()
-                output, code = run_script("container.sh", "create", name, image, root_password, str(ssh_port), pkgs)
+                output, code = run_script("container.sh", "create", name, mapped_image, root_password, str(ssh_port), pkgs)
                 with open(log_path, "a") as lf:
                     lf.write(output + "\n")
                 cfg = load_container_config(name)
@@ -1353,7 +1362,7 @@ small{color:#334155}
                     else:
                         log(f"Container {name} created")
                         cfg["status"] = "stopped"
-                        cfg["image"] = image
+                        cfg["image"] = mapped_image
                         if template:
                             cfg["template"] = template["id"]
                             cfg["template_name"] = template["name"]
@@ -1900,12 +1909,33 @@ small{color:#334155}
                 os.makedirs(os.path.dirname(_merged_write), exist_ok=True)
                 with open(_merged_write, "w") as f:
                     f.write("nameserver 8.8.8.8\nnameserver 8.8.4.4\n")
+                # Install openssh/bash/busybox/shadow/s6 via chroot
+                merged_dev = os.path.join(merged, "dev")
+                merged_proc = os.path.join(merged, "proc")
+                try:
+                    os.makedirs(merged_dev, exist_ok=True)
+                    os.makedirs(merged_proc, exist_ok=True)
+                    subprocess.run(["mount", "-t", "tmpfs", "-o", "size=16m", "tmpfs", merged_dev], timeout=5)
+                    subprocess.run(["mount", "-t", "proc", "proc", merged_proc], timeout=5)
+                    subprocess.run(["mknod", os.path.join(merged_dev, "null"), "c", "1", "3"], timeout=5)
+                    subprocess.run(["chmod", "666", os.path.join(merged_dev, "null")], timeout=5)
+                    subprocess.run(["mknod", os.path.join(merged_dev, "urandom"), "c", "1", "9"], timeout=5)
+                    subprocess.run(["chmod", "666", os.path.join(merged_dev, "urandom")], timeout=5)
+                    subprocess.run(["chroot", merged, "/sbin/apk", "add", "--no-cache",
+                                    "busybox", "bash", "shadow", "openssh", "openssl", "s6"],
+                                   capture_output=True, timeout=120)
+                except Exception:
+                    pass
+                finally:
+                    for m in [merged_proc, merged_dev]:
+                        try: subprocess.run(["umount", m], timeout=5)
+                        except Exception: pass
                 # Mark as ank-alpinebase
                 with open(os.path.join(merged, ".ank-base"), "w") as f:
                     f.write(f"ank-alpinebase-{version}\n")
             except Exception:
                 pass
-        self.send_json({"message": f"Image 'alpine-{version}' downloaded"})
+        self.send_json({"message": f"Image 'ank-alpinebase-{version}' ready"})
 
     # ============================================================
     # Image Templates
@@ -1998,7 +2028,7 @@ small{color:#334155}
 
     def api_image_templates(self):
         templates = []
-        alpine_ready = os.path.isdir(os.path.join(IMAGES_DIR, "alpine-3.20")) and os.path.lexists(os.path.join(IMAGES_DIR, "alpine-3.20", "bin/sh"))
+        alpine_ready = os.path.isdir(os.path.join(IMAGES_DIR, "ank-alpinebase-3.20")) and os.path.lexists(os.path.join(IMAGES_DIR, "ank-alpinebase-3.20", "bin/sh"))
         for t in self.IMAGE_TEMPLATES:
             tpl = dict(t)
             if t["category"] == "base":
@@ -2025,9 +2055,9 @@ small{color:#334155}
             self.send_error(404, f"Template '{template_id}' not found")
             return
 
-        base_img = os.path.join(IMAGES_DIR, "alpine-3.20")
+        base_img = os.path.join(IMAGES_DIR, "ank-alpinebase-3.20")
         if not os.path.isdir(base_img):
-            self.send_error(400, "Base alpine-3.20 image not found. Reinstall the module.")
+            self.send_error(400, "Base ank-alpinebase-3.20 image not found. Reinstall the module.")
             return
 
         root_password = data.get("root_password", "admin123")
@@ -2039,7 +2069,7 @@ small{color:#334155}
         stub_config = {
             "name": container_name,
             "status": "building",
-            "image": "alpine-3.20",
+            "image": "ank-alpinebase-3.20",
             "mode": get_mode().get("mode", "shared_host"),
             "autostart": False,
             "ip_address": "",
@@ -2063,7 +2093,7 @@ small{color:#334155}
                     lf.flush()
 
                 pkgs = " ".join(template.get("packages", []))
-                output, code = run_script("container.sh", "create", container_name, "alpine-3.20", str(root_password), str(ssh_port), pkgs, timeout=300)
+                output, code = run_script("container.sh", "create", container_name, "ank-alpinebase-3.20", str(root_password), str(ssh_port), pkgs, timeout=300)
                 with open(log_path, "a") as lf:
                     lf.write(output + "\n")
                     lf.flush()
@@ -2288,13 +2318,18 @@ small{color:#334155}
                     lf.write(f"Building Ankfile ({base_image}) as '{container_name}'...\n")
                     lf.flush()
 
+                # Map alpine-X.XX -> ank-alpinebase-X.XX
+                mapped_image = base_image
+                if base_image.startswith("alpine-"):
+                    mapped_image = f"ank-alpinebase-{base_image[7:]}"
+
                 pkgs = ""
                 for t in self.IMAGE_TEMPLATES:
-                    if t["base"] == base_image or t["image"] == base_image:
+                    if t["base"] == base_image or t["image"] == base_image or t["base"] == mapped_image or t["image"] == mapped_image:
                         pkgs = " ".join(t.get("packages", []))
                         break
 
-                output, code = run_script("container.sh", "create", container_name, base_image, root_password, str(ssh_port), pkgs, timeout=300)
+                output, code = run_script("container.sh", "create", container_name, mapped_image, root_password, str(ssh_port), pkgs, timeout=300)
                 with open(log_path, "a") as lf:
                     lf.write(output + "\n")
                     lf.flush()
@@ -2350,6 +2385,7 @@ small{color:#334155}
 
                 config = load_container_config(container_name)
                 if config:
+                    config["image"] = mapped_image
                     config["template"] = "ankfile"
                     config["template_name"] = f"Ankfile ({base_image})"
                     config["status"] = "stopped"
@@ -2994,14 +3030,7 @@ small{color:#334155}
             except Exception:
                 pass
 
-        disk_info = {"total": 0, "used": 0, "free": 0}
-        try:
-            st = os.statvfs("/")
-            disk_info["total"] = st.f_blocks * st.f_frsize
-            disk_info["free"] = st.f_bavail * st.f_frsize
-            disk_info["used"] = disk_info["total"] - disk_info["free"]
-        except Exception:
-            pass
+        disk_info = _get_disk_usage()
 
         self.send_json({
             "version": config.get("version", "0.1"),
@@ -3018,7 +3047,7 @@ small{color:#334155}
         images = []
         if os.path.exists(IMAGES_DIR):
             for name in os.listdir(IMAGES_DIR):
-                if name == "ankfs" or name.startswith("ank-alpinebase"):
+                if name == "ankfs" or name.startswith("alpine-"):
                     continue
                 p = os.path.join(IMAGES_DIR, name)
                 if os.path.isdir(p):
@@ -3124,7 +3153,7 @@ small{color:#334155}
                 "gateway": net.get("gateway", "10.20.30.1"),
                 "bridge": net.get("bridge", "ank0")
             },
-            "device_free": self._fmt_size(_disk_usage_cache.get("disk_total", 0) - _disk_usage_cache.get("disk_used", 0)) if _disk_usage_cache.get("disk_total") else "-"
+            "device_free": f"{_disk_usage_cache['free']:.1f} GB" if _disk_usage_cache.get("free") else "-"
         })
 
     def _fmt_size(self, size):

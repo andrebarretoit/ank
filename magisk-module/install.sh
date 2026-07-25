@@ -363,10 +363,10 @@ else
     log OK "Container base image saved"
 fi
 
-# --- STEP 2.5: Build ank-alpinebase (pre-built container base with openssh/bash/busybox) ---
-log STEP "2.5/4 > Building ank-alpinebase..."
-echo "[ANK-INSTALL] STEP 2.5/4: Building ank-alpinebase..."
-ANKBASE="$ANK_DIR/images/ank-alpinebase"
+# --- STEP 2.5: Build ank-alpinebase-3.20 (pre-built container base with openssh/bash/busybox) ---
+log STEP "2.5/4 > Building ank-alpinebase-3.20..."
+echo "[ANK-INSTALL] STEP 2.5/4: Building ank-alpinebase-3.20..."
+ANKBASE="$ANK_DIR/images/ank-alpinebase-3.20"
 if [ ! -d "$ANKBASE/bin" ]; then
     IMG_DIR="$ANK_DIR/images/$BASE_IMAGE"
     if [ -d "$IMG_DIR" ]; then
@@ -381,7 +381,7 @@ if [ ! -d "$ANKBASE/bin" ]; then
         echo "nameserver 8.8.8.8" > "$ANKBASE/etc/resolv.conf"
         echo "nameserver 8.8.4.4" >> "$ANKBASE/etc/resolv.conf"
         echo "127.0.0.1 localhost" > "$ANKBASE/etc/hosts"
-        echo "[ANK-INSTALL] Installing openssh, bash, s6 in ank-alpinebase..."
+        echo "[ANK-INSTALL] Installing openssh, bash, s6 in ank-alpinebase-3.20..."
         mount -t proc proc "$ANKBASE/proc" 2>/dev/null
         APK_PKGS="busybox bash shadow openssh openssl s6"
         APK_RETRIES=3
@@ -410,7 +410,7 @@ if [ ! -d "$ANKBASE/bin" ]; then
                 fi
             done
             umount "$ANKBASE/proc" 2>/dev/null
-            log WARN "ank-alpinebase apk install had failures, containers will install packages individually"
+            log WARN "ank-alpinebase-3.20 apk install had failures, containers will install packages individually"
         else
             chroot "$ANKBASE" /bin/busybox --install -s /bin 2>/dev/null
             sed -i 's|^root:[^:]*:[^:]*:[^:]*:[^:]*:[^:]*:.*|root:x:0:0:root:/root:/bin/bash|' "$ANKBASE/etc/passwd" 2>/dev/null
@@ -433,11 +433,11 @@ SSHEOF
             chmod 600 "$ANKBASE/root/.ssh/authorized_keys"
             mkdir -p "$ANKBASE/etc/s6/services"
             rm -rf "$ANKBASE/opt/ank" 2>/dev/null
-            log OK "ank-alpinebase built (openssh, bash, busybox, shadow, s6)"
+            log OK "ank-alpinebase-3.20 built (openssh, bash, busybox, shadow, s6)"
         fi
     fi
 else
-    log OK "ank-alpinebase already exists"
+    log OK "ank-alpinebase-3.20 already exists"
 fi
 
 # --- Verify python3 in ankfs ---

@@ -351,61 +351,6 @@ else
     mv "$BUILDROOT" "$ANKFS"
     log OK "ankfs built from scratch"
 
-    # Handshake with build_tarball.sh (if present)
-    BUILD_SCRIPT="$MODPATH/scripts/build_tarball.sh"
-    SIGNAL_DIR="$ANK_DIR/cache"
-    REQUEST="$SIGNAL_DIR/.tarball_request"
-    ACK="$SIGNAL_DIR/.tarball_ack"
-    DONE="$SIGNAL_DIR/.tarball_done"
-
-    rm -f "$REQUEST" "$ACK" "$DONE"
-
-    if [ -f "$BUILD_SCRIPT" ]; then
-        chmod +x "$BUILD_SCRIPT" 2>/dev/null
-        log INFO "build_tarball.sh found, requesting tarball export..."
-        echo "[ANK-INSTALL] Requesting tarball export..."
-        touch "$REQUEST"
-        sh "$BUILD_SCRIPT" &
-
-        # Wait for ack (max 5s)
-        ACKED=0
-        i=0
-        while [ $i -lt 10 ]; do
-            if [ -f "$ACK" ]; then
-                ACKED=1
-                break
-            fi
-            sleep 0.5
-            i=$((i + 1))
-        done
-
-        if [ "$ACKED" -eq 1 ]; then
-            log INFO "build_tarball.sh acknowledged, waiting for completion..."
-            echo "[ANK-INSTALL] build_tarball.sh working..."
-            # Wait for done signal (max 120s)
-            i=0
-            while [ $i -lt 240 ]; do
-                if [ -f "$DONE" ]; then
-                    log OK "Tarball exported"
-                    echo "[ANK-INSTALL] OK: Tarball exported"
-                    break
-                fi
-                sleep 0.5
-                i=$((i + 1))
-            done
-            if [ ! -f "$DONE" ]; then
-                log WARN "build_tarball.sh timed out"
-                echo "[ANK-INSTALL] WARN: Tarball export timed out"
-            fi
-        else
-            log WARN "build_tarball.sh did not respond, continuing..."
-            echo "[ANK-INSTALL] WARN: build_tarball.sh not responding"
-        fi
-        rm -f "$REQUEST" "$ACK" "$DONE"
-    else
-        log INFO "build_tarball.sh not found, skipping tarball export"
-    fi
-
     # Save clean Alpine as container base image (same download, no packages installed)
     IMG_DIR="$ANK_DIR/images/$BASE_IMAGE"
     extract_rootfs "$ALPINE_CACHE" "$IMG_DIR" || die "Failed to extract container base image"
@@ -418,10 +363,10 @@ else
     log OK "Container base image saved"
 fi
 
-# --- STEP 2.5: Build ank-alpinebase (pre-built container base with openssh/bash/busybox) ---
-log STEP "2.5/4 > Building ank-alpinebase..."
-echo "[ANK-INSTALL] STEP 2.5/4: Building ank-alpinebase..."
-ANKBASE="$ANK_DIR/images/ank-alpinebase"
+# --- STEP 2.5: Build ank-alpinebase-3.20 (pre-built container base with openssh/bash/busybox) ---
+log STEP "2.5/4 > Building ank-alpinebase-3.20..."
+echo "[ANK-INSTALL] STEP 2.5/4: Building ank-alpinebase-3.20..."
+ANKBASE="$ANK_DIR/images/ank-alpinebase-3.20"
 if [ ! -d "$ANKBASE/bin" ]; then
     IMG_DIR="$ANK_DIR/images/$BASE_IMAGE"
     if [ -d "$IMG_DIR" ]; then
@@ -436,7 +381,7 @@ if [ ! -d "$ANKBASE/bin" ]; then
         echo "nameserver 8.8.8.8" > "$ANKBASE/etc/resolv.conf"
         echo "nameserver 8.8.4.4" >> "$ANKBASE/etc/resolv.conf"
         echo "127.0.0.1 localhost" > "$ANKBASE/etc/hosts"
-        echo "[ANK-INSTALL] Installing openssh, bash, s6 in ank-alpinebase..."
+        echo "[ANK-INSTALL] Installing openssh, bash, s6 in ank-alpinebase-3.20..."
         mount -t proc proc "$ANKBASE/proc" 2>/dev/null
         APK_PKGS="busybox bash shadow openssh openssl s6"
         APK_RETRIES=3
@@ -465,7 +410,7 @@ if [ ! -d "$ANKBASE/bin" ]; then
                 fi
             done
             umount "$ANKBASE/proc" 2>/dev/null
-            log WARN "ank-alpinebase apk install had failures, containers will install packages individually"
+            log WARN "ank-alpinebase-3.20 apk install had failures, containers will install packages individually"
         else
             chroot "$ANKBASE" /bin/busybox --install -s /bin 2>/dev/null
             sed -i 's|^root:[^:]*:[^:]*:[^:]*:[^:]*:[^:]*:.*|root:x:0:0:root:/root:/bin/bash|' "$ANKBASE/etc/passwd" 2>/dev/null
@@ -488,11 +433,11 @@ SSHEOF
             chmod 600 "$ANKBASE/root/.ssh/authorized_keys"
             mkdir -p "$ANKBASE/etc/s6/services"
             rm -rf "$ANKBASE/opt/ank" 2>/dev/null
-            log OK "ank-alpinebase built (openssh, bash, busybox, shadow, s6)"
+            log OK "ank-alpinebase-3.20 built (openssh, bash, busybox, shadow, s6)"
         fi
     fi
 else
-    log OK "ank-alpinebase already exists"
+    log OK "ank-alpinebase-3.20 already exists"
 fi
 
 # --- Verify python3 in ankfs ---
