@@ -48,37 +48,49 @@ _json_bool() {
 }
 
 # ============================================================
-# HELPER: History
+# HELPER: History (index-based)
 # ============================================================
+HIST_FILE="$ANK_DIR/.ank_history"
+HIST_MAX=500
+HIST_IDX=0
+
 _history_load() {
-    HIST_CMD=()
-    HIST_POS=0
-    if [ -f "$HISTORY_FILE" ]; then
-        while IFS= read -r line; do
-            HIST_CMD="$HIST_CMD
-$line"
-        done < "$HISTORY_FILE"
+    : > /dev/null
+}
+
+_history_count() {
+    if [ -f "$HIST_FILE" ]; then
+        wc -l < "$HIST_FILE" 2>/dev/null | tr -d ' '
+    else
+        echo 0
+    fi
+}
+
+_history_get() {
+    local idx="$1"
+    local total=$(_history_count)
+    if [ "$idx" -ge 1 ] && [ "$idx" -le "$total" ]; then
+        sed -n "${idx}p" "$HIST_FILE" 2>/dev/null
     fi
 }
 
 _history_save() {
     local cmd="$1"
     [ -z "$cmd" ] && return
-    # Don't save duplicate of last command
-    local last=$(tail -1 "$HISTORY_FILE" 2>/dev/null)
+    local last=$(tail -1 "$HIST_FILE" 2>/dev/null)
     [ "$cmd" = "$last" ] && return
-    echo "$cmd" >> "$HISTORY_FILE"
-    # Trim history if too long
-    local count=$(wc -l < "$HISTORY_FILE" 2>/dev/null || echo 0)
-    if [ "$count" -gt "$HISTORY_MAX" ]; then
+    echo "$cmd" >> "$HIST_FILE"
+    local count=$(_history_count)
+    if [ "$count" -gt "$HIST_MAX" ]; then
         local tmp="$ANK_TMP/history_trim.tmp"
-        tail -n "$HISTORY_MAX" "$HISTORY_FILE" > "$tmp" 2>/dev/null
-        mv "$tmp" "$HISTORY_FILE" 2>/dev/null
+        tail -n "$HISTORY_MAX" "$HIST_FILE" > "$tmp" 2>/dev/null
+        mv "$tmp" "$HIST_FILE" 2>/dev/null
     fi
+    HIST_IDX=$(_history_count)
 }
 
 _history_show() {
-    if [ ! -f "$HISTORY_FILE" ]; then
+    if [ ! -f "$HIST_FILE" ]; then
         echo "No history."
         return
     fi
@@ -86,7 +98,184 @@ _history_show() {
     while IFS= read -r line; do
         num=$((num + 1))
         printf "%4d  %s\n" "$num" "$line"
-    done < "$HISTORY_FILE"
+    done < "$HIST_FILE"
+}
+
+# ============================================================
+# HELPER: Tab completion
+# ============================================================
+_cmds="ank ank-core exit help history"
+_ank_subcmds="ps start stop restart rm logs exec inspect images list-images templates deploy pull npad stack backup node help history --man exit"
+_ank_stack_subcmds="ls inspect create scale rm"
+_ank_backup_subcmds="ls inspect run rm"
+_ank_node_subcmds="ls inspect add rm"
+_ank_core_subcmds="status restart info network clean logs shell help --man"
+
+_complete_input() {
+    local input="$1"
+    local parts=""
+    local last=""
+    local completions=""
+
+    parts=$(echo "$input" | sed 's/  */ /g' | sed 's/^ //;s/ $//')
+    last=$(echo "$parts" | awk '{print $NF}')
+    local nwords=$(echo "$parts" | wc -w | tr -d ' ')
+
+    if [ "$nwords" -le 1 ] 2>/dev/null; then
+        completions=$(echo "$_cmds" | tr ' ' '\n' | grep "^${last}" | tr '\n' ' ')
+    elif [ "$nwords" -eq 2 ] 2>/dev/null; then
+        local first=$(echo "$parts" | awk '{print $1}')
+        case "$first" in
+            ank)
+                completions=$(echo "$_ank_subcmds" | tr ' ' '\n' | grep "^${last}" | tr '\n' ' ')
+                ;;
+            ank-core)
+                completions=$(echo "$_ank_core_subcmds" | tr ' ' '\n' | grep "^${last}" | tr '\n' ' ')
+                ;;
+        esac
+    elif [ "$nwords" -eq 3 ] 2>/dev/null; then
+        local first=$(echo "$parts" | awk '{print $1}')
+        local second=$(echo "$parts" | awk '{print $2}')
+        case "$first" in
+            ank)
+                case "$second" in
+                    stack)
+                        completions=$(echo "$_ank_stack_subcmds" | tr ' ' '\n' | grep "^${last}" | tr '\n' ' ')
+                        ;;
+                    backup)
+                        completions=$(echo "$_ank_backup_subcmds" | tr ' ' '\n' | grep "^${last}" | tr '\n' ' ')
+                        ;;
+                    node)
+                        completions=$(echo "$_ank_node_subcmds" | tr ' ' '\n' | grep "^${last}" | tr '\n' ' ')
+                        ;;
+                    deploy)
+                        completions=$(echo "alpine python nginx apache php node" | tr ' ' '\n' | grep "^${last}" | tr '\n' ' ')
+                        ;;
+                esac
+                ;;
+        esac
+    fi
+
+    if [ -n "$completions" ]; then
+        local count=$(echo "$completions" | wc -w | tr -d ' ')
+        if [ "$count" -eq 1 ]; then
+            local prefix=$(echo "$parts" | sed "s/${last}$//")
+            echo "${prefix}${completions}"
+        else
+            printf "\r\n%s\r\n(root@ank-shell) ~ [/ank-engine] > %s" "$completions" "$parts"
+        fi
+    fi
+}
+
+# ============================================================
+# HELPER: Read line with arrow keys + tab
+# ============================================================
+_read_line() {
+    local result=""
+    local saved_term=""
+    if command -v stty >/dev/null 2>&1; then
+        saved_term=$(stty -g 2>/dev/null)
+        stty -echo -icanon min 1 time 0 2>/dev/null
+    fi
+
+    while true; do
+        local c=""
+        c=$(dd bs=1 count=1 2>/dev/null)
+
+        if [ -z "$c" ]; then
+            break
+        fi
+
+        case "$c" in
+            $'\n')
+                printf "\n"
+                break
+                ;;
+            $'\033')
+                local seq1=""
+                local seq2=""
+                seq1=$(dd bs=1 count=1 2>/dev/null)
+                if [ "$seq1" = "[" ]; then
+                    seq2=$(dd bs=1 count=1 2>/dev/null)
+                    case "$seq2" in
+                        A)
+                            local total=$(_history_count)
+                            if [ "$total" -gt 0 ] 2>/dev/null; then
+                                if [ "$HIST_IDX" -lt "$total" ] 2>/dev/null; then
+                                    HIST_IDX=$((HIST_IDX + 1))
+                                fi
+                                result=$(_history_get "$HIST_IDX")
+                                printf "\033[2K\r(root@ank-shell) ~ [/ank-engine] > %s" "$result"
+                            fi
+                            ;;
+                        B)
+                            if [ "$HIST_IDX" -gt 0 ] 2>/dev/null; then
+                                HIST_IDX=$((HIST_IDX - 1))
+                                if [ "$HIST_IDX" -eq 0 ]; then
+                                    result=""
+                                    printf "\033[2K\r(root@ank-shell) ~ [/ank-engine] > "
+                                else
+                                    result=$(_history_get "$HIST_IDX")
+                                    printf "\033[2K\r(root@ank-shell) ~ [/ank-engine] > %s" "$result"
+                                fi
+                            fi
+                            ;;
+                        C)
+                            result="${result}$(dd bs=1 count=1 2>/dev/null)"
+                            printf "%s" "$(dd bs=1 count=1 2>/dev/null)"
+                            ;;
+                        D)
+                            local len=${#result}
+                            if [ "$len" -gt 0 ] 2>/dev/null; then
+                                result=$(echo "$result" | cut -c1-$((len-1)))
+                                printf "\b"
+                            fi
+                            ;;
+                    esac
+                elif [ "$seq1" = "O" ]; then
+                    local seq2=""
+                    seq2=$(dd bs=1 count=1 2>/dev/null)
+                fi
+                ;;
+            $'\t')
+                local completed=""
+                completed=$(_complete_input "$result")
+                if [ -n "$completed" ]; then
+                    result="$completed"
+                    printf "\033[2K\r(root@ank-shell) ~ [/ank-engine] > %s" "$result"
+                fi
+                ;;
+            $'\177')
+                local len=${#result}
+                if [ "$len" -gt 0 ] 2>/dev/null; then
+                    result=$(echo "$result" | cut -c1-$((len-1)))
+                    printf "\b \b"
+                fi
+                ;;
+            $'\004')
+                if [ -z "$result" ]; then
+                    printf "\n"
+                    result="exit"
+                    break
+                fi
+                ;;
+            $'\003')
+                printf "\n"
+                result=""
+                break
+                ;;
+            *)
+                result="${result}${c}"
+                printf "%s" "$c"
+                ;;
+        esac
+    done
+
+    if command -v stty >/dev/null 2>&1 && [ -n "$saved_term" ]; then
+        stty "$saved_term" 2>/dev/null
+    fi
+
+    echo "$result"
 }
 
 # ============================================================
@@ -1560,8 +1749,7 @@ mkdir -p "$ANK_TMP" 2>/dev/null
 _history_load
 
 while true; do
-    printf "(root@ank-shell) ~ [/ank-engine] > "
-    read -r input
+    input=$(_read_line)
 
     # Skip empty input
     [ -z "$input" ] && continue
