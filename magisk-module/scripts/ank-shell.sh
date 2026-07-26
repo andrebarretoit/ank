@@ -1821,7 +1821,8 @@ mkdir -p "$ANK_TMP" 2>/dev/null
 _history_load
 
 while true; do
-    input=$(_read_line)
+    printf "(root@ank-shell) ~ [/ank-engine] > " >&2
+    read -r input 2>/dev/null
 
     # Skip empty input
     [ -z "$input" ] && continue
