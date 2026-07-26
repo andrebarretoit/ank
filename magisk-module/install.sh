@@ -552,9 +552,14 @@ if [ -f "$SRC/server/static/ank-profile.sh" ]; then
     cp "$SRC/server/static/ank-profile.sh" "$ANKFS/opt/ank/ank-profile.sh"
     chmod 755 "$ANKFS/opt/ank/ank-profile.sh"
 fi
+if [ -f "$SRC/scripts/ank-shell.sh" ]; then
+    cp "$SRC/scripts/ank-shell.sh" "$ANKFS/ank-shell.sh"
+    chmod 755 "$ANKFS/ank-shell.sh"
+fi
 mkdir -p "$ANK_DIR/core/static"
 cp -r "$SRC/server/static/"* "$ANK_DIR/core/static/" 2>/dev/null
 mkdir -p "$ANK_DIR/images"
+mkdir -p "$ANK_DIR/ank-engine"
 
 [ "$SHC" -eq 0 ] && die "No scripts found"
 
