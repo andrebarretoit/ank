@@ -178,7 +178,7 @@ _read_line() {
         stty -echo -icanon min 1 time 0 2>/dev/null
     fi
 
-    printf "(root@ank-shell) ~ [/ank-engine] > "
+    printf "(root@ank-shell) ~ [/ank-engine] > " >&2
 
     while true; do
         local c=""
@@ -190,7 +190,7 @@ _read_line() {
 
         case "$c" in
             $'\n')
-                printf "\n"
+                printf "\n" >&2
                 break
                 ;;
             $'\033')
@@ -207,7 +207,7 @@ _read_line() {
                                     HIST_IDX=$((HIST_IDX + 1))
                                 fi
                                 result=$(_history_get "$HIST_IDX")
-                                printf "\033[2K\r(root@ank-shell) ~ [/ank-engine] > %s" "$result"
+                                printf "\033[2K\r(root@ank-shell) ~ [/ank-engine] > %s" "$result" >&2
                             fi
                             ;;
                         B)
@@ -215,22 +215,22 @@ _read_line() {
                                 HIST_IDX=$((HIST_IDX - 1))
                                 if [ "$HIST_IDX" -eq 0 ]; then
                                     result=""
-                                    printf "\033[2K\r(root@ank-shell) ~ [/ank-engine] > "
+                                    printf "\033[2K\r(root@ank-shell) ~ [/ank-engine] > " >&2
                                 else
                                     result=$(_history_get "$HIST_IDX")
-                                    printf "\033[2K\r(root@ank-shell) ~ [/ank-engine] > %s" "$result"
+                                    printf "\033[2K\r(root@ank-shell) ~ [/ank-engine] > %s" "$result" >&2
                                 fi
                             fi
                             ;;
                         C)
                             result="${result}$(dd bs=1 count=1 2>/dev/null)"
-                            printf "%s" "$(dd bs=1 count=1 2>/dev/null)"
+                            printf "%s" "$(dd bs=1 count=1 2>/dev/null)" >&2
                             ;;
                         D)
                             local len=${#result}
                             if [ "$len" -gt 0 ] 2>/dev/null; then
                                 result=$(echo "$result" | cut -c1-$((len-1)))
-                                printf "\b"
+                                printf "\b" >&2
                             fi
                             ;;
                     esac
@@ -244,31 +244,31 @@ _read_line() {
                 completed=$(_complete_input "$result")
                 if [ -n "$completed" ]; then
                     result="$completed"
-                    printf "\033[2K\r(root@ank-shell) ~ [/ank-engine] > %s" "$result"
+                    printf "\033[2K\r(root@ank-shell) ~ [/ank-engine] > %s" "$result" >&2
                 fi
                 ;;
             $'\177')
                 local len=${#result}
                 if [ "$len" -gt 0 ] 2>/dev/null; then
                     result=$(echo "$result" | cut -c1-$((len-1)))
-                    printf "\b \b"
+                    printf "\b \b" >&2
                 fi
                 ;;
             $'\004')
                 if [ -z "$result" ]; then
-                    printf "\n"
+                    printf "\n" >&2
                     result="exit"
                     break
                 fi
                 ;;
             $'\003')
-                printf "\n"
+                printf "\n" >&2
                 result=""
                 break
                 ;;
             *)
                 result="${result}${c}"
-                printf "%s" "$c"
+                printf "%s" "$c" >&2
                 ;;
         esac
     done
