@@ -671,10 +671,16 @@ def _ws_shell_session(handler, cols=80, rows=24):
                 shell = s
                 break
 
-        profile = os.path.join(ANK_DIR, "ankfs/opt/ank/ank-profile.sh")
-        has_profile = os.path.isfile(profile)
+        ank_shell = os.path.join(ANK_DIR, "ankfs/ank-shell.sh")
+        has_ank_shell = os.path.isfile(ank_shell) and os.access(ank_shell, os.X_OK)
 
-        log(f"WS_SHELL: fork (shell={shell}, profile={has_profile})")
+        if has_ank_shell:
+            log(f"WS_SHELL: fork (ank-shell={ank_shell})")
+        else:
+            profile = os.path.join(ANK_DIR, "ankfs/opt/ank/ank-profile.sh")
+            has_profile = os.path.isfile(profile)
+            log(f"WS_SHELL: fork (shell={shell}, profile={has_profile})")
+
         pid, master_fd = pty.fork()
         if pid == 0:
             for k in ("TERM", "PATH", "HOME", "LANG", "USER", "SHELL"):
@@ -684,8 +690,11 @@ def _ws_shell_session(handler, cols=80, rows=24):
             os.environ["HOME"] = "/root"
             os.environ["USER"] = "root"
             os.environ["SHELL"] = shell
+            os.environ["ANK_DIR"] = ANK_DIR
             try:
-                if has_profile:
+                if has_ank_shell:
+                    os.execv(shell, [shell, ank_shell])
+                elif has_profile:
                     os.execl(shell, shell, "-c", f". {profile}; exec {shell}")
                 else:
                     os.execv(shell, [shell])

@@ -16,12 +16,18 @@ SCRIPTS_DIR="$ANK_DIR/core"
 LOGS_DIR="$ANK_DIR/logs"
 CONFIG_FILE="$ANK_DIR/config.json"
 ENGINE_DIR="$ANK_DIR/ank-engine"
+ANK_TMP="$ANK_DIR/tmp"
+HISTORY_FILE="$ANK_DIR/.ank_history"
+HISTORY_MAX=500
 
 # Server port
 ANK_PORT=8001
 if [ -f "$LOGS_DIR/port.conf" ]; then
     ANK_PORT=$(cat "$LOGS_DIR/port.conf" 2>/dev/null)
 fi
+
+# Create tmp dir
+mkdir -p "$ANK_TMP" 2>/dev/null
 
 # ============================================================
 # HELPER: Get config value (simple grep+cut)
@@ -39,6 +45,48 @@ _json_num() {
 _json_bool() {
     local file="$1" key="$2"
     grep -o "\"$key\"[[:space:]]*:[[:space:]]*[a-z]*" "$file" 2>/dev/null | head -1 | grep -o '[a-z]*$'
+}
+
+# ============================================================
+# HELPER: History
+# ============================================================
+_history_load() {
+    HIST_CMD=()
+    HIST_POS=0
+    if [ -f "$HISTORY_FILE" ]; then
+        while IFS= read -r line; do
+            HIST_CMD="$HIST_CMD
+$line"
+        done < "$HISTORY_FILE"
+    fi
+}
+
+_history_save() {
+    local cmd="$1"
+    [ -z "$cmd" ] && return
+    # Don't save duplicate of last command
+    local last=$(tail -1 "$HISTORY_FILE" 2>/dev/null)
+    [ "$cmd" = "$last" ] && return
+    echo "$cmd" >> "$HISTORY_FILE"
+    # Trim history if too long
+    local count=$(wc -l < "$HISTORY_FILE" 2>/dev/null || echo 0)
+    if [ "$count" -gt "$HISTORY_MAX" ]; then
+        local tmp="$ANK_TMP/history_trim.tmp"
+        tail -n "$HISTORY_MAX" "$HISTORY_FILE" > "$tmp" 2>/dev/null
+        mv "$tmp" "$HISTORY_FILE" 2>/dev/null
+    fi
+}
+
+_history_show() {
+    if [ ! -f "$HISTORY_FILE" ]; then
+        echo "No history."
+        return
+    fi
+    local num=0
+    while IFS= read -r line; do
+        num=$((num + 1))
+        printf "%4d  %s\n" "$num" "$line"
+    done < "$HISTORY_FILE"
 }
 
 # ============================================================
@@ -102,10 +150,11 @@ Node commands:
   ank node rm <id>          Remove a node
 
 Editor:
-  ank npad <file>           Open text editor (for Ankfiles)
+  ank npad <file>           Open text editor (Ankfiles validated, others plain)
 
 System:
   ank help                  Show this help
+  ank history               Show command history
   ank --man <cmd>           Show detailed help for a command
   ank exit                  Exit ANK shell
 
@@ -126,6 +175,13 @@ EOF
 # ============================================================
 ank_exit() {
     exit 0
+}
+
+# ============================================================
+# ANK: history
+# ============================================================
+ank_history() {
+    _history_show
 }
 
 # ============================================================
@@ -735,7 +791,8 @@ ank_npad() {
     fi
 
     local filepath="$ENGINE_DIR/$file"
-    local tmpfile="/tmp/ank_npad_$$.tmp"
+    local tmpfile="$ANK_TMP/ank_npad_$$.tmp"
+    rm -f "$tmpfile" 2>/dev/null
 
     # Copy existing content
     if [ -f "$filepath" ]; then
@@ -785,22 +842,40 @@ ank_npad() {
                 fi
                 ;;
             s|save|:w)
-                if _validate_ankfile "$tmpfile"; then
-                    cp "$tmpfile" "$filepath"
-                    echo "Saved: $filepath"
-                fi
+                case "$file" in
+                    *.ankfile)
+                        if _validate_ankfile "$tmpfile"; then
+                            cp "$tmpfile" "$filepath"
+                            echo "Saved: $filepath"
+                        fi
+                        ;;
+                    *)
+                        cp "$tmpfile" "$filepath"
+                        echo "Saved: $filepath"
+                        ;;
+                esac
                 ;;
             q|quit|:q|exit)
                 rm -f "$tmpfile"
                 return 0
                 ;;
             :wq)
-                if _validate_ankfile "$tmpfile"; then
-                    cp "$tmpfile" "$filepath"
-                    echo "Saved: $filepath"
-                    rm -f "$tmpfile"
-                    return 0
-                fi
+                case "$file" in
+                    *.ankfile)
+                        if _validate_ankfile "$tmpfile"; then
+                            cp "$tmpfile" "$filepath"
+                            echo "Saved: $filepath"
+                            rm -f "$tmpfile"
+                            return 0
+                        fi
+                        ;;
+                    *)
+                        cp "$tmpfile" "$filepath"
+                        echo "Saved: $filepath"
+                        rm -f "$tmpfile"
+                        return 0
+                        ;;
+                esac
                 ;;
             *)
                 echo "Unknown command: $cmd"
@@ -1129,9 +1204,10 @@ ank_man() {
         npad)
             echo "ank npad <filename>"
             echo ""
-            echo "Open a simple text editor for creating/editing Ankfiles."
+            echo "Open a simple text editor for creating/editing files."
             echo "Files are saved in /ank-engine/ directory."
-            echo "Ankfile syntax is validated before saving."
+            echo "If filename ends with .ankfile, syntax is validated before saving."
+            echo "Other files (.txt, .log, etc.) are saved without validation."
             echo ""
             echo "Editor commands:"
             echo "  a - Add a line"
@@ -1226,6 +1302,8 @@ ank_core_man() {
 # MAIN LOOP
 # ============================================================
 cd "$ENGINE_DIR" 2>/dev/null || mkdir -p "$ENGINE_DIR" && cd "$ENGINE_DIR"
+mkdir -p "$ANK_TMP" 2>/dev/null
+_history_load
 
 while true; do
     printf "(root@ank-shell) ~ [/ank-engine] > "
@@ -1233,6 +1311,9 @@ while true; do
 
     # Skip empty input
     [ -z "$input" ] && continue
+
+    # Save to history
+    _history_save "$input"
 
     # Parse first word
     cmd1=$(echo "$input" | cut -d' ' -f1)
@@ -1249,6 +1330,9 @@ while true; do
             case "$subcmd" in
                 help|-h|--help)
                     ank_help
+                    ;;
+                history)
+                    ank_history
                     ;;
                 --man)
                     local_cmd=$(echo "$args" | cut -d' ' -f1)
