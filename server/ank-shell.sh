@@ -173,108 +173,119 @@ _complete_input() {
 _read_line() {
     local result=""
     local saved_term=""
+    local raw_ok=0
+
     if command -v stty >/dev/null 2>&1; then
         saved_term=$(stty -g 2>/dev/null)
-        stty -echo -icanon min 1 time 0 2>/dev/null
+        stty -echo -icanon min 1 time 0 2>/dev/null && raw_ok=1
     fi
 
     printf "(root@ank-shell) ~ [/ank-engine] > " >&2
 
-    while true; do
-        local c=""
-        c=$(dd bs=1 count=1 2>/dev/null)
+    if [ "$raw_ok" -eq 1 ]; then
+        while true; do
+            local c=""
+            c=$(dd bs=1 count=1 2>/dev/null)
 
-        if [ -z "$c" ]; then
-            break
-        fi
+            if [ -z "$c" ]; then
+                # raw mode broken or stdin EOF — restore and fall back
+                stty "$saved_term" 2>/dev/null
+                printf "(root@ank-shell) ~ [/ank-engine] > " >&2
+                read -r result 2>/dev/null
+                echo "$result"
+                return
+            fi
 
-        case "$c" in
-            $'\n')
-                printf "\n" >&2
-                break
-                ;;
-            $'\033')
-                local seq1=""
-                local seq2=""
-                seq1=$(dd bs=1 count=1 2>/dev/null)
-                if [ "$seq1" = "[" ]; then
-                    seq2=$(dd bs=1 count=1 2>/dev/null)
-                    case "$seq2" in
-                        A)
-                            local total=$(_history_count)
-                            if [ "$total" -gt 0 ] 2>/dev/null; then
-                                if [ "$HIST_IDX" -lt "$total" ] 2>/dev/null; then
-                                    HIST_IDX=$((HIST_IDX + 1))
-                                fi
-                                result=$(_history_get "$HIST_IDX")
-                                printf "\033[2K\r(root@ank-shell) ~ [/ank-engine] > %s" "$result" >&2
-                            fi
-                            ;;
-                        B)
-                            if [ "$HIST_IDX" -gt 0 ] 2>/dev/null; then
-                                HIST_IDX=$((HIST_IDX - 1))
-                                if [ "$HIST_IDX" -eq 0 ]; then
-                                    result=""
-                                    printf "\033[2K\r(root@ank-shell) ~ [/ank-engine] > " >&2
-                                else
+            case "$c" in
+                $'\n')
+                    printf "\n" >&2
+                    break
+                    ;;
+                $'\033')
+                    local seq1=""
+                    local seq2=""
+                    seq1=$(dd bs=1 count=1 2>/dev/null)
+                    if [ "$seq1" = "[" ]; then
+                        seq2=$(dd bs=1 count=1 2>/dev/null)
+                        case "$seq2" in
+                            A)
+                                local total=$(_history_count)
+                                if [ "$total" -gt 0 ] 2>/dev/null; then
+                                    if [ "$HIST_IDX" -lt "$total" ] 2>/dev/null; then
+                                        HIST_IDX=$((HIST_IDX + 1))
+                                    fi
                                     result=$(_history_get "$HIST_IDX")
                                     printf "\033[2K\r(root@ank-shell) ~ [/ank-engine] > %s" "$result" >&2
                                 fi
-                            fi
-                            ;;
-                        C)
-                            result="${result}$(dd bs=1 count=1 2>/dev/null)"
-                            printf "%s" "$(dd bs=1 count=1 2>/dev/null)" >&2
-                            ;;
-                        D)
-                            local len=${#result}
-                            if [ "$len" -gt 0 ] 2>/dev/null; then
-                                result=$(echo "$result" | cut -c1-$((len-1)))
-                                printf "\b" >&2
-                            fi
-                            ;;
-                    esac
-                elif [ "$seq1" = "O" ]; then
-                    local seq2=""
-                    seq2=$(dd bs=1 count=1 2>/dev/null)
-                fi
-                ;;
-            $'\t')
-                local completed=""
-                completed=$(_complete_input "$result")
-                if [ -n "$completed" ]; then
-                    result="$completed"
-                    printf "\033[2K\r(root@ank-shell) ~ [/ank-engine] > %s" "$result" >&2
-                fi
-                ;;
-            $'\177')
-                local len=${#result}
-                if [ "$len" -gt 0 ] 2>/dev/null; then
-                    result=$(echo "$result" | cut -c1-$((len-1)))
-                    printf "\b \b" >&2
-                fi
-                ;;
-            $'\004')
-                if [ -z "$result" ]; then
+                                ;;
+                            B)
+                                if [ "$HIST_IDX" -gt 0 ] 2>/dev/null; then
+                                    HIST_IDX=$((HIST_IDX - 1))
+                                    if [ "$HIST_IDX" -eq 0 ]; then
+                                        result=""
+                                        printf "\033[2K\r(root@ank-shell) ~ [/ank-engine] > " >&2
+                                    else
+                                        result=$(_history_get "$HIST_IDX")
+                                        printf "\033[2K\r(root@ank-shell) ~ [/ank-engine] > %s" "$result" >&2
+                                    fi
+                                fi
+                                ;;
+                            C)
+                                result="${result}$(dd bs=1 count=1 2>/dev/null)"
+                                printf "%s" "$(dd bs=1 count=1 2>/dev/null)" >&2
+                                ;;
+                            D)
+                                local len=${#result}
+                                if [ "$len" -gt 0 ] 2>/dev/null; then
+                                    result=$(echo "$result" | cut -c1-$((len-1)))
+                                    printf "\b" >&2
+                                fi
+                                ;;
+                        esac
+                    elif [ "$seq1" = "O" ]; then
+                        local seq2=""
+                        seq2=$(dd bs=1 count=1 2>/dev/null)
+                    fi
+                    ;;
+                $'\t')
+                    local completed=""
+                    completed=$(_complete_input "$result")
+                    if [ -n "$completed" ]; then
+                        result="$completed"
+                        printf "\033[2K\r(root@ank-shell) ~ [/ank-engine] > %s" "$result" >&2
+                    fi
+                    ;;
+                $'\177')
+                    local len=${#result}
+                    if [ "$len" -gt 0 ] 2>/dev/null; then
+                        result=$(echo "$result" | cut -c1-$((len-1)))
+                        printf "\b \b" >&2
+                    fi
+                    ;;
+                $'\004')
+                    if [ -z "$result" ]; then
+                        printf "\n" >&2
+                        result="exit"
+                        break
+                    fi
+                    ;;
+                $'\003')
                     printf "\n" >&2
-                    result="exit"
+                    result=""
                     break
-                fi
-                ;;
-            $'\003')
-                printf "\n" >&2
-                result=""
-                break
-                ;;
-            *)
-                result="${result}${c}"
-                printf "%s" "$c" >&2
-                ;;
-        esac
-    done
+                    ;;
+                *)
+                    result="${result}${c}"
+                    printf "%s" "$c" >&2
+                    ;;
+            esac
+        done
 
-    if command -v stty >/dev/null 2>&1 && [ -n "$saved_term" ]; then
-        stty "$saved_term" 2>/dev/null
+        if command -v stty >/dev/null 2>&1 && [ -n "$saved_term" ]; then
+            stty "$saved_term" 2>/dev/null
+        fi
+    else
+        read -r result 2>/dev/null
     fi
 
     echo "$result"
