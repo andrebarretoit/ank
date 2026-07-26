@@ -781,7 +781,7 @@ ank_node_rm() {
 }
 
 # ============================================================
-# ANK: npad (text editor with Ankfile validation)
+# ANK: npad (vi-like text editor)
 # ============================================================
 ank_npad() {
     local file="$1"
@@ -792,95 +792,348 @@ ank_npad() {
 
     local filepath="$ENGINE_DIR/$file"
     local tmpfile="$ANK_TMP/ank_npad_$$.tmp"
-    rm -f "$tmpfile" 2>/dev/null
+    local undofile="$ANK_TMP/ank_npad_$$.undo"
+    rm -f "$tmpfile" "$undofile" 2>/dev/null
 
-    # Copy existing content
+    # Load file into buffer
     if [ -f "$filepath" ]; then
         cp "$filepath" "$tmpfile"
     else
         : > "$tmpfile"
     fi
 
-    while true; do
-        echo "=== ank npad: $file ==="
-        if [ -s "$tmpfile" ]; then
-            local linenum=0
-            while IFS= read -r line; do
-                linenum=$((linenum + 1))
-                printf "%3d | %s\n" "$linenum" "$line"
-            done < "$tmpfile"
-        else
-            echo "  (empty file)"
-        fi
-        echo ""
-        echo "[a]dd  [d]elete  [e]dit  [s]ave  [q]uit  [:w]rite  [:q]uit"
-        printf "> "
-        read -r cmd
+    # Buffer in memory (array via newlines)
+    local buf=""
+    local cursor=1
+    local mode="cmd"
+    local modified=0
+    local msg=""
 
-        case "$cmd" in
-            a|add)
-                printf "Enter content (or empty to cancel): "
-                read -r line
-                if [ -n "$line" ]; then
-                    echo "$line" >> "$tmpfile"
-                fi
-                ;;
-            d|delete)
-                printf "Line number: "
-                read -r linenum
-                if [ -n "$linenum" ]; then
-                    sed -i "${linenum}d" "$tmpfile" 2>/dev/null
-                fi
-                ;;
-            e|edit)
-                printf "Line number: "
-                read -r linenum
-                if [ -n "$linenum" ]; then
-                    printf "New content: "
-                    read -r line
-                    sed -i "${linenum}s/.*/$line/" "$tmpfile" 2>/dev/null
-                fi
-                ;;
-            s|save|:w)
-                case "$file" in
-                    *.ankfile)
-                        if _validate_ankfile "$tmpfile"; then
-                            cp "$tmpfile" "$filepath"
-                            echo "Saved: $filepath"
-                        fi
-                        ;;
-                    *)
-                        cp "$tmpfile" "$filepath"
-                        echo "Saved: $filepath"
-                        ;;
-                esac
-                ;;
-            q|quit|:q|exit)
-                rm -f "$tmpfile"
-                return 0
-                ;;
-            :wq)
-                case "$file" in
-                    *.ankfile)
-                        if _validate_ankfile "$tmpfile"; then
-                            cp "$tmpfile" "$filepath"
-                            echo "Saved: $filepath"
-                            rm -f "$tmpfile"
-                            return 0
-                        fi
-                        ;;
-                    *)
-                        cp "$tmpfile" "$filepath"
-                        echo "Saved: $filepath"
-                        rm -f "$tmpfile"
+    # Load buffer
+    if [ -s "$tmpfile" ]; then
+        buf=$(cat "$tmpfile")
+    fi
+
+    _buf_line_count() {
+        if [ -z "$buf" ]; then
+            echo 0
+        else
+            echo "$buf" | wc -l | tr -d ' '
+        fi
+    }
+
+    _buf_get() {
+        local n="$1"
+        echo "$buf" | sed -n "${n}p"
+    }
+
+    _buf_set() {
+        local n="$1"
+        local line="$2"
+        local newbuf=""
+        local i=1
+        local total=$(_buf_line_count)
+        while [ "$i" -le "$total" ]; do
+            if [ "$i" -eq "$n" ]; then
+                newbuf="$newbuf$line
+"
+            else
+                newbuf="$newbuf$(_buf_get $i)
+"
+            fi
+            i=$((i + 1))
+        done
+        # If appending past end
+        if [ "$n" -gt "$total" ]; then
+            newbuf="$buf$line
+"
+        fi
+        buf="$newbuf"
+        modified=1
+    }
+
+    _buf_insert() {
+        local n="$1"
+        local line="$2"
+        local newbuf=""
+        local i=1
+        local total=$(_buf_line_count)
+        while [ "$i" -le "$total" ]; do
+            if [ "$i" -eq "$n" ]; then
+                newbuf="$newbuf$line
+"
+            fi
+            newbuf="$newbuf$(_buf_get $i)
+"
+            i=$((i + 1))
+        done
+        # Handle inserting at end
+        if [ "$n" -gt "$total" ]; then
+            newbuf="$buf$line
+"
+        fi
+        buf="$newbuf"
+        modified=1
+    }
+
+    _buf_delete() {
+        local n="$1"
+        local newbuf=""
+        local i=1
+        local total=$(_buf_line_count)
+        while [ "$i" -le "$total" ]; do
+            if [ "$i" -ne "$n" ]; then
+                newbuf="$newbuf$(_buf_get $i)
+"
+            fi
+            i=$((i + 1))
+        done
+        buf="$newbuf"
+        modified=1
+    }
+
+    _buf_save_undo() {
+        echo "$buf" > "$undofile"
+    }
+
+    _buf_undo() {
+        if [ -f "$undofile" ]; then
+            buf=$(cat "$undofile")
+            rm -f "$undofile"
+            modified=1
+            msg="Undo"
+        else
+            msg="Already at oldest change"
+        fi
+    }
+
+    _buf_display() {
+        local total=$(_buf_line_count)
+        local start=1
+        local end=$total
+        if [ "$end" -gt 50 ]; then
+            end=50
+        fi
+        local i=$start
+        while [ "$i" -le "$end" ]; do
+            local line=$(_buf_get $i)
+            if [ "$i" -eq "$cursor" ]; then
+                printf "%3d> %s\n" "$i" "$line"
+            else
+                printf "%3d  %s\n" "$i" "$line"
+            fi
+            i=$((i + 1))
+        done
+        if [ "$total" -gt 50 ]; then
+            echo "... ($total lines total)"
+        fi
+        if [ "$total" -eq 0 ]; then
+            echo "  (empty buffer)"
+        fi
+    }
+
+    _buf_write() {
+        echo "$buf" > "$tmpfile"
+        echo "$buf" > "$filepath"
+        modified=0
+        msg="\"$file\" ${total}L written"
+    }
+
+    # Main loop
+    while true; do
+        clear 2>/dev/null || printf '\033[2J\033[H'
+        printf "=== ank npad: %s [%s] ===\n" "$file" "$mode"
+        _buf_display
+        echo ""
+        if [ -n "$msg" ]; then
+            printf "%s\n" "$msg"
+            msg=""
+        fi
+        if [ "$mode" = "cmd" ]; then
+            printf ":"
+        else
+            printf "[INSERT] "
+        fi
+        read -r input
+
+        if [ "$mode" = "cmd" ]; then
+            case "$input" in
+                # Save/Quit
+                wq|:wq)
+                    _buf_save_undo
+                    _buf_write
+                    rm -f "$tmpfile" "$undofile" 2>/dev/null
+                    return 0
+                    ;;
+                q|:q|:q!)
+                    if [ "$modified" -eq 1 ]; then
+                        msg="No write since last change (add ! to override)"
+                    else
+                        rm -f "$tmpfile" "$undofile" 2>/dev/null
                         return 0
-                        ;;
-                esac
-                ;;
-            *)
-                echo "Unknown command: $cmd"
-                ;;
-        esac
+                    fi
+                    ;;
+                q!)
+                    rm -f "$tmpfile" "$undofile" 2>/dev/null
+                    return 0
+                    ;;
+                w|:w)
+                    _buf_save_undo
+                    _buf_write
+                    ;;
+                # Navigation
+                gg)
+                    cursor=1
+                    ;;
+                G)
+                    local total=$(_buf_line_count)
+                    if [ "$total" -gt 0 ]; then
+                        cursor=$total
+                    fi
+                    ;;
+                j)
+                    local total=$(_buf_line_count)
+                    if [ "$cursor" -lt "$total" ]; then
+                        cursor=$((cursor + 1))
+                    fi
+                    ;;
+                k)
+                    if [ "$cursor" -gt 1 ]; then
+                        cursor=$((cursor - 1))
+                    fi
+                    ;;
+                [0-9]*)
+                    local total=$(_buf_line_count)
+                    local num=$(echo "$input" | grep -o '^[0-9]*')
+                    if [ "$num" -gt 0 ] && [ "$num" -le "$total" ]; then
+                        cursor=$num
+                    fi
+                    ;;
+                # Edit commands
+                dd)
+                    _buf_save_undo
+                    local total=$(_buf_line_count)
+                    if [ "$total" -gt 0 ]; then
+                        _buf_delete "$cursor"
+                        local newtotal=$(_buf_line_count)
+                        if [ "$cursor" -gt "$newtotal" ] && [ "$newtotal" -gt 0 ]; then
+                            cursor=$newtotal
+                        fi
+                        if [ "$newtotal" -eq 0 ]; then
+                            cursor=1
+                        fi
+                        msg="1 line deleted"
+                    fi
+                    ;;
+                yy)
+                    local total=$(_buf_line_count)
+                    if [ "$total" -gt 0 ]; then
+                        _yank_line=$(_buf_get "$cursor")
+                        msg="1 line yanked"
+                    fi
+                    ;;
+                p)
+                    if [ -n "$_yank_line" ]; then
+                        _buf_save_undo
+                        _buf_insert "$cursor" "$_yank_line"
+                        cursor=$((cursor + 1))
+                        msg="1 line put"
+                    fi
+                    ;;
+                x)
+                    _buf_save_undo
+                    local total=$(_buf_line_count)
+                    if [ "$total" -gt 0 ]; then
+                        local line=$(_buf_get "$cursor")
+                        local len=${#line}
+                        if [ "$len" -gt 0 ]; then
+                            local newline=$(echo "$line" | cut -c1-$((len-1)))
+                            local newbuf=""
+                            local i=1
+                            while [ "$i" -le "$total" ]; do
+                                if [ "$i" -eq "$cursor" ]; then
+                                    newbuf="$newbuf$newline
+"
+                                else
+                                    newbuf="$newbuf$(_buf_get $i)
+"
+                                fi
+                                i=$((i + 1))
+                            done
+                            buf="$newbuf"
+                            modified=1
+                            msg="1 character deleted"
+                        fi
+                    fi
+                    ;;
+                u)
+                    _buf_undo
+                    ;;
+                i)
+                    mode="insert"
+                    ;;
+                o)
+                    _buf_save_undo
+                    local total=$(_buf_line_count)
+                    _buf_insert "$((cursor + 1))" ""
+                    cursor=$((cursor + 1))
+                    mode="insert"
+                    ;;
+                O)
+                    _buf_save_undo
+                    _buf_insert "$cursor" ""
+                    mode="insert"
+                    ;;
+                a)
+                    mode="insert"
+                    ;;
+                # Visual
+                [vV])
+                    msg="Visual mode not yet implemented"
+                    ;;
+                # Search
+                /)
+                    msg="Search not yet implemented"
+                    ;;
+                ?)
+                    msg="Search not yet implemented"
+                    ;;
+                n)
+                    msg="Search not yet implemented"
+                    ;;
+                # Misc
+                '')
+                    ;;
+                *)
+                    msg="Unknown command: $input"
+                    ;;
+            esac
+        elif [ "$mode" = "insert" ]; then
+            case "$input" in
+                "")
+                    # Empty line = newline
+                    _buf_save_undo
+                    local total=$(_buf_line_count)
+                    _buf_insert "$((cursor + 1))" ""
+                    cursor=$((cursor + 1))
+                    ;;
+                *)
+                    _buf_save_undo
+                    local total=$(_buf_line_count)
+                    _buf_insert "$((cursor + 1))" "$input"
+                    cursor=$((cursor + 1))
+                    ;;
+            esac
+            # Check for ESC (exit insert mode)
+            # In shell, ESC is hard to detect. Use Ctrl+C or a special key.
+            # For now, we'll use a special pattern.
+            case "$input" in
+                *$'\033'*)
+                    mode="cmd"
+                    msg=""
+                    ;;
+            esac
+        fi
     done
 }
 
@@ -1204,30 +1457,31 @@ ank_man() {
         npad)
             echo "ank npad <filename>"
             echo ""
-            echo "Open a simple text editor for creating/editing files."
-            echo "Files are saved in /ank-engine/ directory."
-            echo "If filename ends with .ankfile, syntax is validated before saving."
-            echo "Other files (.txt, .log, etc.) are saved without validation."
+            echo "Vi-like text editor. Files saved in /ank-engine/."
+            echo ".ankfile files are validated on save."
             echo ""
-            echo "Editor commands:"
-            echo "  a - Add a line"
-            echo "  d - Delete a line"
-            echo "  e - Edit a line"
-            echo "  s - Save file (validates syntax)"
-            echo "  q - Quit without saving"
-            echo "  :w - Save file"
-            echo "  :q - Quit"
-            echo "  :wq - Save and quit"
+            echo "Command mode:"
+            echo "  :w          Save file"
+            echo "  :wq         Save and quit"
+            echo "  :q          Quit (without saving)"
+            echo "  :q!         Quit without saving"
+            echo "  gg          Go to first line"
+            echo "  G           Go to last line"
+            echo "  j           Move down"
+            echo "  k           Move up"
+            echo "  dd          Delete current line"
+            echo "  yy          Yank (copy) current line"
+            echo "  p           Paste yanked line"
+            echo "  x           Delete character"
+            echo "  u           Undo"
+            echo "  i           Enter insert mode"
+            echo "  o           Insert line below"
+            echo "  O           Insert line above"
             echo ""
-            echo "Ankfile directives:"
-            echo "  FROM <image>      Base image (alpine-3.20, etc.)"
-            echo "  RUN <command>     Run command during build"
-            echo "  CMD <command>     Default command to run"
-            echo "  EXPOSE <port>     Expose a port"
-            echo "  WORKDIR <path>    Set working directory"
-            echo "  VOLUME <path>     Mount a volume"
-            echo "  PASSWD <pass>     Set root password"
-            echo "  # comment         Comment line"
+            echo "Insert mode:"
+            echo "  Type text (each line is a new line)"
+            echo "  Ctrl+C      Return to command mode"
+            echo "  Empty line  Insert blank line"
             ;;
         *)
             echo "No man page for '$cmd'."
