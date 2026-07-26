@@ -105,7 +105,7 @@ _history_show() {
 # HELPER: Tab completion
 # ============================================================
 _cmds="ank ank-core exit help history"
-_ank_subcmds="ps start stop restart rm logs exec inspect images list-images templates deploy pull npad stack backup node ping traceroute nslookup ip ifconfig route netstat ss --version help history --man exit"
+_ank_subcmds="ps start stop restart rm logs exec inspect images list-images templates deploy pull build npad ls copy ren erase stack backup node ping traceroute nslookup ip ifconfig route netstat ss --version help history --man exit"
 _ank_stack_subcmds="ls inspect create scale rm"
 _ank_backup_subcmds="ls inspect run rm"
 _ank_node_subcmds="ls inspect add rm"
@@ -331,6 +331,14 @@ Image commands:
   ank templates             List deploy templates
   ank deploy <tpl> <name>   Deploy a template
   ank pull <version>        Download base image
+  ank build -i <file>       Build image from .ankfile
+
+File commands:
+  ank npad <file>           Open text editor (Ankfiles validated, others plain)
+  ank ls [dir]              List files in ank-engine
+  ank copy <src> <dst>      Copy a file
+  ank ren <old> <new>       Rename a file
+  ank erase <file>          Delete a file
 
 Stack commands:
   ank stack ls              List all stacks
@@ -360,9 +368,6 @@ Diagnostics:
   ank route                 Show routing table
   ank netstat               Show network connections
   ank ss                    Show socket stats
-
-Editor:
-  ank npad <file>           Open text editor (Ankfiles validated, others plain)
 
 System:
   ank help                  Show this help
@@ -629,6 +634,131 @@ ank_pull() {
     local version="${1:-3.20}"
     echo "Pulling base image alpine-$version..."
     sh "$SCRIPTS_DIR/download-rootfs.sh" "$version"
+}
+
+# ============================================================
+# ANK: build (build image from .ankfile)
+# ============================================================
+ank_build() {
+    local flag="$1"
+    local ankfile="$2"
+    if [ "$flag" != "-i" ] || [ -z "$ankfile" ]; then
+        echo "Usage: ank build -i <file.ankfile>"
+        return 1
+    fi
+    case "$ankfile" in */*) echo "Error: no paths allowed, use filename only"; return 1 ;; esac
+
+    local filepath="$ENGINE_DIR/$ankfile"
+    if [ ! -f "$filepath" ]; then
+        echo "Ankfile not found: $ankfile"
+        return 1
+    fi
+
+    if ! echo "$ankfile" | grep -q '\.ankfile$'; then
+        echo "Error: file must have .ankfile extension"
+        return 1
+    fi
+
+    echo "Validating $ankfile..."
+    if ! _validate_ankfile "$filepath"; then
+        return 1
+    fi
+
+    local base_image=""
+    local run_cmds=""
+    local cmd=""
+    local expose=""
+    local workdir=""
+    local volume=""
+    local passwd=""
+
+    while IFS= read -r line; do
+        case "$line" in
+            ""|"#"*|[:space:]*) continue ;;
+        esac
+        local directive=$(echo "$line" | awk '{print $1}')
+        local value=$(echo "$line" | cut -d' ' -f2-)
+        case "$directive" in
+            FROM)    base_image="$value" ;;
+            RUN)     run_cmds="${run_cmds}${value}" ;;
+            CMD)     cmd="$value" ;;
+            EXPOSE)  expose="$value" ;;
+            WORKDIR) workdir="$value" ;;
+            VOLUME)  volume="$value" ;;
+            PASSWD)  passwd="$value" ;;
+        esac
+    done < "$filepath"
+
+    local image_name=$(echo "$ankfile" | sed 's/\.ankfile$//')
+    local image_dir="$IMAGES_DIR/$image_name"
+
+    if [ -d "$image_dir" ]; then
+        echo "Image '$image_name' already exists. Remove it first."
+        return 1
+    fi
+
+    local base_dir="$IMAGES_DIR/$base_image"
+    if [ ! -d "$base_dir" ]; then
+        echo "Base image '$base_image' not found. Run: ank pull"
+        return 1
+    fi
+
+    echo "Building image '$image_name' from '$base_image'..."
+    cp -a "$base_dir" "$image_dir" 2>/dev/null
+    if [ $? -ne 0 ]; then
+        echo "ERROR: Failed to copy base image"
+        return 1
+    fi
+
+    mkdir -p "$image_dir/etc" 2>/dev/null
+    echo "nameserver 8.8.8.8" > "$image_dir/etc/resolv.conf" 2>/dev/null
+    echo "nameserver 8.8.4.4" >> "$image_dir/etc/resolv.conf" 2>/dev/null
+    echo "127.0.0.1 localhost" > "$image_dir/etc/hosts" 2>/dev/null
+
+    mkdir -p "$image_dir/dev/pts" 2>/dev/null
+    umount "$image_dir/dev" 2>/dev/null
+    mount -t tmpfs -o size=16m tmpfs "$image_dir/dev" 2>/dev/null
+    [ -e "$image_dir/dev/null" ] || mknod "$image_dir/dev/null" c 1 3 2>/dev/null
+    chmod 666 "$image_dir/dev/null" 2>/dev/null
+    [ -e "$image_dir/dev/urandom" ] || mknod "$image_dir/dev/urandom" c 1 9 2>/dev/null
+    chmod 666 "$image_dir/dev/urandom" 2>/dev/null
+    mount -t proc proc "$image_dir/proc" 2>/dev/null
+
+    if [ -n "$run_cmds" ]; then
+        echo "Running build commands..."
+        echo "$run_cmds" | chroot "$image_dir" /bin/sh 2>&1
+        local rc=$?
+        if [ $rc -ne 0 ]; then
+            echo "WARN: Some commands returned errors (exit $rc)"
+        fi
+    fi
+
+    if [ -n "$passwd" ]; then
+        echo "root:$passwd" | chroot "$image_dir" /usr/sbin/chpasswd 2>/dev/null
+    fi
+
+    if [ -n "$workdir" ]; then
+        mkdir -p "$image_dir$workdir" 2>/dev/null
+    fi
+
+    umount "$image_dir/proc" 2>/dev/null
+    umount "$image_dir/dev" 2>/dev/null
+
+    local meta="$image_dir/.ank_meta"
+    echo "FROM=$base_image" > "$meta"
+    [ -n "$cmd" ] && echo "CMD=$cmd" >> "$meta"
+    [ -n "$expose" ] && echo "EXPOSE=$expose" >> "$meta"
+    [ -n "$workdir" ] && echo "WORKDIR=$workdir" >> "$meta"
+    [ -n "$volume" ] && echo "VOLUME=$volume" >> "$meta"
+    echo "BUILT=$(date +%Y-%m-%dT%H:%M:%S)" >> "$meta"
+    echo "ANKFILE=$ankfile" >> "$meta"
+
+    echo "Image '$image_name' built successfully!"
+    echo "  Base:  $base_image"
+    [ -n "$cmd" ] && echo "  CMD:   $cmd"
+    [ -n "$expose" ] && echo "  Port:  $expose"
+    [ -n "$workdir" ] && echo "  Dir:   $workdir"
+    [ -n "$volume" ] && echo "  Vol:   $volume"
 }
 
 # ============================================================
@@ -1042,6 +1172,102 @@ ank_ss() {
 }
 
 # ============================================================
+# ANK: ls (list files in ank-engine)
+# ============================================================
+ank_ls() {
+    local dir="${1:-$ENGINE_DIR}"
+    if [ ! -d "$dir" ]; then
+        echo "Directory not found: $dir"
+        return 1
+    fi
+    local count=0
+    for f in "$dir"/*; do
+        [ -e "$f" ] || continue
+        local name=$(basename "$f")
+        if [ -d "$f" ]; then
+            printf "  \033[1;34m%s/\033[0m\n" "$name"
+        elif [ -x "$f" ]; then
+            printf "  \033[1;32m%s\033[0m\n" "$name"
+        else
+            printf "  %s\n" "$name"
+        fi
+        count=$((count + 1))
+    done
+    [ "$count" -eq 0 ] && echo "  (empty)"
+}
+
+# ============================================================
+# ANK: copy (copy file)
+# ============================================================
+ank_copy() {
+    local src="$1"
+    local dst="$2"
+    if [ -z "$src" ] || [ -z "$dst" ]; then
+        echo "Usage: ank copy <source> <destination>"
+        return 1
+    fi
+    case "$src" in */*) echo "Error: no paths allowed, use filename only"; return 1 ;; esac
+    case "$dst" in */*) echo "Error: no paths allowed, use filename only"; return 1 ;; esac
+    local srcpath="$ENGINE_DIR/$src"
+    local dstpath="$ENGINE_DIR/$dst"
+    if [ ! -e "$srcpath" ]; then
+        echo "File not found: $src"
+        return 1
+    fi
+    if [ -e "$dstpath" ]; then
+        echo "Destination already exists: $dst"
+        return 1
+    fi
+    cp "$srcpath" "$dstpath"
+    echo "Copied '$src' -> '$dst'"
+}
+
+# ============================================================
+# ANK: ren (rename file)
+# ============================================================
+ank_ren() {
+    local old="$1"
+    local new="$2"
+    if [ -z "$old" ] || [ -z "$new" ]; then
+        echo "Usage: ank ren <old_name> <new_name>"
+        return 1
+    fi
+    case "$old" in */*) echo "Error: no paths allowed, use filename only"; return 1 ;; esac
+    case "$new" in */*) echo "Error: no paths allowed, use filename only"; return 1 ;; esac
+    local oldpath="$ENGINE_DIR/$old"
+    local newpath="$ENGINE_DIR/$new"
+    if [ ! -e "$oldpath" ]; then
+        echo "File not found: $old"
+        return 1
+    fi
+    if [ -e "$newpath" ]; then
+        echo "Destination already exists: $new"
+        return 1
+    fi
+    mv "$oldpath" "$newpath"
+    echo "Renamed '$old' -> '$new'"
+}
+
+# ============================================================
+# ANK: erase (delete file)
+# ============================================================
+ank_erase() {
+    local file="$1"
+    if [ -z "$file" ]; then
+        echo "Usage: ank erase <filename>"
+        return 1
+    fi
+    case "$file" in */*) echo "Error: no paths allowed, use filename only"; return 1 ;; esac
+    local filepath="$ENGINE_DIR/$file"
+    if [ ! -e "$filepath" ]; then
+        echo "File not found: $file"
+        return 1
+    fi
+    rm -f "$filepath"
+    echo "Deleted '$file'"
+}
+
+# ============================================================
 # ANK: npad (vi-like text editor)
 # ============================================================
 ank_npad() {
@@ -1050,6 +1276,7 @@ ank_npad() {
         echo "Usage: ank npad <filename>"
         return 1
     fi
+    case "$file" in */*) echo "Error: no paths allowed, use filename only"; return 1 ;; esac
 
     local filepath="$ENGINE_DIR/$file"
     local tmpfile="$ANK_TMP/ank_npad_$$.tmp"
@@ -1526,6 +1753,25 @@ ank_core_info() {
     local logo6='╚═╝  ╚═╝╚═╝  ╚═══╝╚═╝  ╚═╝    /_|_|     |_|_\'
     local logo7='                                /_/   \_\'
 
+    local _logo_idx=1
+    _info_line() {
+        local label="$1" value="$2"
+        local logo=""
+        case "$_logo_idx" in
+            1) logo="$logo1" ;; 2) logo="$logo2" ;; 3) logo="$logo3" ;;
+            4) logo="$logo4" ;; 5) logo="$logo5" ;; 6) logo="$logo6" ;;
+            7) logo="$logo7" ;;
+        esac
+        local vlen=${#value}
+        local pad=$((68 - 2 - 12 - vlen))
+        [ "$pad" -lt 1 ] 2>/dev/null && pad=1
+        printf "  %-12s %s%*s%s\n" "$label" "$value" $pad "" "$logo"
+        _logo_idx=$((_logo_idx + 1))
+    }
+    _info_line_plain() {
+        printf "  %-12s %s\n" "$1" "$2"
+    }
+
     local os="$(getprop ro.build.version.release 2>/dev/null || echo "unknown")"
     local arch=$(uname -m 2>/dev/null || echo "unknown")
     local device=$(getprop ro.product.model 2>/dev/null || echo "unknown")
@@ -1537,7 +1783,7 @@ ank_core_info() {
         [ -z "$cpu_model" ] && cpu_model=$(grep -m1 "model name" /proc/cpuinfo 2>/dev/null | cut -d: -f2 | sed 's/^ *//')
         [ -z "$cpu_model" ] && cpu_model=$(grep -m1 "Processor" /proc/cpuinfo 2>/dev/null | cut -d: -f2 | sed 's/^ *//')
     fi
-    local cores=$(nproc 2>/dev/null || grep -c "^processor" /proc/cpuinfo 2>/dev/null || echo "unknown")
+    local cores=$(nproc 2>/dev/null || grep -c "^processor" /proc/cpuinfo 2>/dev/null || echo "?")
 
     local ram_total=0
     local ram_used=0
@@ -1600,18 +1846,18 @@ ank_core_info() {
     echo ""
     printf " %s\n" "$(printf '─%.0s' $(seq 1 113))"
     echo ""
-    printf "  %-12s %-38s%*s%s\n" "OS" "$os ($arch)" 18 "" "$logo1"
-    printf "  %-12s %-38s%*s%s\n" "Device" "$device" 18 "" "$logo2"
-    printf "  %-12s %-38s%*s%s\n" "Kernel" "$kernel" 18 "" "$logo3"
-    printf "  %-12s %-38s%*s%s\n" "CPU" "$cpu_model ($cores cores)" 18 "" "$logo4"
-    printf "  %-12s %-38s%*s%s\n" "RAM" "${ram_used}M / ${ram_total}M (${ram_pct}%)" 18 "" "$logo5"
-    printf "  %-12s %-38s%*s%s\n" "Storage" "$storage" 18 "" "$logo6"
-    printf "  %-12s %-38s%*s%s\n" "Uptime" "$uptime_str" 18 "" " Android Konteiner v${ANK_VERSION}               $logo7"
-    printf "  %-12s %-38s%*s%s\n" "Load" "$load" 18 ""
+    _info_line "OS" "$os ($arch)"
+    _info_line "Device" "$device"
+    _info_line "Kernel" "$kernel"
+    _info_line "CPU" "$cpu_model ($cores cores)"
+    _info_line "RAM" "${ram_used}M / ${ram_total}M (${ram_pct}%)"
+    _info_line "Storage" "$storage"
+    _info_line "Uptime" "$uptime_str"
+    _info_line "Load" "$load"
     echo ""
-    printf "  %-12s %-38s\n" "Containers" "$running / $total running"
-    printf "  %-12s %-38s\n" "Images" "$images available"
-    printf "  %-12s %-38s\n" "Mode" "$mode"
+    _info_line_plain "Containers" "$running / $total running"
+    _info_line_plain "Images" "$images available"
+    _info_line_plain "Mode" "$mode"
     echo ""
     printf " %s\n" "$(printf '─%.0s' $(seq 1 113))"
 }
@@ -1975,9 +2221,32 @@ while true; do
                     arg1=$(echo "$args" | cut -d' ' -f1)
                     ank_pull "$arg1"
                     ;;
+                build)
+                    arg1=$(echo "$args" | cut -d' ' -f1)
+                    arg2=$(echo "$args" | cut -d' ' -f2)
+                    ank_build "$arg1" "$arg2"
+                    ;;
                 npad)
                     arg1=$(echo "$args" | cut -d' ' -f1)
                     ank_npad "$arg1"
+                    ;;
+                ls)
+                    arg1=$(echo "$args" | cut -d' ' -f1)
+                    ank_ls "$arg1"
+                    ;;
+                copy)
+                    arg1=$(echo "$args" | cut -d' ' -f1)
+                    arg2=$(echo "$args" | cut -d' ' -f2)
+                    ank_copy "$arg1" "$arg2"
+                    ;;
+                ren)
+                    arg1=$(echo "$args" | cut -d' ' -f1)
+                    arg2=$(echo "$args" | cut -d' ' -f2)
+                    ank_ren "$arg1" "$arg2"
+                    ;;
+                erase)
+                    arg1=$(echo "$args" | cut -d' ' -f1)
+                    ank_erase "$arg1"
                     ;;
                 stack)
                     stack_subcmd=$(echo "$args" | cut -d' ' -f1)
