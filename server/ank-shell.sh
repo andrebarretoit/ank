@@ -105,11 +105,11 @@ _history_show() {
 # HELPER: Tab completion
 # ============================================================
 _cmds="ank ank-core exit help history"
-_ank_subcmds="ps start stop restart rm logs exec inspect images list-images templates deploy pull npad stack backup node ping traceroute nslookup ip ifconfig route netstat ss help history --man exit"
+_ank_subcmds="ps start stop restart rm logs exec inspect images list-images templates deploy pull npad stack backup node ping traceroute nslookup ip ifconfig route netstat ss --version help history --man exit"
 _ank_stack_subcmds="ls inspect create scale rm"
 _ank_backup_subcmds="ls inspect run rm"
 _ank_node_subcmds="ls inspect add rm"
-_ank_core_subcmds="status restart info network clean logs shell help --man"
+_ank_core_subcmds="status restart info network clean logs help --man"
 
 _complete_input() {
     local input="$1"
@@ -366,6 +366,7 @@ Editor:
 
 System:
   ank help                  Show this help
+  ank --version             Show system info (neofetch style)
   ank history               Show command history
   ank --man <cmd>           Show detailed help for a command
   ank exit                  Exit ANK shell
@@ -377,7 +378,6 @@ ANK-Core commands:
   ank-core network          Show network config
   ank-core clean            Cleanup orphaned resources
   ank-core logs             Show server logs
-  ank-core shell            Open host shell
   ank-core --man <cmd>      Show detailed help
 EOF
 }
@@ -1517,16 +1517,103 @@ ank_core_restart() {
 # ANK-CORE: info
 # ============================================================
 ank_core_info() {
+    local ANK_VERSION="2.0.0"
+    local logo1='█████╗ ███╗   ██╗██╗  ██╗        .-"""-.'
+    local logo2='██╔══██╗████╗  ██║██║ ██╔╝       / o   o \'
+    local logo3='███████║██╔██╗ ██║█████╔╝       |    ^    |'
+    local logo4='██╔══██║██║╚██╗██║██╔═██╗       |  \___/  |'
+    local logo5='██║  ██║██║ ╚████║██║  ██╗     /|         |\'
+    local logo6='╚═╝  ╚═╝╚═╝  ╚═══╝╚═╝  ╚═╝    /_|_|     |_|_\'
+    local logo7='                                /_/   \_\'
+
+    local os="$(getprop ro.build.version.release 2>/dev/null || echo "unknown")"
+    local arch=$(uname -m 2>/dev/null || echo "unknown")
     local device=$(getprop ro.product.model 2>/dev/null || echo "unknown")
     local kernel=$(uname -r 2>/dev/null || echo "unknown")
-    local mem_total=0
-    if [ -f "/proc/meminfo" ]; then
-        mem_total=$(grep "MemTotal:" /proc/meminfo 2>/dev/null | awk '{print $2}' 2>/dev/null || grep "MemTotal:" /proc/meminfo 2>/dev/null | cut -d' ' -f2)
+
+    local cpu_model="unknown"
+    if [ -f "/proc/cpuinfo" ]; then
+        cpu_model=$(grep -m1 "Hardware" /proc/cpuinfo 2>/dev/null | cut -d: -f2 | sed 's/^ *//')
+        [ -z "$cpu_model" ] && cpu_model=$(grep -m1 "model name" /proc/cpuinfo 2>/dev/null | cut -d: -f2 | sed 's/^ *//')
+        [ -z "$cpu_model" ] && cpu_model=$(grep -m1 "Processor" /proc/cpuinfo 2>/dev/null | cut -d: -f2 | sed 's/^ *//')
     fi
-    printf "Device:     %s\n" "$device"
-    printf "Kernel:     %s\n" "$kernel"
-    printf "Memory:     %s MB\n" "$((mem_total / 1024))"
-    printf "Root:       %s\n" "$ANK_DIR"
+    local cores=$(nproc 2>/dev/null || grep -c "^processor" /proc/cpuinfo 2>/dev/null || echo "unknown")
+
+    local ram_total=0
+    local ram_used=0
+    if [ -f "/proc/meminfo" ]; then
+        ram_total=$(grep "MemTotal:" /proc/meminfo 2>/dev/null | awk '{print $2}')
+        local ram_avail=$(grep "MemAvailable:" /proc/meminfo 2>/dev/null | awk '{print $2}')
+        if [ -n "$ram_avail" ]; then
+            ram_used=$(( (ram_total - ram_avail) / 1024 ))
+        else
+            local ram_free=$(grep "MemFree:" /proc/meminfo 2>/dev/null | awk '{print $2}')
+            local ram_buf=$(grep "Buffers:" /proc/meminfo 2>/dev/null | awk '{print $2}')
+            local ram_cached=$(grep "Cached:" /proc/meminfo 2>/dev/null | awk '{print $2}')
+            ram_used=$(( (ram_total - ram_free - ram_buf - ram_cached) / 1024 ))
+        fi
+        ram_total=$((ram_total / 1024))
+    fi
+    local ram_pct=0
+    [ "$ram_total" -gt 0 ] 2>/dev/null && ram_pct=$((ram_used * 100 / ram_total))
+
+    local storage="unknown"
+    local storage_line=$(df -h /data 2>/dev/null | tail -1)
+    if [ -n "$storage_line" ]; then
+        local s_used=$(echo "$storage_line" | awk '{print $3}')
+        local s_total=$(echo "$storage_line" | awk '{print $2}')
+        local s_pct=$(echo "$storage_line" | awk '{print $5}')
+        storage="$s_used / $s_total ($s_pct)"
+    fi
+
+    local uptime_str="unknown"
+    if [ -f "/proc/uptime" ]; then
+        local up_sec=$(cut -d. -f1 /proc/uptime 2>/dev/null)
+        local up_days=$((up_sec / 86400))
+        local up_hours=$(( (up_sec % 86400) / 3600 ))
+        local up_mins=$(( (up_sec % 3600) / 60 ))
+        uptime_str="${up_days}d ${up_hours}h ${up_mins}m"
+    fi
+
+    local running=0
+    local total=0
+    if [ -d "$CONTAINERS_DIR" ]; then
+        total=$(ls -d "$CONTAINERS_DIR"/*/ 2>/dev/null | wc -l)
+        for d in "$CONTAINERS_DIR"/*/; do
+            [ -f "$d/config.json" ] || continue
+            local st=$(grep -o '"status": *"[^"]*"' "$d/config.json" 2>/dev/null | cut -d'"' -f4)
+            [ "$st" = "running" ] && running=$((running + 1))
+        done
+    fi
+
+    local images=0
+    [ -d "$IMAGES_DIR" ] && images=$(ls "$IMAGES_DIR"/*.tar.gz 2>/dev/null | wc -l)
+
+    local mode=$(_json_val "$CONFIG_FILE" "mode")
+    [ -z "$mode" ] && mode="isolated"
+
+    local load="unknown"
+    if [ -f "/proc/loadavg" ]; then
+        load=$(cut -d' ' -f1-3 /proc/loadavg 2>/dev/null)
+    fi
+
+    echo ""
+    printf " %s\n" "$(printf '─%.0s' $(seq 1 113))"
+    echo ""
+    printf "  %-12s %-38s%*s%s\n" "OS" "$os ($arch)" 18 "" "$logo1"
+    printf "  %-12s %-38s%*s%s\n" "Device" "$device" 18 "" "$logo2"
+    printf "  %-12s %-38s%*s%s\n" "Kernel" "$kernel" 18 "" "$logo3"
+    printf "  %-12s %-38s%*s%s\n" "CPU" "$cpu_model ($cores cores)" 18 "" "$logo4"
+    printf "  %-12s %-38s%*s%s\n" "RAM" "${ram_used}M / ${ram_total}M (${ram_pct}%)" 18 "" "$logo5"
+    printf "  %-12s %-38s%*s%s\n" "Storage" "$storage" 18 "" "$logo6"
+    printf "  %-12s %-38s%*s%s\n" "Uptime" "$uptime_str" 18 "" " Android Konteiner v${ANK_VERSION}               $logo7"
+    printf "  %-12s %-38s%*s%s\n" "Load" "$load" 18 ""
+    echo ""
+    printf "  %-12s %-38s\n" "Containers" "$running / $total running"
+    printf "  %-12s %-38s\n" "Images" "$images available"
+    printf "  %-12s %-38s\n" "Mode" "$mode"
+    echo ""
+    printf " %s\n" "$(printf '─%.0s' $(seq 1 113))"
 }
 
 # ============================================================
@@ -1564,14 +1651,6 @@ ank_core_logs() {
     else
         echo "No server logs"
     fi
-}
-
-# ============================================================
-# ANK-CORE: shell
-# ============================================================
-ank_core_shell() {
-    echo "You are already in the host shell."
-    echo "Use 'exit' to leave the ANK shell."
 }
 
 # ============================================================
@@ -1799,13 +1878,6 @@ ank_core_man() {
             echo ""
             echo "Usage: ank-core logs"
             ;;
-        shell)
-            echo "ank-core shell"
-            echo ""
-            echo "You are already in the host shell."
-            echo ""
-            echo "Usage: ank-core shell"
-            ;;
         *)
             echo "No man page for '$cmd'."
             echo "Type 'ank-core --help' for available commands."
@@ -1845,6 +1917,9 @@ while true; do
             case "$subcmd" in
                 help|-h|--help)
                     ank_help
+                    ;;
+                --version|-v)
+                    ank_core_info
                     ;;
                 history)
                     ank_history
@@ -2057,9 +2132,6 @@ while true; do
                     ;;
                 logs)
                     ank_core_logs
-                    ;;
-                shell)
-                    ank_core_shell
                     ;;
                 *)
                     echo "Unknown ank-core command: $subcmd"
