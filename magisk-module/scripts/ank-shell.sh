@@ -178,6 +178,8 @@ _read_line() {
         stty -echo -icanon min 1 time 0 2>/dev/null
     fi
 
+    printf "(root@ank-shell) ~ [/ank-engine] > "
+
     while true; do
         local c=""
         c=$(dd bs=1 count=1 2>/dev/null)
