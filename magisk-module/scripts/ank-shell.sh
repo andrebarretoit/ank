@@ -335,7 +335,7 @@ Image commands:
 
 File commands:
   ank npad <file>           Open text editor (Ankfiles validated, others plain)
-  ank ls [dir]              List files in ank-engine
+  ank ls                    List files in ank-engine
   ank copy <src> <dst>      Copy a file
   ank ren <old> <new>       Rename a file
   ank erase <file>          Delete a file
@@ -373,6 +373,7 @@ System:
   ank help                  Show this help
   ank --version             Show system info (neofetch style)
   ank history               Show command history
+  ank !{NUM}                Re-execute command from history
   ank --man <cmd>           Show detailed help for a command
   ank exit                  Exit ANK shell
 
@@ -2117,6 +2118,26 @@ while true; do
 
     # Save to history
     _history_save "$input"
+
+    # Handle !{NUM} - re-execute history command
+    case "$input" in
+        \!*)
+            local hist_num="${input#!}"
+            if [ "$hist_num" -ge 1 ] 2>/dev/null; then
+                local hist_cmd=$(_history_get "$hist_num")
+                if [ -n "$hist_cmd" ]; then
+                    echo "  $hist_cmd" >&2
+                    input="$hist_cmd"
+                else
+                    echo "  !${hist_num}: event not found" >&2
+                    continue
+                fi
+            else
+                echo "  !${hist_num}: event not found" >&2
+                continue
+            fi
+            ;;
+    esac
 
     # Parse first word
     cmd1=$(echo "$input" | cut -d' ' -f1)
