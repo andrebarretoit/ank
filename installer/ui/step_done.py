@@ -3,7 +3,7 @@ ANK Installer - Step 6: Done (PySide6)
 """
 
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QLabel, QFrame
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from ui.theme import COLORS, TIER_COLORS
 
 
@@ -13,6 +13,9 @@ class StepDone(QWidget):
     def __init__(self, parent, app):
         super().__init__(parent)
         self.app = app
+        self._countdown = 0
+        self._countdown_timer = QTimer(self)
+        self._countdown_timer.timeout.connect(self._countdown_tick)
         self._create_ui()
 
     def _create_ui(self):
@@ -69,6 +72,11 @@ class StepDone(QWidget):
         desc.setWordWrap(True)
         layout.addWidget(desc)
 
+        self.countdown_label = QLabel("")
+        self.countdown_label.setObjectName("subtitle")
+        self.countdown_label.setStyleSheet(f"color: {COLORS['accent']}; font-size: 13px; font-weight: bold;")
+        layout.addWidget(self.countdown_label)
+
         layout.addStretch()
 
     def on_show(self):
@@ -102,6 +110,19 @@ class StepDone(QWidget):
 
             from PySide6.QtCore import QTimer
             QTimer.singleShot(2000, lambda: self._open_browser(ip, detected_protocol))
+
+        self._countdown = 5
+        self.countdown_label.setText(f"Fechando em {self._countdown}s...")
+        self._countdown_timer.start(1000)
+
+    def _countdown_tick(self):
+        self._countdown -= 1
+        if self._countdown <= 0:
+            self._countdown_timer.stop()
+            self.countdown_label.setText("")
+            self.app.close()
+        else:
+            self.countdown_label.setText(f"Fechando em {self._countdown}s...")
 
     def _detect_protocol(self, ip):
         import urllib.request

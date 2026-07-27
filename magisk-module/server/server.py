@@ -63,26 +63,30 @@ def _cpu_sampler_loop():
             time.sleep(10)
 
 def _get_disk_usage():
-    """Call disk.sh to get accurate disk usage (total/used/free in GB)."""
-    script = os.path.join(SCRIPTS_DIR, "disk.sh")
-    if not os.path.isfile(script):
-        return {"total": 0, "used": 0, "free": 0}
+    """Get disk usage via df (same method as ank-core info)."""
     try:
         result = subprocess.run(
-            ["/system/bin/sh", script],
+            ["df", "-h", "/data"],
             capture_output=True, text=True, timeout=10
         )
         if result.returncode == 0 and result.stdout.strip():
-            # Output: "229.6 GB|52.2 GB|177.3 GB"
-            parts = result.stdout.strip().split("|")
-            if len(parts) == 3:
-                def parse_gb(s):
-                    s = s.strip().replace(" GB", "")
-                    return float(s)
-                total = parse_gb(parts[0])
-                used = parse_gb(parts[1])
-                free = parse_gb(parts[2])
-                return {"total": total, "used": used, "free": free}
+            lines = result.stdout.strip().split("\n")
+            if len(lines) >= 2:
+                parts = lines[1].split()
+                if len(parts) >= 5:
+                    def parse_gb(s):
+                        s = s.strip().upper()
+                        if s.endswith("G"):
+                            return float(s[:-1])
+                        elif s.endswith("M"):
+                            return float(s[:-1]) / 1024
+                        elif s.endswith("K"):
+                            return float(s[:-1]) / (1024 * 1024)
+                        return float(s)
+                    total = parse_gb(parts[1])
+                    used = parse_gb(parts[2])
+                    free = parse_gb(parts[3])
+                    return {"total": round(total, 1), "used": round(used, 1), "free": round(free, 1)}
     except Exception:
         pass
     return {"total": 0, "used": 0, "free": 0}

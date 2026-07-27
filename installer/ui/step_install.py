@@ -8,7 +8,7 @@ import tempfile
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QTextEdit, QProgressBar
 )
-from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtCore import Qt, QThread, Signal, QTimer
 from ui.theme import COLORS
 
 
@@ -246,6 +246,9 @@ class StepInstall(QWidget):
         super().__init__(parent)
         self.app = app
         self._thread = None
+        self._countdown = 0
+        self._countdown_timer = QTimer(self)
+        self._countdown_timer.timeout.connect(self._countdown_tick)
         self._create_ui()
 
     def _create_ui(self):
@@ -278,6 +281,11 @@ class StepInstall(QWidget):
         self.log = QTextEdit()
         self.log.setReadOnly(True)
         layout.addWidget(self.log)
+
+        self.countdown_label = QLabel("")
+        self.countdown_label.setObjectName("subtitle")
+        self.countdown_label.setStyleSheet(f"color: {COLORS['accent']}; font-size: 13px; font-weight: bold;")
+        layout.addWidget(self.countdown_label)
 
     def _add_log(self, msg):
         ts = datetime.datetime.now().strftime("%H:%M:%S")
@@ -319,6 +327,9 @@ class StepInstall(QWidget):
             self.status.setText("Instalacao concluida!")
             self.status.setStyleSheet(f"color: {COLORS['success']}; font-size: 13px; font-weight: bold;")
             self.app.install_complete = True
+            self._countdown = 5
+            self.countdown_label.setText(f"Reiniciando em {self._countdown}s...")
+            self._countdown_timer.start(1000)
         else:
             self.progress.setValue(0)
             self.status.setText(f"Falha: {msg}")
@@ -326,6 +337,19 @@ class StepInstall(QWidget):
             self.app.install_failed = True
         # Refresh bottom bar buttons (Sair on failure, etc.)
         self.app._update_buttons()
+
+    def _countdown_tick(self):
+        self._countdown -= 1
+        if self._countdown <= 0:
+            self._countdown_timer.stop()
+            self.countdown_label.setText("")
+            self.app.show_step(self.current_step + 1)
+        else:
+            self.countdown_label.setText(f"Reiniciando em {self._countdown}s...")
+
+    @property
+    def current_step(self):
+        return self.app.current_step
 
     def _on_retry_needed(self, url, error):
         """Show retry dialog when all mirrors fail."""

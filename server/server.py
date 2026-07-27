@@ -63,29 +63,17 @@ def _cpu_sampler_loop():
             time.sleep(10)
 
 def _get_disk_usage():
-    """Call disk.sh to get accurate disk usage (total/used/free in GB)."""
-    script = os.path.join(SCRIPTS_DIR, "disk.sh")
-    if not os.path.isfile(script):
-        return {"total": 0, "used": 0, "free": 0}
+    """Get disk usage via os.statvfs (no subprocess, works in chroot)."""
     try:
-        result = subprocess.run(
-            ["/system/bin/sh", script],
-            capture_output=True, text=True, timeout=10
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            # Output: "229.6 GB|52.2 GB|177.3 GB"
-            parts = result.stdout.strip().split("|")
-            if len(parts) == 3:
-                def parse_gb(s):
-                    s = s.strip().replace(" GB", "")
-                    return float(s)
-                total = parse_gb(parts[0])
-                used = parse_gb(parts[1])
-                free = parse_gb(parts[2])
-                return {"total": total, "used": used, "free": free}
+        st = os.statvfs("/data")
+        total = st.f_blocks * st.f_frsize
+        free = st.f_bavail * st.f_frsize
+        used = total - free
+        def fmt_gb(b):
+            return round(b / (1024**3), 1)
+        return {"total": fmt_gb(total), "used": fmt_gb(used), "free": fmt_gb(free)}
     except Exception:
-        pass
-    return {"total": 0, "used": 0, "free": 0}
+        return {"total": 0, "used": 0, "free": 0}
 
 _cpu_thread = threading.Thread(target=_cpu_sampler_loop, daemon=True)
 _cpu_thread.start()
@@ -671,10 +659,16 @@ def _ws_shell_session(handler, cols=80, rows=24):
                 shell = s
                 break
 
-        profile = os.path.join(ANK_DIR, "ankfs/opt/ank/ank-profile.sh")
-        has_profile = os.path.isfile(profile)
+        ank_shell = os.path.join(ANK_DIR, "ankfs/ank-shell.sh")
+        has_ank_shell = os.path.isfile(ank_shell) and os.access(ank_shell, os.X_OK)
 
-        log(f"WS_SHELL: fork (shell={shell}, profile={has_profile})")
+        if has_ank_shell:
+            log(f"WS_SHELL: fork (ank-shell={ank_shell})")
+        else:
+            profile = os.path.join(ANK_DIR, "ankfs/opt/ank/ank-profile.sh")
+            has_profile = os.path.isfile(profile)
+            log(f"WS_SHELL: fork (shell={shell}, profile={has_profile})")
+
         pid, master_fd = pty.fork()
         if pid == 0:
             for k in ("TERM", "PATH", "HOME", "LANG", "USER", "SHELL"):
@@ -684,8 +678,11 @@ def _ws_shell_session(handler, cols=80, rows=24):
             os.environ["HOME"] = "/root"
             os.environ["USER"] = "root"
             os.environ["SHELL"] = shell
+            os.environ["ANK_DIR"] = ANK_DIR
             try:
-                if has_profile:
+                if has_ank_shell:
+                    os.execv(shell, [shell, ank_shell])
+                elif has_profile:
                     os.execl(shell, shell, "-c", f". {profile}; exec {shell}")
                 else:
                     os.execv(shell, [shell])

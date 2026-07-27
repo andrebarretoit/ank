@@ -1175,10 +1175,10 @@ ank_ss() {
 # ANK: ls (list files in ank-engine)
 # ============================================================
 ank_ls() {
-    local dir="${1:-$ENGINE_DIR}"
+    local dir="$ENGINE_DIR"
     if [ ! -d "$dir" ]; then
-        echo "Directory not found: $dir"
-        return 1
+        echo "  (empty)"
+        return 0
     fi
     local count=0
     for f in "$dir"/*; do
@@ -1744,34 +1744,6 @@ ank_core_restart() {
 # ANK-CORE: info
 # ============================================================
 ank_core_info() {
-    local ANK_VERSION="2.0.0"
-    local logo1='█████╗ ███╗   ██╗██╗  ██╗        .-"""-.'
-    local logo2='██╔══██╗████╗  ██║██║ ██╔╝       / o   o \'
-    local logo3='███████║██╔██╗ ██║█████╔╝       |    ^    |'
-    local logo4='██╔══██║██║╚██╗██║██╔═██╗       |  \___/  |'
-    local logo5='██║  ██║██║ ╚████║██║  ██╗     /|         |\'
-    local logo6='╚═╝  ╚═╝╚═╝  ╚═══╝╚═╝  ╚═╝    /_|_|     |_|_\'
-    local logo7='                                /_/   \_\'
-
-    local _logo_idx=1
-    _info_line() {
-        local label="$1" value="$2"
-        local logo=""
-        case "$_logo_idx" in
-            1) logo="$logo1" ;; 2) logo="$logo2" ;; 3) logo="$logo3" ;;
-            4) logo="$logo4" ;; 5) logo="$logo5" ;; 6) logo="$logo6" ;;
-            7) logo="$logo7" ;;
-        esac
-        local vlen=${#value}
-        local pad=$((68 - 2 - 12 - vlen))
-        [ "$pad" -lt 1 ] 2>/dev/null && pad=1
-        printf "  %-12s %s%*s%s\n" "$label" "$value" $pad "" "$logo"
-        _logo_idx=$((_logo_idx + 1))
-    }
-    _info_line_plain() {
-        printf "  %-12s %s\n" "$1" "$2"
-    }
-
     local os="$(getprop ro.build.version.release 2>/dev/null || echo "unknown")"
     local arch=$(uname -m 2>/dev/null || echo "unknown")
     local device=$(getprop ro.product.model 2>/dev/null || echo "unknown")
@@ -1788,14 +1760,14 @@ ank_core_info() {
     local ram_total=0
     local ram_used=0
     if [ -f "/proc/meminfo" ]; then
-        ram_total=$(grep "MemTotal:" /proc/meminfo 2>/dev/null | awk '{print $2}')
-        local ram_avail=$(grep "MemAvailable:" /proc/meminfo 2>/dev/null | awk '{print $2}')
+        ram_total=$(grep "MemTotal:" /proc/meminfo 2>/dev/null | cut -d: -f2 | tr -cd '0-9')
+        local ram_avail=$(grep "MemAvailable:" /proc/meminfo 2>/dev/null | cut -d: -f2 | tr -cd '0-9')
         if [ -n "$ram_avail" ]; then
             ram_used=$(( (ram_total - ram_avail) / 1024 ))
         else
-            local ram_free=$(grep "MemFree:" /proc/meminfo 2>/dev/null | awk '{print $2}')
-            local ram_buf=$(grep "Buffers:" /proc/meminfo 2>/dev/null | awk '{print $2}')
-            local ram_cached=$(grep "Cached:" /proc/meminfo 2>/dev/null | awk '{print $2}')
+            local ram_free=$(grep "MemFree:" /proc/meminfo 2>/dev/null | cut -d: -f2 | tr -cd '0-9')
+            local ram_buf=$(grep "Buffers:" /proc/meminfo 2>/dev/null | cut -d: -f2 | tr -cd '0-9')
+            local ram_cached=$(grep "Cached:" /proc/meminfo 2>/dev/null | cut -d: -f2 | tr -cd '0-9')
             ram_used=$(( (ram_total - ram_free - ram_buf - ram_cached) / 1024 ))
         fi
         ram_total=$((ram_total / 1024))
@@ -1806,9 +1778,9 @@ ank_core_info() {
     local storage="unknown"
     local storage_line=$(df -h /data 2>/dev/null | tail -1)
     if [ -n "$storage_line" ]; then
-        local s_used=$(echo "$storage_line" | awk '{print $3}')
-        local s_total=$(echo "$storage_line" | awk '{print $2}')
-        local s_pct=$(echo "$storage_line" | awk '{print $5}')
+        local s_used=$(echo "$storage_line" | tr -s ' ' | cut -d' ' -f3)
+        local s_total=$(echo "$storage_line" | tr -s ' ' | cut -d' ' -f2)
+        local s_pct=$(echo "$storage_line" | tr -s ' ' | cut -d' ' -f5)
         storage="$s_used / $s_total ($s_pct)"
     fi
 
@@ -1844,22 +1816,20 @@ ank_core_info() {
     fi
 
     echo ""
-    printf " %s\n" "$(printf '─%.0s' $(seq 1 113))"
+    echo " ──────────────────────────────────────────────"
+    printf "  %-12s %s (%s)\n" "OS" "$os" "$arch"
+    printf "  %-12s %s\n" "Device" "$device"
+    printf "  %-12s %s\n" "Kernel" "$kernel"
+    printf "  %-12s %s (%s cores)\n" "CPU" "$cpu_model" "$cores"
+    printf "  %-12s %sM / %sM (%s%%)\n" "RAM" "$ram_used" "$ram_total" "$ram_pct"
+    printf "  %-12s %s\n" "Storage" "$storage"
+    printf "  %-12s %s\n" "Uptime" "$uptime_str"
+    printf "  %-12s %s\n" "Load" "$load"
     echo ""
-    _info_line "OS" "$os ($arch)"
-    _info_line "Device" "$device"
-    _info_line "Kernel" "$kernel"
-    _info_line "CPU" "$cpu_model ($cores cores)"
-    _info_line "RAM" "${ram_used}M / ${ram_total}M (${ram_pct}%)"
-    _info_line "Storage" "$storage"
-    _info_line "Uptime" "$uptime_str"
-    _info_line "Load" "$load"
-    echo ""
-    _info_line_plain "Containers" "$running / $total running"
-    _info_line_plain "Images" "$images available"
-    _info_line_plain "Mode" "$mode"
-    echo ""
-    printf " %s\n" "$(printf '─%.0s' $(seq 1 113))"
+    printf "  %-12s %s / %s running\n" "Containers" "$running" "$total"
+    printf "  %-12s %s available\n" "Images" "$images"
+    printf "  %-12s %s\n" "Mode" "$mode"
+    echo " ──────────────────────────────────────────────"
 }
 
 # ============================================================
@@ -2231,8 +2201,7 @@ while true; do
                     ank_npad "$arg1"
                     ;;
                 ls)
-                    arg1=$(echo "$args" | cut -d' ' -f1)
-                    ank_ls "$arg1"
+                    ank_ls
                     ;;
                 copy)
                     arg1=$(echo "$args" | cut -d' ' -f1)
