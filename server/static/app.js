@@ -1816,8 +1816,34 @@ async function loadNodes() {
         const nodes = data.nodes || [];
         const el = document.getElementById('nodes-list');
         if (!el) return;
-        if (!nodes.length) { el.innerHTML = '<div class="empty-state"><i class="bi bi-pc-display-horizontal"></i><p>No remote nodes configured</p><p style="color:var(--text-muted);font-size:12px;margin-top:4px">Add a remote ANK device to manage it from here</p></div>'; return; }
-        el.innerHTML = nodes.map(n => {
+
+        let managerHtml = '';
+        try {
+            const mgr = await api('GET', '/nodes/manager');
+            if (mgr.manager) {
+                const m = mgr.manager;
+                const mStatus = m.status === 'online' ? 'Online' : m.status === 'pending' ? 'Pending' : 'Offline';
+                const mColor = m.status === 'online' ? 'var(--success)' : m.status === 'pending' ? 'var(--warning)' : 'var(--danger)';
+                managerHtml = `<div style="background:var(--bg-secondary);border:1px solid var(--border);border-radius:12px;padding:16px;margin-bottom:16px">
+                    <div style="display:flex;justify-content:space-between;align-items:center">
+                        <div>
+                            <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
+                                <span style="width:8px;height:8px;border-radius:50%;background:${mColor};flex-shrink:0"></span>
+                                <strong style="color:var(--text-primary)">Managed by: ${esc(m.alias || m.ip)}</strong>
+                                <span style="color:var(--text-muted);font-size:12px">${mStatus}</span>
+                                <span style="background:var(--accent);color:#fff;font-size:10px;padding:2px 6px;border-radius:4px">MANAGER</span>
+                            </div>
+                            <div style="color:var(--text-muted);font-size:12px">IP: ${esc(m.ip)}</div>
+                        </div>
+                        <button class="btn btn-sm btn-danger" onclick="revokeManager()" title="Revoke access"><i class="bi bi-x-circle"></i> Revoke</button>
+                    </div>
+                </div>`;
+            }
+        } catch (e) { }
+
+        if (!nodes.length && !managerHtml) { el.innerHTML = '<div class="empty-state"><i class="bi bi-pc-display-horizontal"></i><p>No remote nodes configured</p><p style="color:var(--text-muted);font-size:12px;margin-top:4px">Add a remote ANK device to manage it from here</p></div>'; return; }
+        if (!nodes.length && managerHtml) { el.innerHTML = managerHtml; return; }
+        el.innerHTML = managerHtml + nodes.map(n => {
             const statusColor = n.status === 'online' ? 'var(--success)' : n.status === 'pending' ? 'var(--warning)' : 'var(--danger)';
             const statusLabel = n.status === 'online' ? 'Online' : n.status === 'pending' ? 'Pending' : 'Offline';
             const roleTag = n.role === 'manager' ? '<span style="background:var(--accent);color:#fff;font-size:10px;padding:2px 6px;border-radius:4px;margin-left:6px">MANAGER</span>' : '<span style="background:var(--text-muted);color:#fff;font-size:10px;padding:2px 6px;border-radius:4px;margin-left:6px">MANAGED</span>';
@@ -1874,6 +1900,12 @@ async function deleteNode(id) {
     const ok = await confirm(`Remove this node?`, 'Remove Node');
     if (!ok) return;
     try { await api('POST', `/nodes/${encodeURIComponent(id)}/delete`); toast('Node removed', 'success'); loadNodes(); } catch (e) { toast(`Failed: ${e.message}`, 'error'); }
+}
+
+async function revokeManager() {
+    const ok = await confirm('Revoke manager access? This node will no longer be managed.', 'Revoke Manager');
+    if (!ok) return;
+    try { await api('DELETE', '/nodes/manager'); toast('Manager access revoked', 'success'); loadNodes(); } catch (e) { toast(`Failed: ${e.message}`, 'error'); }
 }
 
 /* Pairing requests (remote side) */

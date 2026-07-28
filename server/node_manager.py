@@ -186,6 +186,34 @@ class NodeManager:
             return None
         return self._sanitize_node(config)
 
+    def get_manager_info(self):
+        for node_id in self._list_node_ids():
+            config = self._load_node_config(node_id)
+            if config and config.get("role") == "manager":
+                return {
+                    "alias": config.get("alias", ""),
+                    "ip": config.get("ip", ""),
+                    "managed_by": config.get("managed_by", ""),
+                    "status": config.get("status", ""),
+                    "last_seen": config.get("last_seen", ""),
+                    "device_model": config.get("device_model", "")
+                }
+        return None
+
+    def revoke_manager(self):
+        for node_id in self._list_node_ids():
+            config = self._load_node_config(node_id)
+            if config and config.get("role") == "manager":
+                self._delete_node_config(node_id)
+                _log(f"Manager revoked: {config.get('alias', node_id)}")
+                return True
+        return False
+
+    def _delete_node_config(self, node_id):
+        path = self._node_config_path(node_id)
+        if os.path.isfile(path):
+            os.remove(path)
+
     def add_node(self, config):
         ip = config.get("ip", "")
         port = int(config.get("port", 8001))
@@ -292,7 +320,7 @@ class NodeManager:
 
         pairing_payload = {
             "manager_name": my_name,
-            "manager_ip": config.get("manager_ip", ""),
+            "manager_ip": config.get("manager_ip", "") or self._detect_own_ip(ip),
             "alias": alias,
             "token": token,
             "device_model": device_model,
@@ -698,3 +726,22 @@ class NodeManager:
         except Exception as e:
             _log(f"API DELETE failed for {node_id}{path}: {e}")
         return None
+
+    def _detect_own_ip(self, remote_ip=""):
+        import socket
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            if remote_ip:
+                s.connect((remote_ip, 80))
+            else:
+                s.connect(("8.8.8.8", 80))
+            ip = s.getsockname()[0]
+            s.close()
+            return ip
+        except Exception:
+            pass
+        try:
+            hostname = socket.gethostname()
+            return socket.gethostbyname(hostname)
+        except Exception:
+            return ""

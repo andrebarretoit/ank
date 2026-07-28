@@ -1189,6 +1189,8 @@ small{color:#334155}
             self.api_backup_inspect(path.split("/")[3])
         elif path == "/api/nodes":
             self.api_list_nodes()
+        elif path == "/api/nodes/manager":
+            self.api_get_manager()
         elif path == "/api/nodes/pairing":
             self.api_list_pairing_requests()
         elif path.startswith("/api/nodes/") and path.endswith("/containers"):
@@ -1321,6 +1323,9 @@ small{color:#334155}
             self.send_error(404, "Not Found")
 
     def route_delete(self, path, parsed=None):
+        if path == "/api/nodes/manager":
+            self.api_revoke_manager()
+            return
         if "/files" in path and path.startswith("/api/containers/"):
             parts = path.split("/")
             name = parts[3]
@@ -3610,11 +3615,20 @@ small{color:#334155}
     # Nodes API
     # ============================================================
 
+    _node_manager_instance = None
+
     def _get_node_manager(self):
+        if ANKHandler._node_manager_instance is not None:
+            return ANKHandler._node_manager_instance
         try:
             from node_manager import NodeManager
-            return NodeManager()
-        except Exception:
+            nm = NodeManager()
+            ANKHandler._node_manager_instance = nm
+            nm.start_heartbeat(30)
+            log("[NODE] Heartbeat started")
+            return nm
+        except Exception as e:
+            log(f"[NODE] Failed to start NodeManager: {e}")
             return None
 
     def api_list_nodes(self):
@@ -3624,6 +3638,22 @@ small{color:#334155}
             return
         nodes = nm.list_nodes()
         self.send_json({"nodes": nodes})
+
+    def api_get_manager(self):
+        nm = self._get_node_manager()
+        if not nm:
+            self.send_json({"manager": None})
+            return
+        info = nm.get_manager_info()
+        self.send_json({"manager": info})
+
+    def api_revoke_manager(self):
+        nm = self._get_node_manager()
+        if not nm:
+            self.send_json({"ok": False, "error": "NodeManager unavailable"}, 500)
+            return
+        ok = nm.revoke_manager()
+        self.send_json({"ok": ok})
 
     def api_node_inspect(self, node_id):
         nm = self._get_node_manager()
