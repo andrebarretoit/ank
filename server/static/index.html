@@ -58,11 +58,11 @@
         <div class="sidebar-backdrop" id="sidebar-backdrop"></div>
         <div class="mobile-topbar" id="mobile-topbar">
             <button type="button" class="icon-toggle" id="drawer-open-btn" title="Menu"><i class="bi bi-list"></i></button>
-            <div class="mt-brand"><div class="mark"><i class="bi bi-box-seam" style="font-size:16px;color:#fff"></i></div>ANK</div>
+            <div class="mt-brand"><div class="mark"><i class="bi bi-box-seam" style="font-size:16px;color:#fff"></i></div><span id="mt-sidebar-title">ANK</span></div>
             <button type="button" class="icon-toggle" id="theme-toggle-mobile" title="Toggle theme"><i class="bi bi-sun"></i><i class="bi bi-moon-stars"></i></button>
         </div>
         <aside class="sidebar" id="sidebar">
-            <div class="sidebar-brand"><div class="mark"><i class="bi bi-box-seam" style="font-size:18px;color:#fff"></i></div><span>ANK</span></div>
+            <div class="sidebar-brand"><div class="mark"><i class="bi bi-box-seam" style="font-size:18px;color:#fff"></i></div><span id="sidebar-title">ANK</span></div>
             <nav class="sidebar-nav">
                 <a href="#" class="nav-item active" data-tab="dashboard"><i class="bi bi-speedometer2"></i><span>Dashboard</span></a>
                 <a href="#" class="nav-item" data-tab="containers"><i class="bi bi-grid-3x3-gap"></i><span>Containers</span></a>
@@ -152,6 +152,11 @@
                         </div>
                     </div>
                 </div>
+                <!-- Nodes Section -->
+                <div class="dash-section" id="dash-nodes-section" style="display:none">
+                    <h3 class="dash-section-title"><i class="bi bi-pc-display-horizontal"></i> Nodes</h3>
+                    <div id="dash-nodes-grid" class="stats-grid" style="grid-template-columns:repeat(auto-fill,minmax(280px,1fr))"></div>
+                </div>
                 <!-- Containers List -->
                 <div class="card" style="margin-top:16px;">
                     <div class="card-header"><h3><i class="bi bi-grid-3x3-gap"></i> Containers</h3></div>
@@ -163,7 +168,12 @@
             <section id="tab-containers" class="tab">
                 <div class="page-header">
                     <h2><i class="bi bi-grid-3x3-gap"></i> Containers</h2>
-                    <button id="create-btn" class="btn btn-primary"><i class="bi bi-plus-lg"></i> New Container</button>
+                    <div style="display:flex;gap:8px;align-items:center">
+                        <select id="container-node-selector" class="btn btn-ghost btn-sm" onchange="onContainerNodeChange()">
+                            <option value="local">Local</option>
+                        </select>
+                        <button id="create-btn" class="btn btn-primary"><i class="bi bi-plus-lg"></i> New Container</button>
+                    </div>
                 </div>
                 <div id="containers-list" class="container-list">
                     <div class="empty-state"><i class="bi bi-box-seam" style="font-size:48px;color:var(--text-muted)"></i><p>No containers yet</p></div>
@@ -174,7 +184,12 @@
             <section id="tab-images" class="tab">
                 <div class="page-header">
                     <h2><i class="bi bi-hdd-stack"></i> Images</h2>
-                    <button id="pull-btn" class="btn btn-primary"><i class="bi bi-cloud-download"></i> Pull Alpine</button>
+                    <div style="display:flex;gap:8px;align-items:center">
+                        <select id="image-node-selector" class="btn btn-ghost btn-sm" onchange="onImageNodeChange()">
+                            <option value="local">Local</option>
+                        </select>
+                        <button id="pull-btn" class="btn btn-primary"><i class="bi bi-cloud-download"></i> Pull Alpine</button>
+                    </div>
                 </div>
                 <div class="card" style="margin-bottom:16px;">
                     <div class="card-header"><h3><i class="bi bi-lightning-charge"></i> Quick Deploy</h3></div>
@@ -245,6 +260,12 @@ EXPOSE 8080</textarea>
                     <h2><i class="bi bi-pc-display-horizontal"></i> Nodes</h2>
                     <button class="btn btn-primary" onclick="showAddNodeModal()"><i class="bi bi-plus-circle"></i> Add Node</button>
                 </div>
+                <div id="pairing-requests" style="display:none">
+                    <div class="card" style="border:1px solid var(--warning);margin-bottom:16px">
+                        <div class="card-header"><h3 style="color:var(--warning)"><i class="bi bi-bell"></i> Pending Pairing Requests</h3></div>
+                        <div class="card-body" id="pairing-list"></div>
+                    </div>
+                </div>
                 <div id="nodes-list"></div>
             </section>
 
@@ -272,7 +293,10 @@ EXPOSE 8080</textarea>
             <section id="tab-shell" class="tab">
                 <div class="page-header">
                     <h2><i class="bi bi-terminal"></i> Core Shell</h2>
-                    <div style="display:flex;gap:8px;">
+                    <div style="display:flex;gap:8px;align-items:center">
+                        <select id="shell-node-selector" class="btn btn-ghost btn-sm" onchange="onShellNodeChange()">
+                            <option value="local">Local</option>
+                        </select>
                         <button id="shell-clear-btn" class="btn btn-ghost btn-sm"><i class="bi bi-trash3"></i> Clear</button>
                     </div>
                 </div>
@@ -299,6 +323,11 @@ EXPOSE 8080</textarea>
                         <div class="card-body">
                             <form id="panel-settings-form">
                                 <div class="form-group">
+                                    <label>Node Name</label>
+                                    <input type="text" id="setting-node-name" placeholder="e.g. ank-prod01" maxlength="30">
+                                    <small style="color:var(--text-muted);font-size:11px;margin-top:4px;display:block">Identifies this server in the sidebar and on remote nodes</small>
+                                </div>
+                                <div class="form-group">
                                     <label>Bind Address</label>
                                     <select id="setting-bind">
                                         <option value="0.0.0.0">0.0.0.0 (all interfaces)</option>
@@ -322,6 +351,14 @@ EXPOSE 8080</textarea>
                                         Start server on device boot
                                     </label>
                                     <small style="color:var(--text-muted);font-size:11px;margin-top:4px;display:block">Server starts automatically when device powers on (via Magisk service.sh + service.d fallback)</small>
+                                </div>
+                                <div class="form-group">
+                                    <label class="checkbox-label" style="display:flex;align-items:center;gap:8px;cursor:pointer">
+                                        <input type="checkbox" id="setting-remote-mgmt" style="width:18px;height:18px;accent-color:var(--accent)">
+                                        <i class="bi bi-diagram-3" style="color:var(--accent)"></i>
+                                        Enable Remote Management
+                                    </label>
+                                    <small style="color:var(--text-muted);font-size:11px;margin-top:4px;display:block">Allow other ANK instances to pair with and manage this node</small>
                                 </div>
                                 <button type="submit" class="btn btn-primary"><i class="bi bi-check-lg"></i> Save</button>
                             </form>
@@ -635,7 +672,7 @@ EXPOSE 8080</textarea>
         <div class="modal-content">
             <div class="modal-header"><h3><i class="bi bi-pc-display-horizontal"></i> Add Node</h3><button class="modal-close"><i class="bi bi-x-lg"></i></button></div>
             <div class="modal-body">
-                <p style="color:var(--text-muted);font-size:12px;margin-bottom:12px">Connect via the remote device's ANK web panel (HTTP API).</p>
+                <p style="color:var(--text-muted);font-size:12px;margin-bottom:12px">Send a pairing request to a remote ANK device. The remote must have "Enable Remote Management" turned on.</p>
                 <div class="form-group"><label>Panel IP / Hostname</label><input type="text" id="node-hostname" placeholder="192.168.1.215" required></div>
                 <div class="form-group"><label>Panel Port</label><input type="number" id="node-panel-port" value="8001"></div>
                 <div class="form-group"><label>Panel User</label><input type="text" id="node-user" value="admin"></div>
@@ -644,7 +681,28 @@ EXPOSE 8080</textarea>
             </div>
             <div class="modal-footer">
                 <button type="button" class="btn btn-ghost modal-close">Cancel</button>
-                <button type="button" class="btn btn-primary" onclick="addNode()"><i class="bi bi-check-lg"></i> Add Node</button>
+                <button type="button" class="btn btn-primary" onclick="sendPairingRequest()"><i class="bi bi-send"></i> Send Pairing Request</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Node Detail Modal -->
+    <div id="node-detail-modal" class="modal hidden">
+        <div class="modal-overlay"></div>
+        <div class="modal-content modal-lg">
+            <div class="modal-header">
+                <h3><i class="bi bi-pc-display-horizontal" style="font-size:20px;color:var(--accent)"></i> <span id="node-detail-name">-</span></h3>
+                <div style="display:flex;gap:6px;align-items:center;">
+                    <span id="node-detail-status" class="status-badge">-</span>
+                    <button class="modal-close"><i class="bi bi-x-lg"></i></button>
+                </div>
+            </div>
+            <div class="modal-body" style="padding:0">
+                <div id="node-detail-loading" style="padding:40px;text-align:center;color:var(--text-muted)">
+                    <i class="bi bi-arrow-clockwise" style="font-size:24px;animation:spin 1s linear infinite"></i>
+                    <p style="margin-top:8px">Connecting to remote node...</p>
+                </div>
+                <iframe id="node-detail-iframe" style="width:100%;height:70vh;border:none;display:none;border-radius:0 0 12px 12px"></iframe>
             </div>
         </div>
     </div>

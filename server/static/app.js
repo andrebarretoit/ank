@@ -214,7 +214,7 @@ document.querySelectorAll('.nav-item').forEach(item => {
         if (item.dataset.tab === 'networks') loadNetworks();
         if (item.dataset.tab === 'stacks') loadStacks();
         if (item.dataset.tab === 'backups') loadBackups();
-        if (item.dataset.tab === 'nodes') loadNodes();
+        if (item.dataset.tab === 'nodes') { loadNodes(); loadPairingRequests(); }
         if (item.dataset.tab === 'logs') { logsOffset = 0; loadLogs(false); startLogsPoll(); }
         if (item.dataset.tab === 'shell') initCoreTerminal();
         if (item.dataset.tab !== 'logs') stopLogsPoll();
@@ -334,10 +334,12 @@ async function loadAll() {
         renderImages(images);
         populateImageSelect(images);
         renderDashboardContainers(containers);
+        renderDashboardNodes();
         loadTemplates();
         loadStacks();
         loadBackups();
         loadNodes();
+        loadPairingRequests();
     } catch (e) { console.error('Load failed:', e); }
 }
 
@@ -436,6 +438,30 @@ function renderDashboardContainers(containers) {
             </div>
         </div>`;
     }).join('')}</div>`;
+}
+
+async function renderDashboardNodes() {
+    const section = document.getElementById('dash-nodes-section');
+    const grid = document.getElementById('dash-nodes-grid');
+    if (!section || !grid) return;
+    try {
+        const data = await api('GET', '/nodes');
+        const nodes = data.nodes || [];
+        if (!nodes.length) { section.style.display = 'none'; return; }
+        section.style.display = 'block';
+        grid.innerHTML = nodes.map(n => {
+            const statusColor = n.status === 'online' ? 'var(--success)' : n.status === 'pending' ? 'var(--warning)' : 'var(--danger)';
+            const statusLabel = n.status === 'online' ? 'Online' : n.status === 'pending' ? 'Pending' : 'Offline';
+            return `<div style="background:var(--bg-secondary);border:1px solid var(--border);border-radius:10px;padding:12px;cursor:pointer" onclick="document.querySelector('.nav-item[data-tab=\\'nodes\\']')?.click()">
+                <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+                    <span style="width:8px;height:8px;border-radius:50%;background:${statusColor};flex-shrink:0"></span>
+                    <strong style="color:var(--text-primary);font-size:13px">${esc(n.alias || n.ip)}</strong>
+                    <span style="color:var(--text-muted);font-size:11px">${statusLabel}</span>
+                </div>
+                <div style="color:var(--text-muted);font-size:11px">C: ${n.containers || 0} &middot; S: ${n.stacks || 0}</div>
+            </div>`;
+        }).join('');
+    } catch (e) { section.style.display = 'none'; }
 }
 
 let coreTerminal = null;
@@ -1217,8 +1243,10 @@ document.getElementById('panel-settings-form').addEventListener('submit', async 
     const bind = document.getElementById('setting-bind').value;
     const refresh = document.getElementById('setting-refresh').value;
     const autostart = document.getElementById('setting-autostart').checked;
+    const nodeName = document.getElementById('setting-node-name')?.value?.trim() || '';
+    const enableRemote = document.getElementById('setting-remote-management')?.checked ?? true;
     try {
-        await api('POST', '/config', { bind_address: bind, refresh_interval: parseInt(refresh), autostart_on_boot: autostart });
+        await api('POST', '/config', { bind_address: bind, refresh_interval: parseInt(refresh), autostart_on_boot: autostart, node_name: nodeName, enable_remote_management: enableRemote });
         refreshSeconds = parseInt(refresh);
         localStorage.setItem('ank_refresh', refresh);
         startRefreshTimer();
@@ -1270,6 +1298,13 @@ async function loadSettings() {
         localStorage.setItem('ank_refresh', refreshSeconds);
         const autostartEl = document.getElementById('setting-autostart');
         if (autostartEl) autostartEl.checked = cfg.autostart_on_boot !== false;
+        const nodeNameEl = document.getElementById('setting-node-name');
+        if (nodeNameEl) nodeNameEl.value = cfg.node_name || '';
+        const remoteMgmtEl = document.getElementById('setting-remote-management');
+        if (remoteMgmtEl) remoteMgmtEl.checked = cfg.enable_remote_management !== false;
+        const nodeName = cfg.node_name || '';
+        document.getElementById('sidebar-title').textContent = nodeName ? `ANK - ${nodeName}` : 'ANK';
+        document.getElementById('mt-sidebar-title').textContent = nodeName ? `ANK - ${nodeName}` : 'ANK';
     } catch (e) { }
     try {
         const info = await api('GET', '/system/info');
@@ -1277,6 +1312,9 @@ async function loadSettings() {
         document.getElementById('info-containers-size').textContent = info.containers_size || '-';
         document.getElementById('info-total-size').textContent = info.total_size || '-';
         document.getElementById('info-device-free').textContent = info.device_free || '-';
+        const nodeName = info.node_name || '';
+        document.getElementById('sidebar-title').textContent = nodeName ? `ANK - ${nodeName}` : 'ANK';
+        document.getElementById('mt-sidebar-title').textContent = nodeName ? `ANK - ${nodeName}` : 'ANK';
     } catch (e) { }
 }
 
@@ -1721,38 +1759,42 @@ async function loadNodes() {
         if (!el) return;
         if (!nodes.length) { el.innerHTML = '<div class="empty-state"><i class="bi bi-pc-display-horizontal"></i><p>No remote nodes configured</p><p style="color:var(--text-muted);font-size:12px;margin-top:4px">Add a remote ANK device to manage it from here</p></div>'; return; }
         el.innerHTML = nodes.map(n => {
-            const statusColor = n.status === 'online' ? 'var(--success)' : n.status === 'degraded' ? 'var(--warning)' : 'var(--danger)';
-            const statusLabel = n.status === 'online' ? 'Online' : n.status === 'degraded' ? 'Degraded' : 'Offline';
-            return `<div style="background:var(--bg-secondary);border:1px solid var(--border);border-radius:12px;padding:16px;margin-bottom:12px">
+            const statusColor = n.status === 'online' ? 'var(--success)' : n.status === 'pending' ? 'var(--warning)' : 'var(--danger)';
+            const statusLabel = n.status === 'online' ? 'Online' : n.status === 'pending' ? 'Pending' : 'Offline';
+            const roleTag = n.role === 'manager' ? '<span style="background:var(--accent);color:#fff;font-size:10px;padding:2px 6px;border-radius:4px;margin-left:6px">MANAGER</span>' : '<span style="background:var(--text-muted);color:#fff;font-size:10px;padding:2px 6px;border-radius:4px;margin-left:6px">MANAGED</span>';
+            const managedBy = n.managed_by ? `<div style="color:var(--text-muted);font-size:11px;margin-top:2px">Managed by: ${esc(n.managed_by)}</div>` : '';
+            return `<div style="background:var(--bg-secondary);border:1px solid var(--border);border-radius:12px;padding:16px;margin-bottom:12px;cursor:pointer" onclick="openNodeDetail('${esc(n.id)}','${esc(n.alias || n.ip)}','${esc(n.status)}')">
                 <div style="display:flex;justify-content:space-between;align-items:center">
                     <div>
                         <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
                             <span style="width:8px;height:8px;border-radius:50%;background:${statusColor};flex-shrink:0"></span>
-                            <strong style="color:var(--text-primary)">${esc(n.hostname)}</strong>
+                            <strong style="color:var(--text-primary)">${esc(n.alias || n.ip)}</strong>
                             <span style="color:var(--text-muted);font-size:12px">${statusLabel}</span>
-                            ${n.device ? `<span style="color:var(--text-muted);font-size:11px">${esc(n.device)}</span>` : ''}
+                            ${roleTag}
                         </div>
                         <div style="color:var(--text-muted);font-size:12px">CPU: ${esc(n.cpu || '-')} &middot; RAM: ${esc(n.ram || '-')} &middot; Disk: ${esc(n.disk || '-')} &middot; Uptime: ${esc(n.uptime || '-')}</div>
                         <div style="color:var(--text-muted);font-size:12px;margin-top:2px">Containers: ${n.containers || 0} &middot; Stacks: ${n.stacks || 0}</div>
+                        ${managedBy}
                     </div>
-                    <div style="display:flex;gap:6px">
+                    <div style="display:flex;gap:6px" onclick="event.stopPropagation()">
                         <button class="btn btn-sm btn-ghost" onclick="refreshNode('${esc(n.id)}')" title="Refresh"><i class="bi bi-arrow-clockwise"></i></button>
                         <button class="btn btn-sm btn-danger" onclick="deleteNode('${esc(n.id)}')" title="Remove"><i class="bi bi-trash"></i></button>
                     </div>
                 </div>
             </div>`;
         }).join('');
+        updateNodeSelectors(nodes);
     } catch (e) { console.error('loadNodes', e); }
 }
 
 function showAddNodeModal() { showModal('add-node-modal'); }
 
-async function addNode() {
+async function sendPairingRequest() {
     const ip = document.getElementById('node-hostname')?.value?.trim();
     if (!ip) { toast('Panel IP required', 'error'); return; }
     try {
-        toast(`Connecting to "${ip}"...`, 'info');
-        await api('POST', '/nodes', {
+        toast(`Sending pairing request to "${ip}"...`, 'info');
+        await api('POST', '/nodes/pairing/send', {
             ip,
             port: parseInt(document.getElementById('node-panel-port')?.value || '8001'),
             user: document.getElementById('node-user')?.value?.trim() || 'admin',
@@ -1760,7 +1802,7 @@ async function addNode() {
             alias: document.getElementById('node-alias')?.value?.trim() || ''
         });
         hideModal('add-node-modal');
-        toast(`Node "${ip}" added`, 'success');
+        toast(`Pairing request sent to "${ip}"`, 'success');
         loadNodes();
     } catch (e) { toast(`Failed: ${e.message}`, 'error'); }
 }
@@ -1773,6 +1815,129 @@ async function deleteNode(id) {
     const ok = await confirm(`Remove this node?`, 'Remove Node');
     if (!ok) return;
     try { await api('POST', `/nodes/${encodeURIComponent(id)}/delete`); toast('Node removed', 'success'); loadNodes(); } catch (e) { toast(`Failed: ${e.message}`, 'error'); }
+}
+
+/* Pairing requests (remote side) */
+async function loadPairingRequests() {
+    try {
+        const data = await api('GET', '/nodes/pairing');
+        const requests = data.requests || [];
+        const section = document.getElementById('pairing-requests');
+        const list = document.getElementById('pairing-list');
+        if (!section || !list) return;
+        if (!requests.length) { section.style.display = 'none'; return; }
+        section.style.display = 'block';
+        list.innerHTML = requests.map(r => {
+            return `<div style="display:flex;justify-content:space-between;align-items:center;padding:12px 0;border-bottom:1px solid var(--border)">
+                <div>
+                    <div style="display:flex;align-items:center;gap:8px">
+                        <i class="bi bi-pc-display-horizontal" style="color:var(--accent);font-size:18px"></i>
+                        <strong style="color:var(--text-primary)">${esc(r.manager_name)}</strong>
+                        <span style="color:var(--text-muted);font-size:12px">${esc(r.manager_ip || 'unknown IP')}</span>
+                    </div>
+                    <div style="color:var(--text-muted);font-size:12px;margin-top:2px">${esc(r.device_model || 'Unknown device')}</div>
+                </div>
+                <div style="display:flex;gap:6px">
+                    <button class="btn btn-sm btn-success" onclick="approvePairing('${esc(r.id)}')"><i class="bi bi-check-lg"></i> Approve</button>
+                    <button class="btn btn-sm btn-danger" onclick="rejectPairing('${esc(r.id)}')"><i class="bi bi-x-lg"></i> Reject</button>
+                </div>
+            </div>`;
+        }).join('');
+    } catch (e) { console.error('loadPairingRequests', e); }
+}
+
+async function approvePairing(reqId) {
+    try {
+        toast('Approving...', 'info');
+        await api('POST', `/nodes/pairing/${encodeURIComponent(reqId)}/approve`);
+        toast('Pairing approved', 'success');
+        loadPairingRequests();
+    } catch (e) { toast(`Failed: ${e.message}`, 'error'); }
+}
+
+async function rejectPairing(reqId) {
+    try {
+        toast('Rejecting...', 'info');
+        await api('POST', `/nodes/pairing/${encodeURIComponent(reqId)}/reject`);
+        toast('Pairing rejected', 'success');
+        loadPairingRequests();
+    } catch (e) { toast(`Failed: ${e.message}`, 'error'); }
+}
+
+/* Node detail modal (proxy to remote panel) */
+function openNodeDetail(nodeId, name, status) {
+    document.getElementById('node-detail-name').textContent = name;
+    document.getElementById('node-detail-status').textContent = status;
+    document.getElementById('node-detail-status').style.color = status === 'online' ? 'var(--success)' : 'var(--danger)';
+    document.getElementById('node-detail-loading').style.display = 'block';
+    document.getElementById('node-detail-iframe').style.display = 'none';
+    showModal('node-detail-modal');
+    setTimeout(() => {
+        const iframe = document.getElementById('node-detail-iframe');
+        const loading = document.getElementById('node-detail-loading');
+        const host = window.location.hostname;
+        const port = window.location.port || '8001';
+        iframe.src = `/api/nodes/${encodeURIComponent(nodeId)}/proxy/`;
+        iframe.onload = () => { loading.style.display = 'none'; iframe.style.display = 'block'; };
+        iframe.onerror = () => { loading.innerHTML = '<p style="color:var(--danger)">Failed to connect to remote node</p>'; };
+    }, 300);
+}
+
+/* Node selectors for containers, images, shell */
+let selectedNode = 'local';
+
+function updateNodeSelectors(nodes) {
+    const selectors = ['container-node-selector', 'image-node-selector', 'shell-node-selector'];
+    selectors.forEach(id => {
+        const sel = document.getElementById(id);
+        if (!sel) return;
+        const val = sel.value;
+        sel.innerHTML = '<option value="local">Local</option>';
+        (nodes || []).filter(n => n.status === 'online').forEach(n => {
+            const opt = document.createElement('option');
+            opt.value = n.id;
+            opt.textContent = n.alias || n.ip;
+            sel.appendChild(opt);
+        });
+        sel.value = val;
+    });
+}
+
+function onContainerNodeChange() {
+    selectedNode = document.getElementById('container-node-selector')?.value || 'local';
+    loadContainers();
+}
+
+function onImageNodeChange() {
+    selectedNode = document.getElementById('image-node-selector')?.value || 'local';
+    loadImages();
+}
+
+function onShellNodeChange() {
+    const val = document.getElementById('shell-node-selector')?.value || 'local';
+    if (val === 'local') {
+        initCoreShell();
+    } else {
+        toast('Remote shell: connect via WebSocket proxy', 'info');
+    }
+}
+
+/* Node container actions (remote) */
+async function remoteContainerAction(nodeId, containerName, action) {
+    try {
+        await api('POST', `/nodes/${encodeURIComponent(nodeId)}/containers/${encodeURIComponent(containerName)}/${action}`);
+        toast(`Container ${action} sent`, 'success');
+        loadContainers();
+    } catch (e) { toast(`Failed: ${e.message}`, 'error'); }
+}
+
+/* Node image transfer */
+async function transferImage(nodeId, imageName) {
+    try {
+        toast(`Transferring "${imageName}"...`, 'info');
+        await api('POST', `/nodes/${encodeURIComponent(nodeId)}/images/transfer`, { image: imageName });
+        toast('Image transferred', 'success');
+    } catch (e) { toast(`Failed: ${e.message}`, 'error'); }
 }
 
 /* ============================================================

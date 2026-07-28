@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 """
 ANK Node Proxy - WebSocket and HTTP proxy for remote node communication.
-
-Proxies requests between the master panel and remote ANK nodes.
 """
 
 import json
@@ -15,7 +13,6 @@ def _log(msg):
 
 
 def _http_request(url, method="GET", data=None, headers=None, timeout=15):
-    """Send an HTTP request and return (status_code, response_dict_or_bytes, content_type)."""
     if headers is None:
         headers = {}
     body = None
@@ -52,77 +49,76 @@ def _http_request(url, method="GET", data=None, headers=None, timeout=15):
 
 
 class NodeProxy:
-    """Proxies requests between the master panel and remote nodes."""
-
     def __init__(self, node_manager):
         self.node_manager = node_manager
 
     def handle_api_proxy(self, node_id, method, path, body=None, headers=None):
-        """Proxy an HTTP API request to a remote node.
-
-        Returns: (status_code, response_body, content_type)
-        """
         config = self.node_manager._load_node_config(node_id)
         if not config:
             return 404, {"error": "Node not found"}, "application/json"
-
         ip = config.get("ip", "")
         port = config.get("port", 8001)
         token = config.get("token", "")
-
         url = f"http://{ip}:{port}{path}"
         fwd_headers = {"Authorization": f"Bearer {token}"}
         if headers:
             for k, v in headers.items():
                 if k.lower() not in ("authorization", "host", "content-length"):
                     fwd_headers[k] = v
-
         return _http_request(url, method=method, data=body, headers=fwd_headers, timeout=30)
 
-    def handle_websocket_proxy(self, node_id, ws_path):
-        """Get the WebSocket URL to connect to a remote node.
-
-        The browser connects directly to the remote node's WebSocket.
-        We just provide the URL with auth token.
-
-        Returns: ws://<ip>:<port><ws_path>?token=...
-        """
-        config = self.node_manager._load_node_config(node_id)
-        if not config:
-            return None
-
-        ip = config.get("ip", "")
-        port = config.get("port", 8001)
-        token = config.get("token", "")
-
-        return f"ws://{ip}:{port}{ws_path}?token={token}"
-
     def get_node_shell_url(self, node_id):
-        """Get WebSocket URL for shell on remote node.
-
-        Returns: ws://<ip>:<port>/ws/shell?token=...&cols=...&rows=...
-        """
         config = self.node_manager._load_node_config(node_id)
         if not config:
             return None
-
         ip = config.get("ip", "")
         port = config.get("port", 8001)
         token = config.get("token", "")
-
         return f"ws://{ip}:{port}/ws/shell?token={token}"
 
     def get_node_terminal_url(self, node_id, container_name):
-        """Get WebSocket URL for container terminal on remote node.
-
-        Returns: ws://<ip>:<port>/ws/terminal/<container>?token=...&cols=...&rows=...
-        """
         config = self.node_manager._load_node_config(node_id)
         if not config:
             return None
-
         ip = config.get("ip", "")
         port = config.get("port", 8001)
         token = config.get("token", "")
-
         return f"ws://{ip}:{port}/ws/terminal/{container_name}?token={token}"
+
+    def get_containers(self, node_id):
+        config = self.node_manager._load_node_config(node_id)
+        if not config:
+            return []
+        ip = config.get("ip", "")
+        port = config.get("port", 8001)
+        token = config.get("token", "")
+        url = f"http://{ip}:{port}/api/containers"
+        headers = {"Authorization": f"Bearer {token}"}
+        try:
+            code, body, _ = _http_request(url, headers=headers, timeout=15)
+            if code == 200 and isinstance(body, list):
+                return body
+            elif code == 200 and isinstance(body, dict):
+                return body.get("containers", [])
+        except Exception as e:
+            _log(f"get_containers failed: {e}")
+        return []
+
+    def get_stacks(self, node_id):
+        config = self.node_manager._load_node_config(node_id)
+        if not config:
+            return []
+        ip = config.get("ip", "")
+        port = config.get("port", 8001)
+        token = config.get("token", "")
+        url = f"http://{ip}:{port}/api/stacks"
+        headers = {"Authorization": f"Bearer {token}"}
+        try:
+            code, body, _ = _http_request(url, headers=headers, timeout=15)
+            if code == 200 and isinstance(body, dict):
+                return body.get("stacks", [])
+            elif code == 200 and isinstance(body, list):
+                return body
+        except Exception as e:
+            _log(f"get_stacks failed: {e}")
+        return []

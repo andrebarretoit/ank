@@ -2,7 +2,7 @@
 """
 ANK Node Manager - Multi-node management for ANK (Proxmox-style).
 
-Manages remote ANK nodes, heartbeats, and aggregated dashboard.
+Manages remote ANK nodes, heartbeats, pairing, and aggregated dashboard.
 """
 
 import os
@@ -12,11 +12,16 @@ import threading
 import urllib.request
 import urllib.error
 import secrets
+import tarfile
+import io
 from datetime import datetime, timezone
 from urllib.parse import urlencode
 
 ANK_DIR = os.environ.get("ANK_DIR", "/data/local/ank")
 NODES_DIR = os.path.join(ANK_DIR, "nodes")
+PAIRING_DIR = os.path.join(NODES_DIR, "pairing")
+IMAGES_DIR = os.path.join(ANK_DIR, "images")
+CONFIG_FILE = os.path.join(ANK_DIR, "config.json")
 
 
 def _log(msg):
@@ -31,8 +36,25 @@ def _generate_id():
     return secrets.token_hex(12)
 
 
+def _load_config():
+    try:
+        with open(CONFIG_FILE, "r") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _save_config(config):
+    os.makedirs(os.path.dirname(CONFIG_FILE), exist_ok=True)
+    with open(CONFIG_FILE, "w") as f:
+        json.dump(config, f, indent=2)
+    try:
+        os.chmod(CONFIG_FILE, 0o666)
+    except Exception:
+        pass
+
+
 def _http_request(url, method="GET", data=None, headers=None, timeout=10):
-    """Send an HTTP request and return (status_code, response_dict_or_bytes, content_type)."""
     if headers is None:
         headers = {}
     body = None
@@ -59,13 +81,14 @@ def _http_request(url, method="GET", data=None, headers=None, timeout=10):
             except json.JSONDecodeError:
                 pass
         return e.code, raw, ct
-    except Exception as e:
+    except Exception:
         raise
 
 
 class NodeManager:
     def __init__(self):
         os.makedirs(NODES_DIR, exist_ok=True)
+        os.makedirs(PAIRING_DIR, exist_ok=True)
         self._heartbeat_thread = None
         self._running = False
         self._lock = threading.Lock()
@@ -75,7 +98,6 @@ class NodeManager:
     # ============================================================
 
     def start_heartbeat(self, interval=30):
-        """Start background heartbeat checker."""
         if self._running:
             return
         self._running = True
@@ -84,7 +106,6 @@ class NodeManager:
         _log(f"Heartbeat started (interval={interval}s)")
 
     def stop_heartbeat(self):
-        """Stop heartbeat."""
         self._running = False
         _log("Heartbeat stopped")
 
@@ -97,10 +118,11 @@ class NodeManager:
             time.sleep(interval)
 
     def _check_all_nodes(self):
-        """Ping all nodes, update status, mark offline after 3 consecutive failures."""
         for node_id in self._list_node_ids():
             config = self._load_node_config(node_id)
             if not config:
+                continue
+            if config.get("role") == "managed":
                 continue
             ip = config.get("ip", "")
             port = config.get("port", 8001)
@@ -130,7 +152,6 @@ class NodeManager:
     # ============================================================
 
     def list_nodes(self):
-        """List all nodes with status."""
         nodes = []
         for node_id in self._list_node_ids():
             config = self._load_node_config(node_id)
@@ -139,33 +160,22 @@ class NodeManager:
         return nodes
 
     def get_node(self, node_id):
-        """Get node details."""
         config = self._load_node_config(node_id)
         if not config:
             return None
         return self._sanitize_node(config)
 
     def add_node(self, config):
-        """Register a new node.
-
-        config: {
-            "ip": "192.168.1.50",
-            "port": 8001,
-            "user": "admin",
-            "password": "admin123",
-            "alias": "ank-prod01"  # optional
-        }
-        """
         ip = config.get("ip", "")
         port = int(config.get("port", 8001))
         user = config.get("user", "")
         password = config.get("password", "")
         alias = config.get("alias", "")
+        my_name = _load_config().get("node_name", "")
 
         if not ip:
             raise ValueError("IP address is required")
 
-        # Step 1: Authenticate
         url = f"http://{ip}:{port}/api/auth/login"
         login_data = {"username": user, "password": password}
         code, body, _ = _http_request(url, method="POST", data=login_data, timeout=10)
@@ -175,22 +185,22 @@ class NodeManager:
         if not token:
             raise ConnectionError("No token received from node")
 
-        # Step 2: Get device info
         device_model = ""
         kernel = ""
+        node_name = ""
         try:
             headers = {"Authorization": f"Bearer {token}"}
             code, info, _ = _http_request(f"http://{ip}:{port}/api/system/info", headers=headers, timeout=10)
             if code == 200 and isinstance(info, dict):
                 device_model = info.get("device_model", info.get("model", ""))
                 kernel = info.get("kernel", info.get("kernel_version", ""))
+                node_name = info.get("node_name", "")
                 if not alias:
-                    alias = device_model or ip
+                    alias = node_name or device_model or ip
         except Exception:
             if not alias:
                 alias = ip
 
-        # Step 3: Save node config
         node_id = f"node-{_generate_id()}"
         node_config = {
             "id": node_id,
@@ -200,6 +210,7 @@ class NodeManager:
             "user": user,
             "token": token,
             "status": "online",
+            "role": "managed",
             "last_seen": _utcnow(),
             "fail_count": 0,
             "device_model": device_model,
@@ -211,7 +222,6 @@ class NodeManager:
         return self._sanitize_node(node_config)
 
     def remove_node(self, node_id):
-        """Remove a node."""
         path = self._node_config_path(node_id)
         if os.path.isfile(path):
             os.remove(path)
@@ -220,27 +230,199 @@ class NodeManager:
         return False
 
     # ============================================================
+    # Pairing (Manager side - sends request to remote)
+    # ============================================================
+
+    def send_pairing_request(self, config):
+        ip = config.get("ip", "")
+        port = int(config.get("port", 8001))
+        user = config.get("user", "")
+        password = config.get("password", "")
+        alias = config.get("alias", "")
+        my_name = _load_config().get("node_name", "ANK Manager")
+
+        if not ip:
+            raise ValueError("IP address is required")
+
+        url = f"http://{ip}:{port}/api/auth/login"
+        login_data = {"username": user, "password": password}
+        code, body, _ = _http_request(url, method="POST", data=login_data, timeout=10)
+        if code != 200 or not isinstance(body, dict):
+            raise ConnectionError(f"Failed to authenticate with node {ip}:{port} (HTTP {code})")
+        token = body.get("token", "")
+        if not token:
+            raise ConnectionError("No token received from node")
+
+        device_model = ""
+        kernel = ""
+        node_name = ""
+        try:
+            headers = {"Authorization": f"Bearer {token}"}
+            code, info, _ = _http_request(f"http://{ip}:{port}/api/system/info", headers=headers, timeout=10)
+            if code == 200 and isinstance(info, dict):
+                device_model = info.get("device_model", info.get("model", ""))
+                kernel = info.get("kernel", info.get("kernel_version", ""))
+                node_name = info.get("node_name", "")
+                if not alias:
+                    alias = node_name or device_model or ip
+        except Exception:
+            if not alias:
+                alias = ip
+
+        pairing_payload = {
+            "manager_name": my_name,
+            "manager_ip": config.get("manager_ip", ""),
+            "alias": alias,
+            "token": token,
+            "device_model": device_model,
+            "kernel": kernel
+        }
+        code2, body2, _ = _http_request(
+            f"http://{ip}:{port}/api/pairing/request",
+            method="POST", data=pairing_payload, headers={"Authorization": f"Bearer {token}"}, timeout=10
+        )
+        if code2 != 200:
+            raise ConnectionError(f"Node rejected pairing request (HTTP {code2})")
+
+        node_id = f"node-{_generate_id()}"
+        node_config = {
+            "id": node_id,
+            "alias": alias,
+            "ip": ip,
+            "port": port,
+            "user": user,
+            "token": token,
+            "status": "pending",
+            "role": "managed",
+            "last_seen": _utcnow(),
+            "fail_count": 0,
+            "device_model": device_model,
+            "kernel": kernel,
+            "created_at": _utcnow()
+        }
+        self._save_node_config(node_id, node_config)
+        _log(f"Pairing request sent: {alias} @ {ip}:{port}")
+        return self._sanitize_node(node_config)
+
+    # ============================================================
+    # Pairing (Remote side - receives and manages requests)
+    # ============================================================
+
+    def receive_pairing_request(self, data):
+        manager_name = data.get("manager_name", "Unknown Manager")
+        manager_ip = data.get("manager_ip", "")
+        alias = data.get("alias", "")
+        token = data.get("token", "")
+        device_model = data.get("device_model", "")
+        kernel = data.get("kernel", "")
+
+        req_id = f"req-{_generate_id()}"
+        req = {
+            "id": req_id,
+            "manager_name": manager_name,
+            "manager_ip": manager_ip,
+            "alias": alias,
+            "token": token,
+            "device_model": device_model,
+            "kernel": kernel,
+            "status": "pending",
+            "created_at": _utcnow()
+        }
+        path = os.path.join(PAIRING_DIR, f"{req_id}.json")
+        with open(path, "w") as f:
+            json.dump(req, f, indent=2)
+        _log(f"Pairing request received from {manager_name} ({manager_ip})")
+        return req
+
+    def list_pairing_requests(self):
+        requests = []
+        if not os.path.isdir(PAIRING_DIR):
+            return requests
+        for fname in os.listdir(PAIRING_DIR):
+            if fname.endswith(".json"):
+                try:
+                    with open(os.path.join(PAIRING_DIR, fname)) as f:
+                        req = json.load(f)
+                    if req.get("status") == "pending":
+                        requests.append(req)
+                except Exception:
+                    pass
+        return requests
+
+    def approve_pairing_request(self, req_id):
+        path = os.path.join(PAIRING_DIR, f"{req_id}.json")
+        if not os.path.isfile(path):
+            return None
+        with open(path) as f:
+            req = json.load(f)
+        if req.get("status") != "pending":
+            return None
+
+        req["status"] = "approved"
+        req["approved_at"] = _utcnow()
+        with open(path, "w") as f:
+            json.dump(req, f, indent=2)
+
+        node_id = f"node-{_generate_id()}"
+        node_config = {
+            "id": node_id,
+            "alias": req.get("alias", req.get("manager_name", "Manager")),
+            "ip": req.get("manager_ip", ""),
+            "port": 8001,
+            "user": "",
+            "token": req.get("token", ""),
+            "status": "online",
+            "role": "manager",
+            "last_seen": _utcnow(),
+            "fail_count": 0,
+            "device_model": req.get("device_model", ""),
+            "kernel": req.get("kernel", ""),
+            "managed_by": req.get("manager_name", ""),
+            "created_at": _utcnow()
+        }
+        self._save_node_config(node_id, node_config)
+        _log(f"Pairing approved: {req.get('manager_name')} ({req_id})")
+        return self._sanitize_node(node_config)
+
+    def reject_pairing_request(self, req_id):
+        path = os.path.join(PAIRING_DIR, f"{req_id}.json")
+        if not os.path.isfile(path):
+            return False
+        with open(path) as f:
+            req = json.load(f)
+        req["status"] = "rejected"
+        req["rejected_at"] = _utcnow()
+        with open(path, "w") as f:
+            json.dump(req, f, indent=2)
+        _log(f"Pairing rejected: {req.get('manager_name')} ({req_id})")
+        return True
+
+    def is_remote_management_enabled(self):
+        config = _load_config()
+        return config.get("enable_remote_management", False)
+
+    def set_remote_management(self, enabled):
+        config = _load_config()
+        config["enable_remote_management"] = bool(enabled)
+        _save_config(config)
+
+    # ============================================================
     # Remote node queries
     # ============================================================
 
     def get_node_containers(self, node_id):
-        """Get containers from remote node."""
         return self._node_api_get(node_id, "/api/containers")
 
     def get_node_images(self, node_id):
-        """Get images from remote node."""
         return self._node_api_get(node_id, "/api/images")
 
     def get_node_status(self, node_id):
-        """Get full status (cpu, mem, disk, uptime, containers)."""
         return self._node_api_get(node_id, "/api/status")
 
     def get_node_system_info(self, node_id):
-        """Get system info from node."""
         return self._node_api_get(node_id, "/api/system/info")
 
     def get_node_logs(self, node_id):
-        """Get server logs from node."""
         return self._node_api_get(node_id, "/api/logs")
 
     # ============================================================
@@ -248,27 +430,68 @@ class NodeManager:
     # ============================================================
 
     def create_container_on_node(self, node_id, config):
-        """Create container on remote node."""
         return self._node_api_post(node_id, "/api/containers", config)
 
     def start_container_on_node(self, node_id, container_name):
-        """Start a container on remote node."""
         return self._node_api_post(node_id, f"/api/containers/{container_name}/start", {})
 
     def stop_container_on_node(self, node_id, container_name):
-        """Stop a container on remote node."""
         return self._node_api_post(node_id, f"/api/containers/{container_name}/stop", {})
 
+    def restart_container_on_node(self, node_id, container_name):
+        return self._node_api_post(node_id, f"/api/containers/{container_name}/restart", {})
+
     def delete_container_on_node(self, node_id, container_name):
-        """Delete a container on remote node."""
         return self._node_api_delete(node_id, f"/api/containers/{container_name}")
+
+    def exec_container_on_node(self, node_id, container_name, cmd):
+        return self._node_api_post(node_id, f"/api/containers/{container_name}/exec", {"command": cmd})
+
+    def get_container_logs_on_node(self, node_id, container_name):
+        return self._node_api_get(node_id, f"/api/containers/{container_name}/logs")
+
+    # ============================================================
+    # Remote image management
+    # ============================================================
+
+    def pull_image_on_node(self, node_id, version):
+        return self._node_api_post(node_id, "/api/images/pull", {"version": version})
+
+    def transfer_image_to_node(self, node_id, image_name):
+        config = self._load_node_config(node_id)
+        if not config:
+            return {"error": "Node not found"}
+
+        src_path = os.path.join(IMAGES_DIR, image_name)
+        if not os.path.isdir(src_path):
+            return {"error": f"Image '{image_name}' not found locally"}
+
+        tar_buffer = io.BytesIO()
+        with tarfile.open(fileobj=tar_buffer, mode="w:gz") as tar:
+            tar.add(src_path, arcname=image_name)
+        tar_data = tar_buffer.getvalue()
+
+        ip = config.get("ip", "")
+        port = config.get("port", 8001)
+        token = config.get("token", "")
+        url = f"http://{ip}:{port}/api/images/upload"
+        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/octet-stream"}
+        req = urllib.request.Request(url, data=tar_data, headers=headers, method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=120) as resp:
+                raw = resp.read()
+                try:
+                    return json.loads(raw)
+                except Exception:
+                    return {"ok": True, "message": f"Image '{image_name}' transferred"}
+        except Exception as e:
+            return {"error": str(e)}
 
     # ============================================================
     # Aggregate dashboard
     # ============================================================
 
     def aggregate_dashboard(self):
-        """Aggregate data from all online nodes for the master dashboard."""
         total_containers = 0
         running = 0
         stopped = 0
@@ -283,6 +506,7 @@ class NodeManager:
                 "id": node_id,
                 "alias": node_config.get("alias", ""),
                 "status": status,
+                "role": node_config.get("role", "managed"),
                 "ip": node_config.get("ip", ""),
                 "cpu_percent": 0,
                 "mem_percent": 0,
@@ -301,7 +525,7 @@ class NodeManager:
                 try:
                     info = self.get_node_status(node_id)
                     if isinstance(info, dict):
-                        node_entry["cpu_percent"] = info.get("cpu_percent", 0)
+                        node_entry["cpu_percent"] = info.get("cpu_usage", info.get("cpu_percent", 0))
                         node_entry["mem_percent"] = info.get("mem_percent", 0)
                         node_entry["mem_used"] = info.get("mem_used", "0 GB")
                         node_entry["mem_total"] = info.get("mem_total", "0 GB")
@@ -317,8 +541,7 @@ class NodeManager:
                     containers = self.get_node_containers(node_id)
                     if isinstance(containers, list):
                         node_entry["containers_total"] = len(containers)
-                        node_cont_running = sum(1 for c in containers if c.get("status") == "running")
-                        node_entry["containers_running"] = node_cont_running
+                        node_entry["containers_running"] = sum(1 for c in containers if c.get("status") == "running")
                 except Exception:
                     pass
 
@@ -347,14 +570,9 @@ class NodeManager:
     # ============================================================
 
     def proxy_request(self, node_id, method, path, data=None):
-        """Proxy an HTTP request to a remote node.
-
-        Returns: (status_code, response_body, content_type)
-        """
         config = self._load_node_config(node_id)
         if not config:
             return 404, {"error": "Node not found"}, "application/json"
-
         ip = config.get("ip", "")
         port = config.get("port", 8001)
         token = config.get("token", "")
@@ -363,14 +581,9 @@ class NodeManager:
         return _http_request(url, method=method, data=data, headers=headers, timeout=30)
 
     def proxy_websocket_url(self, node_id, path):
-        """Get WebSocket URL for a remote node.
-
-        Returns: ws://<ip>:<port><path>?token=...
-        """
         config = self._load_node_config(node_id)
         if not config:
             return None
-
         ip = config.get("ip", "")
         port = config.get("port", 8001)
         token = config.get("token", "")
@@ -381,7 +594,6 @@ class NodeManager:
     # ============================================================
 
     def _list_node_ids(self):
-        """List all registered node IDs from disk."""
         ids = []
         if not os.path.isdir(NODES_DIR):
             return ids
@@ -412,11 +624,9 @@ class NodeManager:
             pass
 
     def _sanitize_node(self, config):
-        """Return node config without exposing password."""
-        return {k: v for k, v in config.items() if k != "password"}
+        return {k: v for k, v in config.items() if k != "password" and k != "token"}
 
     def _node_api_get(self, node_id, path):
-        """GET request to a remote node, returns parsed JSON or None."""
         config = self._load_node_config(node_id)
         if not config:
             return None
@@ -434,7 +644,6 @@ class NodeManager:
         return None
 
     def _node_api_post(self, node_id, path, data):
-        """POST request to a remote node, returns parsed JSON or None."""
         config = self._load_node_config(node_id)
         if not config:
             return None
@@ -452,7 +661,6 @@ class NodeManager:
         return None
 
     def _node_api_delete(self, node_id, path):
-        """DELETE request to a remote node, returns parsed JSON or None."""
         config = self._load_node_config(node_id)
         if not config:
             return None

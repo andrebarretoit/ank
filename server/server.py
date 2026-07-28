@@ -1139,10 +1139,19 @@ small{color:#334155}
             self.api_backup_inspect(path.split("/")[3])
         elif path == "/api/nodes":
             self.api_list_nodes()
+        elif path == "/api/nodes/pairing":
+            self.api_list_pairing_requests()
         elif path.startswith("/api/nodes/") and path.endswith("/containers"):
             self.api_node_containers(path.split("/")[3])
         elif path.startswith("/api/nodes/") and path.endswith("/stacks"):
             self.api_node_stacks(path.split("/")[3])
+        elif path.startswith("/api/nodes/") and path.endswith("/images"):
+            self.api_node_images(path.split("/")[3])
+        elif path.startswith("/api/nodes/") and path.endswith("/status"):
+            self.api_node_status(path.split("/")[3])
+        elif path.startswith("/api/nodes/") and "/containers/" in path and path.endswith("/logs"):
+            parts = path.split("/")
+            self.api_node_container_logs(parts[3], parts[5])
         elif path.startswith("/api/nodes/"):
             self.api_node_inspect(path.split("/")[3])
         elif path == "/api/system/dashboard":
@@ -1223,10 +1232,36 @@ small{color:#334155}
             self.api_delete_backup_routine(path.split("/")[3])
         elif path == "/api/nodes":
             self.api_add_node(data)
+        elif path == "/api/nodes/pairing/send":
+            self.api_send_pairing_request(data)
+        elif path == "/api/nodes/pairing/request":
+            self.api_receive_pairing_request(data)
+        elif path.startswith("/api/nodes/pairing/") and path.endswith("/approve"):
+            self.api_approve_pairing(path.split("/")[4])
+        elif path.startswith("/api/nodes/pairing/") and path.endswith("/reject"):
+            self.api_reject_pairing(path.split("/")[4])
         elif path.startswith("/api/nodes/") and path.endswith("/delete"):
             self.api_delete_node(path.split("/")[3])
         elif path.startswith("/api/nodes/") and path.endswith("/refresh"):
             self.api_refresh_node(path.split("/")[3])
+        elif path.startswith("/api/nodes/") and "/containers/" in path and path.endswith("/start"):
+            parts = path.split("/")
+            self.api_node_container_action(parts[3], parts[5], "start")
+        elif path.startswith("/api/nodes/") and "/containers/" in path and path.endswith("/stop"):
+            parts = path.split("/")
+            self.api_node_container_action(parts[3], parts[5], "stop")
+        elif path.startswith("/api/nodes/") and "/containers/" in path and path.endswith("/restart"):
+            parts = path.split("/")
+            self.api_node_container_action(parts[3], parts[5], "restart")
+        elif path.startswith("/api/nodes/") and "/containers/" in path and path.endswith("/exec"):
+            parts = path.split("/")
+            self.api_node_container_exec(parts[3], parts[5], data)
+        elif path.startswith("/api/nodes/") and path.endswith("/images/pull"):
+            parts = path.split("/")
+            self.api_node_image_pull(parts[3], data)
+        elif path.startswith("/api/nodes/") and path.endswith("/images/transfer"):
+            parts = path.split("/")
+            self.api_node_image_transfer(parts[3], data)
         else:
             self.send_error(404, "Not Found")
 
@@ -1245,7 +1280,10 @@ small{color:#334155}
         elif len(parts) >= 4 and parts[2] == "backups":
             self.api_delete_backup_routine(parts[3])
         elif len(parts) >= 4 and parts[2] == "nodes":
-            self.api_delete_node(parts[3])
+            if len(parts) >= 6 and parts[4] == "containers":
+                self.api_node_container_delete(parts[3], parts[5])
+            else:
+                self.api_delete_node(parts[3])
         elif len(parts) >= 4 and parts[2] == "stacks":
             self.api_delete_stack(parts[3])
         else:
@@ -2980,6 +3018,10 @@ small{color:#334155}
             config["refresh_interval"] = data["refresh_interval"]
         if "autostart_on_boot" in data:
             config["autostart_on_boot"] = data["autostart_on_boot"]
+        if "node_name" in data:
+            config["node_name"] = data["node_name"]
+        if "enable_remote_management" in data:
+            config["enable_remote_management"] = data["enable_remote_management"]
         save_config(config)
         self.send_json({"message": "Configuration updated"})
 
@@ -3225,6 +3267,8 @@ small{color:#334155}
             "cpu_cores": cpu_cores,
             "battery": battery_level,
             "version": config.get("version", "0.1"),
+            "node_name": config.get("node_name", ""),
+            "enable_remote_management": config.get("enable_remote_management", False),
             "panel_port": PORT,
             "network": {
                 "subnet": net.get("subnet", "10.20.30.0"),
@@ -3572,6 +3616,162 @@ small{color:#334155}
         if not result:
             self.send_json({"error": "Node not found"}, 404)
             return
+        self.send_json(result)
+
+    # ============================================================
+    # Pairing API (Manager side)
+    # ============================================================
+
+    def api_send_pairing_request(self, data):
+        nm = self._get_node_manager()
+        if not nm:
+            self.send_json({"error": "node_manager not available"}, 500)
+            return
+        ip = data.get("ip", "").strip()
+        if not ip:
+            self.send_json({"error": "ip required"}, 400)
+            return
+        try:
+            data["manager_ip"] = self.client_address[0]
+            node = nm.send_pairing_request(data)
+            self.send_json(node)
+        except Exception as e:
+            self.send_json({"error": str(e)}, 400)
+
+    # ============================================================
+    # Pairing API (Remote side)
+    # ============================================================
+
+    def api_receive_pairing_request(self, data):
+        nm = self._get_node_manager()
+        if not nm:
+            self.send_json({"error": "node_manager not available"}, 500)
+            return
+        if not nm.is_remote_management_enabled():
+            self.send_json({"error": "Remote management is disabled"}, 403)
+            return
+        req = nm.receive_pairing_request(data)
+        self.send_json(req)
+
+    def api_list_pairing_requests(self):
+        nm = self._get_node_manager()
+        if not nm:
+            self.send_json({"requests": []})
+            return
+        requests = nm.list_pairing_requests()
+        self.send_json({"requests": requests})
+
+    def api_approve_pairing(self, req_id):
+        nm = self._get_node_manager()
+        if not nm:
+            self.send_json({"error": "node_manager not available"}, 500)
+            return
+        result = nm.approve_pairing_request(req_id)
+        if result:
+            self.send_json(result)
+        else:
+            self.send_json({"error": "Request not found or already processed"}, 404)
+
+    def api_reject_pairing(self, req_id):
+        nm = self._get_node_manager()
+        if not nm:
+            self.send_json({"error": "node_manager not available"}, 500)
+            return
+        result = nm.reject_pairing_request(req_id)
+        if result:
+            self.send_json({"ok": True, "message": "Pairing rejected"})
+        else:
+            self.send_json({"error": "Request not found"}, 404)
+
+    # ============================================================
+    # Remote node container management
+    # ============================================================
+
+    def api_node_images(self, node_id):
+        nm = self._get_node_manager()
+        if not nm:
+            self.send_json({"images": []})
+            return
+        images = nm.get_node_images(node_id)
+        self.send_json(images if images else [])
+
+    def api_node_status(self, node_id):
+        nm = self._get_node_manager()
+        if not nm:
+            self.send_json({"error": "node_manager not available"}, 500)
+            return
+        status = nm.get_node_status(node_id)
+        self.send_json(status if status else {})
+
+    def api_node_container_logs(self, node_id, container_name):
+        nm = self._get_node_manager()
+        if not nm:
+            self.send_json({"logs": []})
+            return
+        logs = nm.get_container_logs_on_node(node_id, container_name)
+        self.send_json(logs if logs else {"logs": []})
+
+    def api_node_container_action(self, node_id, container_name, action):
+        nm = self._get_node_manager()
+        if not nm:
+            self.send_json({"error": "node_manager not available"}, 500)
+            return
+        try:
+            if action == "start":
+                result = nm.start_container_on_node(node_id, container_name)
+            elif action == "stop":
+                result = nm.stop_container_on_node(node_id, container_name)
+            elif action == "restart":
+                result = nm.restart_container_on_node(node_id, container_name)
+            else:
+                self.send_json({"error": f"Unknown action: {action}"}, 400)
+                return
+            self.send_json(result if result else {"message": f"Container {action} sent"})
+        except Exception as e:
+            self.send_json({"error": str(e)}, 500)
+
+    def api_node_container_exec(self, node_id, container_name, data):
+        nm = self._get_node_manager()
+        if not nm:
+            self.send_json({"error": "node_manager not available"}, 500)
+            return
+        cmd = data.get("command", "")
+        if not cmd:
+            self.send_json({"error": "command required"}, 400)
+            return
+        result = nm.exec_container_on_node(node_id, container_name, cmd)
+        self.send_json(result if result else {"stdout": "", "stderr": "No response", "code": 1})
+
+    def api_node_container_delete(self, node_id, container_name):
+        nm = self._get_node_manager()
+        if not nm:
+            self.send_json({"error": "node_manager not available"}, 500)
+            return
+        result = nm.delete_container_on_node(node_id, container_name)
+        self.send_json(result if result else {"message": f"Container '{container_name}' delete sent"})
+
+    def api_node_image_pull(self, node_id, data):
+        nm = self._get_node_manager()
+        if not nm:
+            self.send_json({"error": "node_manager not available"}, 500)
+            return
+        version = data.get("version", "")
+        if not version:
+            self.send_json({"error": "version required"}, 400)
+            return
+        result = nm.pull_image_on_node(node_id, version)
+        self.send_json(result if result else {"message": "Pull started"})
+
+    def api_node_image_transfer(self, node_id, data):
+        nm = self._get_node_manager()
+        if not nm:
+            self.send_json({"error": "node_manager not available"}, 500)
+            return
+        image_name = data.get("image", "")
+        if not image_name:
+            self.send_json({"error": "image name required"}, 400)
+            return
+        result = nm.transfer_image_to_node(node_id, image_name)
         self.send_json(result)
 
     # ============================================================
