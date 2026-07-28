@@ -278,7 +278,7 @@ class NodeManager:
             "kernel": kernel
         }
         code2, body2, _ = _http_request(
-            f"http://{ip}:{port}/api/pairing/request",
+            f"http://{ip}:{port}/api/nodes/pairing/request",
             method="POST", data=pairing_payload, headers={"Authorization": f"Bearer {token}"}, timeout=10
         )
         if code2 != 200:
