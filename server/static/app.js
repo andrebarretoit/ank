@@ -330,7 +330,7 @@ async function loadAll() {
         } else {
             document.getElementById('stat-disk').textContent = '-';
         }
-        renderContainers(containers);
+        renderContainers(containers, 'local');
         renderImages(images);
         populateImageSelect(images);
         renderDashboardContainers(containers);
@@ -340,27 +340,40 @@ async function loadAll() {
         loadBackups();
         loadNodes();
         loadPairingRequests();
+        if (selectedNode !== 'local') {
+            loadContainers();
+            loadImages();
+        }
     } catch (e) { console.error('Load failed:', e); }
 }
 
-function renderContainers(containers) {
+function renderContainers(containers, nodeId) {
     const list = document.getElementById('containers-list');
-    if (containers.length === 0) {
-        list.innerHTML = `<div class="empty-state"><i class="bi bi-box-seam"></i><p>No containers yet. Click "New Container".</p></div>`;
+    const isRemote = nodeId && nodeId !== 'local';
+    if (!containers || containers.length === 0) {
+        const msg = isRemote ? 'No containers on this remote node.' : 'No containers yet. Click "New Container".';
+        list.innerHTML = `<div class="empty-state"><i class="bi bi-box-seam"></i><p>${msg}</p></div>`;
         return;
     }
     list.innerHTML = containers.map(c => {
+        const name = c.name || '';
         const isBuilding = c.status === 'building';
         const isFailed = c.status === 'failed';
         const statusClass = isBuilding ? 'status-building' : isFailed ? 'status-failed' : `status-${c.status}`;
         const statusText = isBuilding ? 'Building...' : isFailed ? 'Failed' : c.status === 'starting' ? 'Starting...' : c.status === 'stopping' ? 'Stopping...' : c.status;
         const disabled = isBuilding || isFailed || c.status === 'starting' || c.status === 'stopping';
+        const startAction = isRemote ? `remoteContainerAction('${nodeId}','${esc(name)}','start')` : `startContainer('${esc(name)}')`;
+        const stopAction = isRemote ? `remoteContainerAction('${nodeId}','${esc(name)}','stop')` : `stopContainer('${esc(name)}')`;
+        const restartAction = isRemote ? `remoteContainerAction('${nodeId}','${esc(name)}','restart')` : `restartContainer('${esc(name)}')`;
+        const deleteAction = isRemote ? `remoteDeleteContainer('${nodeId}','${esc(name)}')` : `deleteContainer('${esc(name)}')`;
+        const clickAction = isRemote ? `onclick="event.stopPropagation();"` : `onclick="event.stopPropagation(); showContainerDetail('${esc(name)}')"`;
+        const nodeTag = isRemote ? `<span class="status-badge" style="font-size:10px;background:var(--accent);color:#fff;margin-left:6px">${esc(nodeId.slice(0,8))}</span>` : '';
         return `
-        <div class="container-card ${isBuilding ? 'building' : ''}" data-name="${c.name}" style="${isBuilding ? 'opacity:0.7' : ''}">
-            <div class="container-info">
-                <span class="container-name"><i class="bi bi-box-seam" style="margin-right:6px;color:var(--accent)"></i>${c.name}</span>
+        <div class="container-card ${isBuilding ? 'building' : ''}" data-name="${esc(name)}" data-node="${nodeId || 'local'}" style="${isBuilding ? 'opacity:0.7' : ''}">
+            <div class="container-info" ${clickAction} style="cursor:pointer">
+                <span class="container-name"><i class="bi bi-box-seam" style="margin-right:6px;color:var(--accent)"></i>${esc(name)}${nodeTag}</span>
                 <div class="container-meta">
-                    <span><i class="bi bi-image"></i> ${c.template_name || c.image || '-'}</span>
+                    <span><i class="bi bi-image"></i> ${esc(c.template_name || c.image || '-')}</span>
                     <span><i class="bi bi-globe2"></i> ${c.ip_address || 'N/A'}</span>
                     ${c.stats && c.stats.memory_bytes ? `<span><i class="bi bi-memory"></i> ${fmtBytes(c.stats.memory_bytes)}</span>` : ''}
                 </div>
@@ -368,15 +381,19 @@ function renderContainers(containers) {
             <div class="container-actions">
                 <span class="status-badge ${statusClass}">${isBuilding ? '<i class="bi bi-arrow-repeat spin"></i> ' : ''}${statusText}</span>
                 ${c.status === 'running' || c.status === 'starting'
-                    ? `<button class="btn btn-warning btn-sm" ${disabled ? 'disabled' : ''} onclick="event.stopPropagation(); stopContainer('${c.name}')"><i class="bi bi-stop-fill"></i></button>`
-                    : `<button class="btn btn-success btn-sm" ${disabled ? 'disabled' : ''} onclick="event.stopPropagation(); startContainer('${c.name}')"><i class="bi bi-play-fill"></i></button>`
+                    ? `<button class="btn btn-warning btn-sm" ${disabled ? 'disabled' : ''} onclick="event.stopPropagation(); ${stopAction}"><i class="bi bi-stop-fill"></i></button>`
+                    : `<button class="btn btn-success btn-sm" ${disabled ? 'disabled' : ''} onclick="event.stopPropagation(); ${startAction}"><i class="bi bi-play-fill"></i></button>`
                 }
+                <button class="btn btn-primary btn-sm" ${disabled ? 'disabled' : ''} onclick="event.stopPropagation(); ${restartAction}"><i class="bi bi-arrow-repeat"></i></button>
+                <button class="btn btn-danger btn-sm" ${disabled ? 'disabled' : ''} onclick="event.stopPropagation(); ${deleteAction}"><i class="bi bi-trash3"></i></button>
             </div>
         </div>`;
     }).join('');
-    list.querySelectorAll('.container-card').forEach(card => {
-        card.addEventListener('click', () => showContainerDetail(card.dataset.name));
-    });
+    if (!isRemote) {
+        list.querySelectorAll('.container-card').forEach(card => {
+            card.addEventListener('click', () => showContainerDetail(card.dataset.name));
+        });
+    }
 }
 
 function renderImages(images) {
@@ -392,6 +409,25 @@ function renderImages(images) {
                 <span class="image-name">${esc(img.name)}</span>
                 <span class="image-size">${img.size_human || fmtBytes(img.size || 0)}</span>
             </div>
+        </div>
+    `).join('');
+}
+
+function renderLocalImagesForTransfer(images) {
+    const el = document.getElementById('local-images-list');
+    if (!el) return;
+    if (!images || images.length === 0) {
+        el.innerHTML = '<div class="empty-state"><i class="bi bi-hdd-stack"></i><p>No local images to transfer</p></div>';
+        return;
+    }
+    el.innerHTML = images.map(img => `
+        <div class="image-card">
+            <div class="image-icon"><i class="bi bi-hdd-stack"></i></div>
+            <div class="image-info">
+                <span class="image-name">${esc(img.name)}</span>
+                <span class="image-size">${img.size_human || fmtBytes(img.size || 0)}</span>
+            </div>
+            <button class="btn btn-sm btn-primary" onclick="event.stopPropagation(); transferImage('${selectedNode}','${esc(img.name)}')" title="Transfer to remote"><i class="bi bi-arrow-right"></i> Send</button>
         </div>
     `).join('');
 }
@@ -981,16 +1017,23 @@ document.getElementById('create-form').addEventListener('submit', async (e) => {
     submitBtn.innerHTML = '<i class="bi bi-arrow-repeat spin"></i> Creating...';
     const name = document.getElementById('container-name').value;
     const imageVal = document.getElementById('container-image').value;
+    const nodeId = selectedNode || 'local';
+    const isRemote = nodeId !== 'local';
     if (imageVal.startsWith('template:')) {
         const templateId = imageVal.replace('template:', '');
         const rootPass = document.getElementById('container-root-password').value || 'admin123';
         try {
-            toast(`Deploying template "${templateId}" as "${name}"...`, 'info');
-            await api('POST', '/images/deploy', { template: templateId, name, root_password: rootPass });
+            if (isRemote) {
+                toast(`Deploying template "${templateId}" as "${name}" on remote...`, 'info');
+                await api('POST', `/nodes/${encodeURIComponent(nodeId)}/containers`, { name, image: templateId, root_password: rootPass });
+            } else {
+                toast(`Deploying template "${templateId}" as "${name}"...`, 'info');
+                await api('POST', '/images/deploy', { template: templateId, name, root_password: rootPass });
+            }
             hideModal('create-modal');
             document.getElementById('create-form').reset();
             toast(`Template deployed as "${name}"`, 'success');
-            loadAll();
+            loadContainers();
         } catch (e) { toast(`Failed: ${e.message}`, 'error'); }
         submitBtn.disabled = false;
         submitBtn.innerHTML = origHTML;
@@ -1011,11 +1054,15 @@ document.getElementById('create-form').addEventListener('submit', async (e) => {
     const sshPortVal = document.getElementById('container-ssh-port').value;
     if (sshPortVal) data.ssh_port = parseInt(sshPortVal);
     try {
-        await api('POST', '/containers', data);
+        if (isRemote) {
+            await api('POST', `/nodes/${encodeURIComponent(nodeId)}/containers`, data);
+        } else {
+            await api('POST', '/containers', data);
+        }
         hideModal('create-modal');
         document.getElementById('create-form').reset();
-        toast(`Container "${data.name}" created`, 'success');
-        loadAll();
+        toast(`Container "${data.name}" ${isRemote ? 'creation sent to remote' : 'created'}`, 'success');
+        loadContainers();
     } catch (e) { toast(`Failed: ${e.message}`, 'error'); }
     submitBtn.disabled = false;
     submitBtn.innerHTML = origHTML;
@@ -1233,6 +1280,10 @@ function startRefreshTimer() {
                     const used = memT - memA;
                     document.getElementById('info-memory').textContent = `${fmtBytes(used * 1024)} used / ${fmtBytes(memT * 1024)} total (${Math.round(used/memT*100)}%)`;
                 }
+            }
+            if (selectedNode !== 'local') {
+                loadContainers();
+                loadImages();
             }
         } catch (e) { }
     }, refreshSeconds * 1000);
@@ -1921,6 +1972,51 @@ function onImageNodeChange() {
     loadImages();
 }
 
+async function loadContainers() {
+    if (selectedNode === 'local') {
+        try {
+            const containers = await api('GET', '/containers');
+            renderContainers(containers);
+            renderDashboardContainers(containers);
+            populateImageSelect(await api('GET', '/images'));
+        } catch (e) {}
+        return;
+    }
+    try {
+        const containers = await api('GET', `/nodes/${encodeURIComponent(selectedNode)}/containers`);
+        renderContainers(Array.isArray(containers) ? containers : [], selectedNode);
+    } catch (e) {
+        renderContainers([], selectedNode);
+    }
+}
+
+async function loadImages() {
+    const localCard = document.getElementById('local-images-transfer-card');
+    const sectionTitle = document.getElementById('images-section-title');
+    if (selectedNode === 'local') {
+        if (localCard) localCard.style.display = 'none';
+        if (sectionTitle) sectionTitle.textContent = 'Downloaded Images';
+        try {
+            const images = await api('GET', '/images');
+            renderImages(images);
+            populateImageSelect(images);
+        } catch (e) {}
+        return;
+    }
+    if (sectionTitle) sectionTitle.textContent = 'Remote Images';
+    if (localCard) localCard.style.display = 'block';
+    try {
+        const remoteImages = await api('GET', `/nodes/${encodeURIComponent(selectedNode)}/images`);
+        renderImages(Array.isArray(remoteImages) ? remoteImages : []);
+    } catch (e) {
+        renderImages([]);
+    }
+    try {
+        const localImages = await api('GET', '/images');
+        renderLocalImagesForTransfer(localImages);
+    } catch (e) {}
+}
+
 function onShellNodeChange() {
     const val = document.getElementById('shell-node-selector')?.value || 'local';
     if (val === 'local') {
@@ -1935,6 +2031,16 @@ async function remoteContainerAction(nodeId, containerName, action) {
     try {
         await api('POST', `/nodes/${encodeURIComponent(nodeId)}/containers/${encodeURIComponent(containerName)}/${action}`);
         toast(`Container ${action} sent`, 'success');
+        setTimeout(() => loadContainers(), 1000);
+    } catch (e) { toast(`Failed: ${e.message}`, 'error'); }
+}
+
+async function remoteDeleteContainer(nodeId, containerName) {
+    const ok = await confirmAction('Delete Container', `Delete "${containerName}" on remote node?`);
+    if (!ok) return;
+    try {
+        await api('DELETE', `/nodes/${encodeURIComponent(nodeId)}/containers/${encodeURIComponent(containerName)}`);
+        toast(`Container delete sent`, 'success');
         loadContainers();
     } catch (e) { toast(`Failed: ${e.message}`, 'error'); }
 }
