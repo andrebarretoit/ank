@@ -143,6 +143,29 @@ def _get_client_token(handler):
         return auth[7:]
     return None
 
+def _ip_in_range(ip, ip_range):
+    if not ip_range or ip_range == "0.0.0.0":
+        return True
+    if "/" not in ip_range:
+        return ip == ip_range
+    try:
+        import ipaddress
+        return ipaddress.ip_address(ip) in ipaddress.ip_network(ip_range, strict=False)
+    except Exception:
+        return ip == ip_range
+
+def _check_manager_ip(handler):
+    config = load_config()
+    if not config.get("enable_remote_management"):
+        return True
+    mgr_ip = config.get("manager_ip", "")
+    if not mgr_ip:
+        return True
+    client_ip = handler.client_address[0]
+    if client_ip in ("127.0.0.1", "::1"):
+        return True
+    return _ip_in_range(client_ip, mgr_ip)
+
 def _check_auth(handler):
     """Check authentication: token-based for API clients, reject browsers"""
     client = _detect_client(handler)
@@ -1007,6 +1030,9 @@ small{color:#334155}
             if auth != 'authorized':
                 self.send_error(401, "Unauthorized")
                 return
+            if not _check_manager_ip(self):
+                self.send_error(403, "Forbidden: IP not allowed")
+                return
             try:
                 self.route_get(path, parsed)
             except Exception as e:
@@ -1018,13 +1044,16 @@ small{color:#334155}
         parsed = urlparse(self.path)
         path = parsed.path
         if path.startswith("/api/"):
-            if path != "/api/auth/login":
+            if path != "/api/auth/login" and path != "/api/nodes/pairing/request":
                 auth = _check_auth(self)
                 if auth == 'browser':
                     self.send_404_html()
                     return
                 if auth != 'authorized':
                     self.send_error(401, "Unauthorized")
+                    return
+                if not _check_manager_ip(self):
+                    self.send_error(403, "Forbidden: IP not allowed")
                     return
             try:
                 self.route_post(path, parsed)
@@ -1044,6 +1073,9 @@ small{color:#334155}
             if auth != 'authorized':
                 self.send_error(401, "Unauthorized")
                 return
+            if not _check_manager_ip(self):
+                self.send_error(403, "Forbidden: IP not allowed")
+                return
             if "/upload" in path:
                 try:
                     self.api_upload_file(path)
@@ -1062,6 +1094,9 @@ small{color:#334155}
                 return
             if auth != 'authorized':
                 self.send_error(401, "Unauthorized")
+                return
+            if not _check_manager_ip(self):
+                self.send_error(403, "Forbidden: IP not allowed")
                 return
             self.route_delete(path, parsed)
             return
@@ -1190,6 +1225,8 @@ small{color:#334155}
         elif "/files/rename" in path and path.startswith("/api/containers/"):
             name = path.split("/")[3]
             self.api_files_rename(name, data)
+        elif path == "/api/images/upload":
+            self.api_receive_image_upload()
         elif path == "/api/images/pull":
             self.api_pull_image(data)
         elif path == "/api/images/templates":
@@ -1262,6 +1299,9 @@ small{color:#334155}
         elif path.startswith("/api/nodes/") and path.endswith("/images/transfer"):
             parts = path.split("/")
             self.api_node_image_transfer(parts[3], data)
+        elif path.startswith("/api/nodes/") and path.endswith("/containers"):
+            parts = path.split("/")
+            self.api_node_container_create(parts[3], data)
         else:
             self.send_error(404, "Not Found")
 
@@ -3022,6 +3062,8 @@ small{color:#334155}
             config["node_name"] = data["node_name"]
         if "enable_remote_management" in data:
             config["enable_remote_management"] = data["enable_remote_management"]
+        if "manager_ip" in data:
+            config["manager_ip"] = data["manager_ip"]
         save_config(config)
         self.send_json({"message": "Configuration updated"})
 
@@ -3187,6 +3229,30 @@ small{color:#334155}
                         "size_human": self._fmt_size(size)
                     })
         self.send_json(images)
+
+    def api_receive_image_upload(self):
+        import tarfile, io
+        content_length = int(self.headers.get("Content-Length", 0))
+        if content_length == 0:
+            self.send_error(400, "Empty body")
+            return
+        raw = self.rfile.read(content_length)
+        try:
+            tar = tarfile.open(fileobj=io.BytesIO(raw), mode="r:gz")
+        except Exception as e:
+            self.send_error(400, f"Invalid tar.gz: {e}")
+            return
+        os.makedirs(IMAGES_DIR, exist_ok=True)
+        extracted = []
+        for member in tar.getmembers():
+            if member.isdir():
+                continue
+            top = member.name.split("/")[0]
+            if top and top not in extracted:
+                extracted.append(top)
+            tar.extract(member, IMAGES_DIR)
+        tar.close()
+        self.send_json({"ok": True, "images": extracted, "count": len(extracted)})
 
     def api_system_info(self):
         global _device_cache
@@ -3773,6 +3839,18 @@ small{color:#334155}
             return
         result = nm.transfer_image_to_node(node_id, image_name)
         self.send_json(result)
+
+    def api_node_container_create(self, node_id, data):
+        nm = self._get_node_manager()
+        if not nm:
+            self.send_json({"error": "node_manager not available"}, 500)
+            return
+        name = data.get("name", "")
+        if not name:
+            self.send_json({"error": "Container name required"}, 400)
+            return
+        result = nm.create_container_on_node(node_id, data)
+        self.send_json(result if result else {"message": f"Container '{name}' creation sent"})
 
     # ============================================================
     # System Dashboard (aggregate across nodes)

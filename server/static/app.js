@@ -1244,9 +1244,10 @@ document.getElementById('panel-settings-form').addEventListener('submit', async 
     const refresh = document.getElementById('setting-refresh').value;
     const autostart = document.getElementById('setting-autostart').checked;
     const nodeName = document.getElementById('setting-node-name')?.value?.trim() || '';
-    const enableRemote = document.getElementById('setting-remote-management')?.checked ?? true;
+    const enableRemote = document.getElementById('setting-remote-mgmt')?.checked ?? false;
+    const managerIp = document.getElementById('setting-manager-ip')?.value?.trim() || '';
     try {
-        await api('POST', '/config', { bind_address: bind, refresh_interval: parseInt(refresh), autostart_on_boot: autostart, node_name: nodeName, enable_remote_management: enableRemote });
+        await api('POST', '/config', { bind_address: bind, refresh_interval: parseInt(refresh), autostart_on_boot: autostart, node_name: nodeName, enable_remote_management: enableRemote, manager_ip: managerIp });
         refreshSeconds = parseInt(refresh);
         localStorage.setItem('ank_refresh', refresh);
         startRefreshTimer();
@@ -1300,8 +1301,15 @@ async function loadSettings() {
         if (autostartEl) autostartEl.checked = cfg.autostart_on_boot !== false;
         const nodeNameEl = document.getElementById('setting-node-name');
         if (nodeNameEl) nodeNameEl.value = cfg.node_name || '';
-        const remoteMgmtEl = document.getElementById('setting-remote-management');
-        if (remoteMgmtEl) remoteMgmtEl.checked = cfg.enable_remote_management !== false;
+        const remoteMgmtEl = document.getElementById('setting-remote-mgmt');
+        if (remoteMgmtEl) remoteMgmtEl.checked = cfg.enable_remote_management === true;
+        const managerIpEl = document.getElementById('setting-manager-ip');
+        if (managerIpEl) managerIpEl.value = cfg.manager_ip || '';
+        const mipGroup = document.getElementById('manager-ip-group');
+        if (mipGroup) mipGroup.style.display = remoteMgmtEl?.checked ? 'block' : 'none';
+        if (remoteMgmtEl) remoteMgmtEl.addEventListener('change', () => {
+            document.getElementById('manager-ip-group').style.display = remoteMgmtEl.checked ? 'block' : 'none';
+        });
         const nodeName = cfg.node_name || '';
         document.getElementById('sidebar-title').textContent = nodeName ? `ANK - ${nodeName}` : 'ANK';
         document.getElementById('mt-sidebar-title').textContent = nodeName ? `ANK - ${nodeName}` : 'ANK';
