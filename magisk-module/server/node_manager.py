@@ -113,6 +113,7 @@ class NodeManager:
         while self._running:
             try:
                 self._check_all_nodes()
+                self._sync_manager_info()
             except Exception as e:
                 _log(f"Heartbeat error: {e}")
             time.sleep(interval)
@@ -121,8 +122,6 @@ class NodeManager:
         for node_id in self._list_node_ids():
             config = self._load_node_config(node_id)
             if not config:
-                continue
-            if config.get("role") == "managed":
                 continue
             ip = config.get("ip", "")
             port = config.get("port", 8001)
@@ -136,16 +135,38 @@ class NodeManager:
                     config["fail_count"] = 0
                     config["last_seen"] = _utcnow()
                 else:
+                    if config.get("status") != "pending":
+                        config["fail_count"] = config.get("fail_count", 0) + 1
+                        if config["fail_count"] >= 3:
+                            config["status"] = "offline"
+                    config["last_seen"] = _utcnow()
+            except Exception:
+                if config.get("status") != "pending":
                     config["fail_count"] = config.get("fail_count", 0) + 1
                     if config["fail_count"] >= 3:
                         config["status"] = "offline"
-                    config["last_seen"] = _utcnow()
-            except Exception:
-                config["fail_count"] = config.get("fail_count", 0) + 1
-                if config["fail_count"] >= 3:
-                    config["status"] = "offline"
                 config["last_seen"] = _utcnow()
             self._save_node_config(node_id, config)
+
+    def _sync_manager_info(self):
+        for node_id in self._list_node_ids():
+            config = self._load_node_config(node_id)
+            if not config or config.get("role") != "manager":
+                continue
+            ip = config.get("ip", "")
+            port = config.get("port", 8001)
+            token = config.get("token", "")
+            try:
+                headers = {"Authorization": f"Bearer {token}"}
+                code, info, _ = _http_request(f"http://{ip}:{port}/api/system/info", headers=headers, timeout=10)
+                if code == 200 and isinstance(info, dict):
+                    new_name = info.get("node_name", "")
+                    if new_name and new_name != config.get("alias"):
+                        config["alias"] = new_name
+                        config["managed_by"] = new_name
+                        self._save_node_config(node_id, config)
+            except Exception:
+                pass
 
     # ============================================================
     # Node CRUD
@@ -364,9 +385,10 @@ class NodeManager:
             json.dump(req, f, indent=2)
 
         node_id = f"node-{_generate_id()}"
+        mgr_alias = req.get("manager_name", "") or req.get("device_model", "") or req.get("manager_ip", "Manager")
         node_config = {
             "id": node_id,
-            "alias": req.get("alias", req.get("manager_name", "Manager")),
+            "alias": mgr_alias,
             "ip": req.get("manager_ip", ""),
             "port": 8001,
             "user": "",
@@ -377,7 +399,7 @@ class NodeManager:
             "fail_count": 0,
             "device_model": req.get("device_model", ""),
             "kernel": req.get("kernel", ""),
-            "managed_by": req.get("manager_name", ""),
+            "managed_by": mgr_alias,
             "created_at": _utcnow()
         }
         self._save_node_config(node_id, node_config)
