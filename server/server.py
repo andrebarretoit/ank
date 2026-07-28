@@ -114,12 +114,27 @@ def _validate_token(token):
         return False
     with _tokens_lock:
         info = _tokens.get(token)
-        if not info:
-            return False
-        if time.time() > info["expires"]:
-            del _tokens[token]
-            return False
-    return True
+        if info:
+            if time.time() > info["expires"]:
+                del _tokens[token]
+                return False
+            return True
+    try:
+        nodes_dir = os.path.join(ANK_DIR, "nodes")
+        if os.path.isdir(nodes_dir):
+            for fname in os.listdir(nodes_dir):
+                if not fname.endswith(".json"):
+                    continue
+                try:
+                    with open(os.path.join(nodes_dir, fname)) as f:
+                        cfg = json.load(f)
+                    if cfg.get("token") == token:
+                        return True
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    return False
 
 def _detect_client(handler):
     """Detect client type: browser, panel, cli, installer, unknown"""

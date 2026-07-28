@@ -1929,17 +1929,100 @@ function openNodeDetail(nodeId, name, status) {
     document.getElementById('node-detail-status').textContent = status;
     document.getElementById('node-detail-status').style.color = status === 'online' ? 'var(--success)' : 'var(--danger)';
     document.getElementById('node-detail-loading').style.display = 'block';
-    document.getElementById('node-detail-iframe').style.display = 'none';
+    document.getElementById('node-detail-content').style.display = 'none';
     showModal('node-detail-modal');
-    setTimeout(() => {
-        const iframe = document.getElementById('node-detail-iframe');
-        const loading = document.getElementById('node-detail-loading');
-        const host = window.location.hostname;
-        const port = window.location.port || '8001';
-        iframe.src = `/api/nodes/${encodeURIComponent(nodeId)}/proxy/`;
-        iframe.onload = () => { loading.style.display = 'none'; iframe.style.display = 'block'; };
-        iframe.onerror = () => { loading.innerHTML = '<p style="color:var(--danger)">Failed to connect to remote node</p>'; };
-    }, 300);
+    loadNodeDetail(nodeId);
+}
+
+async function loadNodeDetail(nodeId) {
+    const el = document.getElementById('node-detail-content');
+    const loading = document.getElementById('node-detail-loading');
+    try {
+        const [info, containers, images] = await Promise.all([
+            api('GET', `/nodes/${encodeURIComponent(nodeId)}/status`).catch(() => ({})),
+            api('GET', `/nodes/${encodeURIComponent(nodeId)}/containers`).catch(() => []),
+            api('GET', `/nodes/${encodeURIComponent(nodeId)}/images`).catch(() => [])
+        ]);
+        const dev = info.device_model || info.device || info.hostname || '-';
+        const kernel = info.kernel || info.kernel_version || '-';
+        const cpu = info.cpu_usage != null ? info.cpu_usage + '%' : (info.cpu || '-');
+        const memTotal = info.memory?.total_kb || 0;
+        const memAvail = info.memory?.available_kb || 0;
+        const memText = memTotal > 0 ? `${fmtBytes((memTotal - memAvail) * 1024)} / ${fmtBytes(memTotal * 1024)}` : '-';
+        const disk = info.disk || {};
+        const diskText = disk.total ? `${disk.used || '-'} / ${disk.total} GB` : (info.device_free || '-');
+        const battery = info.battery;
+        const batteryText = (battery != null && battery >= 0) ? battery + '%' : '-';
+        const uptime = info.uptime ? fmtUptime(info.uptime) : '-';
+        const contArr = Array.isArray(containers) ? containers : [];
+        const imgArr = Array.isArray(images) ? images : [];
+        const running = contArr.filter(c => c.status === 'running').length;
+        const stopped = contArr.filter(c => c.status !== 'running').length;
+        el.innerHTML = `
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px">
+                <div style="background:var(--bg-secondary);border:1px solid var(--border);border-radius:8px;padding:12px">
+                    <div style="color:var(--text-muted);font-size:11px;margin-bottom:4px"><i class="bi bi-pc"></i> Device</div>
+                    <div style="font-weight:600">${esc(dev)}</div>
+                </div>
+                <div style="background:var(--bg-secondary);border:1px solid var(--border);border-radius:8px;padding:12px">
+                    <div style="color:var(--text-muted);font-size:11px;margin-bottom:4px"><i class="bi bi-cpu"></i> CPU</div>
+                    <div style="font-weight:600">${esc(cpu)}</div>
+                </div>
+                <div style="background:var(--bg-secondary);border:1px solid var(--border);border-radius:8px;padding:12px">
+                    <div style="color:var(--text-muted);font-size:11px;margin-bottom:4px"><i class="bi bi-memory"></i> Memory</div>
+                    <div style="font-weight:600">${esc(memText)}</div>
+                </div>
+                <div style="background:var(--bg-secondary);border:1px solid var(--border);border-radius:8px;padding:12px">
+                    <div style="color:var(--text-muted);font-size:11px;margin-bottom:4px"><i class="bi bi-device-hdd"></i> Disk</div>
+                    <div style="font-weight:600">${esc(diskText)}</div>
+                </div>
+                <div style="background:var(--bg-secondary);border:1px solid var(--border);border-radius:8px;padding:12px">
+                    <div style="color:var(--text-muted);font-size:11px;margin-bottom:4px"><i class="bi bi-battery-half"></i> Battery</div>
+                    <div style="font-weight:600">${esc(batteryText)}</div>
+                </div>
+                <div style="background:var(--bg-secondary);border:1px solid var(--border);border-radius:8px;padding:12px">
+                    <div style="color:var(--text-muted);font-size:11px;margin-bottom:4px"><i class="bi bi-clock-history"></i> Uptime</div>
+                    <div style="font-weight:600">${esc(uptime)}</div>
+                </div>
+                <div style="background:var(--bg-secondary);border:1px solid var(--border);border-radius:8px;padding:12px">
+                    <div style="color:var(--text-muted);font-size:11px;margin-bottom:4px"><i class="bi bi-box-seam"></i> Containers</div>
+                    <div style="font-weight:600"><span style="color:var(--success)">${running} running</span> / <span style="color:var(--text-muted)">${stopped} stopped</span></div>
+                </div>
+                <div style="background:var(--bg-secondary);border:1px solid var(--border);border-radius:8px;padding:12px">
+                    <div style="color:var(--text-muted);font-size:11px;margin-bottom:4px"><i class="bi bi-hdd-stack"></i> Images</div>
+                    <div style="font-weight:600">${imgArr.length}</div>
+                </div>
+            </div>
+            <div style="margin-bottom:12px">
+                <h4 style="margin-bottom:8px;font-size:13px;color:var(--text-muted)"><i class="bi bi-terminal"></i> Kernel</h4>
+                <code style="font-size:12px;background:var(--bg-primary);padding:6px 10px;border-radius:6px;display:block">${esc(kernel)}</code>
+            </div>
+            ${contArr.length > 0 ? `
+            <div>
+                <h4 style="margin-bottom:8px;font-size:13px;color:var(--text-muted)"><i class="bi bi-box-seam"></i> Containers</h4>
+                <div style="display:flex;flex-direction:column;gap:6px">
+                    ${contArr.map(c => {
+                        const sc = c.status === 'running' ? 'var(--success)' : c.status === 'building' ? 'var(--warning)' : 'var(--text-muted)';
+                        return `<div style="display:flex;align-items:center;justify-content:space-between;background:var(--bg-secondary);border:1px solid var(--border);border-radius:8px;padding:10px 12px">
+                            <div>
+                                <span style="font-weight:600">${esc(c.name || '')}</span>
+                                <span style="color:var(--text-muted);font-size:12px;margin-left:8px">${esc(c.image || c.template_name || '')}</span>
+                            </div>
+                            <div style="display:flex;gap:6px;align-items:center">
+                                <span style="color:${sc};font-size:12px;font-weight:600">${esc(c.status || '')}</span>
+                                ${c.status === 'running' ? `<button class="btn btn-warning btn-sm" onclick="remoteContainerAction('${nodeId}','${esc(c.name)}','stop')"><i class="bi bi-stop-fill"></i></button>` : `<button class="btn btn-success btn-sm" onclick="remoteContainerAction('${nodeId}','${esc(c.name)}','start')"><i class="bi bi-play-fill"></i></button>`}
+                                <button class="btn btn-danger btn-sm" onclick="remoteDeleteContainer('${nodeId}','${esc(c.name)}')"><i class="bi bi-trash3"></i></button>
+                            </div>
+                        </div>`;
+                    }).join('')}
+                </div>
+            </div>` : '<p style="color:var(--text-muted);text-align:center;padding:20px">No containers</p>'}
+        `;
+        loading.style.display = 'none';
+        el.style.display = 'block';
+    } catch (e) {
+        loading.innerHTML = `<p style="color:var(--danger)"><i class="bi bi-exclamation-triangle"></i> Failed to load node data: ${esc(e.message)}</p>`;
+    }
 }
 
 /* Node selectors for containers, images, shell */
