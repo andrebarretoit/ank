@@ -624,18 +624,6 @@ cmd_start() {
     mount -t devpts devpts "$ROOTFS/dev/pts" 2>/dev/null
     mount -t tmpfs -o size=16m tmpfs "$ROOTFS/dev/shm" 2>/dev/null
 
-    # Shared volume mount for stack containers
-    local STACK_NAME=$(grep -o '"stack":"[^"]*"' "$CONFIG" 2>/dev/null | cut -d'"' -f4)
-    if [ -n "$STACK_NAME" ]; then
-        local STACK_DATA="$ANK_DIR/stacks/$STACK_NAME/data"
-        mkdir -p "$STACK_DATA" 2>/dev/null
-        local MOUNT_POINT="$ROOTFS/var/www/data"
-        mkdir -p "$MOUNT_POINT" 2>/dev/null
-        mount --bind "$STACK_DATA" "$MOUNT_POINT" 2>/dev/null && \
-            echo "Stack volume: $STACK_DATA -> $MOUNT_POINT" || \
-            echo "WARN: Failed to mount stack volume"
-    fi
-
     # Set root password before starting sshd
     local ROOT_PASS=$(tr -d ' ' < "$CONFIG" 2>/dev/null | grep -o '"root_password":"[^"]*"' | cut -d'"' -f4)
     if [ -n "$ROOT_PASS" ]; then
@@ -701,68 +689,26 @@ cmd_start() {
         mount -t devpts devpts /dev/pts 2>/dev/null || true
         hostname CONTAINER_NAME_PLACEHOLDER 2>/dev/null
         cd /root 2>/dev/null || cd /
-
-        # Write PID tracking file for clean shutdown
-        echo $$ > /run/ank.procs
-
         echo "[ANK-INIT] Starting sshd on port CONTAINER_SSHD_PORT..."
         if [ -x /usr/sbin/sshd ]; then
             ssh-keygen -A 2>/dev/null
             /usr/sbin/sshd -D -p CONTAINER_SSHD_PORT -o PasswordAuthentication=yes -o PermitRootLogin=yes -o PidFile=/run/sshd.pid -e 2>/dev/null &
             _sshd_pid=$!
-            echo "$_sshd_pid" >> /run/ank.procs
             echo "[ANK-INIT] sshd started (PID: $_sshd_pid)"
         else
             echo "[ANK-INIT] WARN: sshd not found"
         fi
-        _svc=""
-        _port=""
-        _path=""
-        _s6="false"
-        if [ -f /etc/ank/config ]; then
-            _svc=$(grep "^service=" /etc/ank/config 2>/dev/null | cut -d= -f2)
-            _port=$(grep "^port=" /etc/ank/config 2>/dev/null | cut -d= -f2)
-            _path=$(grep "^static_path=" /etc/ank/config 2>/dev/null | cut -d= -f2)
-            _s6=$(grep "^s6=" /etc/ank/config 2>/dev/null | cut -d= -f2)
-        elif [ -f /etc/ank/service ]; then
+        if [ -f /etc/ank/service ]; then
             _svc=$(cat /etc/ank/service 2>/dev/null)
-        fi
-        if [ -n "$_svc" ]; then
-            echo "[ANK-INIT] Starting service: $_svc (port: $_port, path: $_path)"
-            _svc_pid=""
+            echo "[ANK-INIT] Starting service: $_svc"
             case "$_svc" in
-                nginx)
-                    sed -i "s#/var/www/html#${_path:-/var/www/html}#g; s#listen 8080#listen ${_port:-8080}#g" /etc/nginx/nginx.conf 2>/dev/null
-                    nginx -g "daemon off;" 2>/dev/null &
-                    _svc_pid=$! ;;
-                apache)
-                    httpd -C "Listen ${_port:-9090}" \
-                          -c "ServerName localhost" \
-                          -c "DocumentRoot ${_path:-/var/www/localhost/htdocs}" \
-                          -c "<Directory ${_path:-/var/www/localhost/htdocs}>" \
-                          -c "Require all granted" \
-                          -c "</Directory>" \
-                          -DFOREGROUND 2>/dev/null &
-                    _svc_pid=$! ;;
-                php)
-                    php82 -S 0.0.0.0:"${_port:-8000}" -t "${_path:-/var/www/php}" 2>/dev/null &
-                    _svc_pid=$! ;;
-                node)
-                    cd "${_path:-/var/www/app}" 2>/dev/null; node server.js 2>/dev/null &
-                    _svc_pid=$! ;;
-                python)
-                    cd "${_path:-/var/www/app}" 2>/dev/null; python3 server.py 2>/dev/null &
-                    _svc_pid=$! ;;
-                *)
-                    echo "$_svc" | sh 2>/dev/null &
-                    _svc_pid=$! ;;
+                nginx)  mkdir -p /run/nginx 2>/dev/null; nginx 2>/dev/null & ;;
+                apache) httpd -f -p 80 -h /var/www/localhost/htdocs 2>/dev/null & ;;
+                php)    php -S 0.0.0.0:80 -t /var/www/php 2>/dev/null & ;;
+                node)   cd /var/www/app 2>/dev/null; node server.js 2>/dev/null & ;;
+                python) cd /var/www/app 2>/dev/null; python3 server.py 2>/dev/null & ;;
+                *)      echo "[ANK-INIT] Unknown service: $_svc" ;;
             esac
-            [ -n "$_svc_pid" ] && echo "$_svc_pid" >> /run/ank.procs
-        fi
-        if [ "$_s6" = "true" ] && [ -x /init ]; then
-            echo "[ANK-INIT] Starting s6-overlay..."
-            /init &
-            echo $! >> /run/ank.procs
         fi
         echo "[ANK-INIT] Container ready"
         while [ "$_ank_exit" = "0" ]; do
@@ -823,13 +769,12 @@ cmd_start() {
         # In shared_host/shared_network/lite modes, sshd listens directly on SSH_PORT
     fi
 
-    # Setup service port forwarding (nginx=80, apache=9090, php=8000, node=3000, python=5000)
+    # Setup service port forwarding (nginx=80, apache/php=80, node=3000, python=5000)
     local SVC_PORT=""
     local IMAGE=$(grep -o '"image":"[^"]*"' "$CONFIG" | cut -d'"' -f4)
     case "$IMAGE" in
-        nginx*) SVC_PORT="8080" ;;
-        apache*) SVC_PORT="9090" ;;
-        php*) SVC_PORT="8000" ;;
+        nginx*) SVC_PORT="80" ;;
+        apache*|php*) SVC_PORT="80" ;;
         node*) SVC_PORT="3000" ;;
         python*) SVC_PORT="5000" ;;
     esac
@@ -856,6 +801,10 @@ cmd_start() {
     sed -i "s/\"status\": \"[^\"]*\"/\"status\": \"running\"/" "$CONFIG"
     sed -i "s/\"pid\": [^,]*/\"pid\": $PID/" "$CONFIG"
 
+    # Scan and record all container processes in ank.procs
+    sleep 1
+    _scan_container_procs "$NAME"
+
     echo "Container '$NAME' started (PID: $PID, SSH: $SSH_PORT)"
     return 0
 }
@@ -879,147 +828,195 @@ cmd_stop() {
         return 0
     fi
 
-    local PID=$(grep -o '"pid": [^,]*' "$CONFIG" | cut -d' ' -f2)
     local SSH_PORT=$(grep -o '"ssh_port":[^,]*' "$CONFIG" | cut -d: -f2 | tr -d ' ')
-    local IP=$(grep -o '"ip_address":[^,]*' "$CONFIG" | cut -d'"' -f4)
-    local ROOTFS="$CONTAINER_DIR/merged"
 
     echo "Stopping container: $NAME"
 
-    # === Phase 1: Kill ALL processes ===
-    echo "  Killing all processes..."
+    # Phase 1: Kill ALL processes (ank.procs + cgroup + /proc sweep)
+    _kill_container_procs "$NAME"
+
+    # Phase 2: Unmount ALL chroot mounts
+    _unmount_container "$NAME"
+
+    # Phase 3: Remove iptables rules
+    _remove_container_rules "$NAME"
+
+    # Phase 4: Destroy network namespace
+    local MODE=$(get_mode)
+    if [ "$MODE" = "isolated" ]; then
+        sh "$SCRIPTS_DIR/network.sh" destroy "$NAME" 2>/dev/null
+    else
+        sh "$SCRIPTS_DIR/network.sh" destroy_compat "$NAME" 2>/dev/null
+    fi
+
+    # Phase 5: Remove cgroup
+    rmdir "/sys/fs/cgroup/ank/$NAME" 2>/dev/null
+
+    # Phase 6: Remove ank.procs
+    rm -f "$CONTAINER_DIR/ank.procs"
+
+    # Update config
+    sed -i "s/\"status\": \"[^\"]*\"/\"status\": \"stopped\"/" "$CONFIG"
+    sed -i "s/\"pid\": [^,]*/\"pid\": null/" "$CONFIG"
+
+    echo "Container '$NAME' stopped"
+    return 0
+}
+
+# ============================================================
+# Scan processes belonging to container and write ank.procs
+# ============================================================
+_scan_container_procs() {
+    local NAME="$1"
+    local CONTAINER_DIR="$CONTAINERS_DIR/$NAME"
+    local ROOTFS="$CONTAINER_DIR/merged"
+    local PROCS_FILE="$CONTAINER_DIR/ank.procs"
+    local CONFIG="$CONTAINER_DIR/config.json"
+    local SSH_PORT=$(grep -o '"ssh_port":[^,]*' "$CONFIG" 2>/dev/null | cut -d: -f2 | tr -d ' ')
+
+    echo "# Autogenerated Ank Procs - DO NOT EDIT" > "$PROCS_FILE"
+
+    # Scan /proc for processes belonging to this container
+    for pid_dir in /proc/[0-9]*; do
+        local pid=$(basename "$pid_dir" 2>/dev/null)
+        [ -z "$pid" ] && continue
+
+        # Method 1: Check if root link matches container rootfs
+        local root=$(readlink "$pid_dir/root" 2>/dev/null)
+        local exe=$(readlink "$pid_dir/exe" 2>/dev/null)
+        local cmdline=$(tr '\0' ' ' < "$pid_dir/cmdline" 2>/dev/null)
+
+        local belongs=0
+        case "$root" in ${ROOTFS}|${ROOTFS}/) belongs=1 ;; esac
+        case "$exe" in ${ROOTFS}/*) belongs=1 ;; esac
+        # Also check sshd port pattern in cmdline
+        if [ -n "$SSH_PORT" ] && echo "$cmdline" | grep -q "sshd.*-p.*${SSH_PORT}"; then
+            belongs=1
+        fi
+
+        if [ "$belongs" -eq 1 ]; then
+            local app_name=$(cat "$pid_dir/comm" 2>/dev/null || echo "unknown")
+            echo "${pid}:${app_name}" >> "$PROCS_FILE"
+        fi
+    done
+
+    local proc_count=$(tail -n +2 "$PROCS_FILE" 2>/dev/null | wc -l)
+    echo "  ank.procs: $proc_count processes recorded"
+}
+
+# ============================================================
+# Kill ALL processes from ank.procs
+# ============================================================
+_kill_container_procs() {
+    local NAME="$1"
+    local CONTAINER_DIR="$CONTAINERS_DIR/$NAME"
+    local PROCS_FILE="$CONTAINER_DIR/ank.procs"
+    local ROOTFS="$CONTAINER_DIR/merged"
+    local CONFIG="$CONTAINER_DIR/config.json"
+    local SSH_PORT=$(grep -o '"ssh_port":[^,]*' "$CONFIG" 2>/dev/null | cut -d: -f2 | tr -d ' ')
     local KILL_COUNT=0
 
-    # 1a: Kill by PID file (tracked in CONTAINER_INIT)
-    if [ -f "$ROOTFS/run/ank.procs" ]; then
-        while read -r cpid; do
-            [ -z "$cpid" ] && continue
-            kill -9 "$cpid" 2>/dev/null && KILL_COUNT=$((KILL_COUNT+1))
-        done < "$ROOTFS/run/ank.procs"
+    # Phase 1: Kill PIDs from ank.procs
+    if [ -f "$PROCS_FILE" ]; then
+        while IFS=: read -r pid app_name; do
+            [ -z "$pid" ] && continue
+            [ "$pid" = "# Autogenerated Ank Procs - DO NOT EDIT" ] && continue
+            kill -9 "$pid" 2>/dev/null && KILL_COUNT=$((KILL_COUNT+1))
+        done < "$PROCS_FILE"
+        echo "  Killed $KILL_COUNT processes from ank.procs"
     fi
 
-    # 1b: Kill sshd by PID file
-    if [ -f "$ROOTFS/run/sshd.pid" ]; then
-        local sshd_pid=$(cat "$ROOTFS/run/sshd.pid" 2>/dev/null)
-        [ -n "$sshd_pid" ] && kill -9 "$sshd_pid" 2>/dev/null && KILL_COUNT=$((KILL_COUNT+1))
-    fi
-
-    # 1c: Kill main PID tree
-    if [ -n "$PID" ] && [ "$PID" != "null" ]; then
-        echo "  Stopping main process (PID: $PID)..."
-        local CHILDREN=""
-        for child in $(ps -o pid= --ppid "$PID" 2>/dev/null); do
-            CHILDREN="$CHILDREN $child"
-            for gc in $(ps -o pid= --ppid "$child" 2>/dev/null); do
-                CHILDREN="$CHILDREN $gc"
-            done
-        done
-        for cpid in $CHILDREN; do
-            kill -9 "$cpid" 2>/dev/null && KILL_COUNT=$((KILL_COUNT+1))
-        done
-        kill -9 "$PID" 2>/dev/null && KILL_COUNT=$((KILL_COUNT+1))
-    fi
-
-    # 1d: Kill by cgroup if available
+    # Phase 2: Kill by cgroup
     if [ -d "/sys/fs/cgroup/ank/$NAME" ]; then
         while read -r cpid; do
+            [ -z "$cpid" ] && continue
             kill -9 "$cpid" 2>/dev/null && KILL_COUNT=$((KILL_COUNT+1))
         done < "/sys/fs/cgroup/ank/$NAME/cgroup.procs" 2>/dev/null
     fi
 
-    # 1e: Kill any sshd on this container's port
-    pkill -9 -f "sshd.*-p.*${SSH_PORT}" 2>/dev/null && KILL_COUNT=$((KILL_COUNT+1))
-
-    # 1f: Kill any nginx/apache/php/node/python with this container's rootfs
-    pkill -9 -f "nginx.*-c.*/tmp/nginx" 2>/dev/null
-    pkill -9 -f "httpd.*-C.*Listen" 2>/dev/null
-    pkill -9 -f "php82.*-S" 2>/dev/null
-
-    # 1g: Final sweep — /proc scan for ANY process in this container's rootfs
-    for pid_dir in /proc/[0-9]*; do
-        local pid=$(basename "$pid_dir" 2>/dev/null)
-        [ -z "$pid" ] && continue
-        local root_link=$(readlink "$pid_dir/root" 2>/dev/null)
-        local exe=$(readlink "$pid_dir/exe" 2>/dev/null)
-        local cwd=$(readlink "$pid_dir/cwd" 2>/dev/null)
-        local hit=false
-        [ "$root_link" = "$ROOTFS" ] && hit=true
-        case "$exe" in ${ROOTFS}/*) hit=true ;; esac
-        case "$cwd" in ${ROOTFS}/*) hit=true ;; esac
-        if [ "$hit" = true ]; then
-            kill -9 "$pid" 2>/dev/null && KILL_COUNT=$((KILL_COUNT+1))
-        fi
-    done
-
-    # Wait and re-scan for orphans
-    sleep 1
-    for pid_dir in /proc/[0-9]*; do
-        local pid=$(basename "$pid_dir" 2>/dev/null)
-        [ -z "$pid" ] && continue
-        local root_link=$(readlink "$pid_dir/root" 2>/dev/null)
-        local exe=$(readlink "$pid_dir/exe" 2>/dev/null)
-        local cwd=$(readlink "$pid_dir/cwd" 2>/dev/null)
-        local hit=false
-        [ "$root_link" = "$ROOTFS" ] && hit=true
-        case "$exe" in ${ROOTFS}/*) hit=true ;; esac
-        case "$cwd" in ${ROOTFS}/*) hit=true ;; esac
-        if [ "$hit" = true ]; then
-            kill -9 "$pid" 2>/dev/null && KILL_COUNT=$((KILL_COUNT+1))
-        fi
-    done
-
-    # Clean PID files
-    rm -f "$ROOTFS/run/ank.procs" "$ROOTFS/run/sshd.pid" 2>/dev/null
-
-    echo "  All processes stopped (killed: $KILL_COUNT)"
-
-    # === Phase 2: Unmount ALL chroot mounts ===
-    if [ "$MODE" != "lite" ]; then
-        echo "  Unmounting filesystems..."
-        umount "$ROOTFS/dev/pts" 2>/dev/null
-        umount "$ROOTFS/dev/shm" 2>/dev/null
-        umount "$ROOTFS/dev" 2>/dev/null
-        umount "$ROOTFS/proc" 2>/dev/null
-        umount "$ROOTFS/sys" 2>/dev/null
-        umount -l "$ROOTFS/dev/pts" 2>/dev/null
-        umount -l "$ROOTFS/dev" 2>/dev/null
-        umount -l "$ROOTFS/proc" 2>/dev/null
-        umount -l "$ROOTFS/sys" 2>/dev/null
-        umount -l "$ROOTFS" 2>/dev/null
-        echo "  Filesystems unmounted"
+    # Phase 3: Kill by sshd port pattern
+    if [ -n "$SSH_PORT" ]; then
+        pkill -9 -f "sshd.*-p.*${SSH_PORT}" 2>/dev/null
     fi
 
-    # === Phase 3: Remove port forwarding ===
-    if [ -n "$SSH_PORT" ] && [ "$SSH_PORT" != "null" ] && [ "$IP" != "none" ] && [ -n "$IP" ]; then
-        local MODE=$(get_mode)
+    # Phase 4: Final sweep - scan /proc for ANY remaining process in this container's rootfs
+    for pid_dir in /proc/[0-9]*; do
+        local pid=$(basename "$pid_dir" 2>/dev/null)
+        [ -z "$pid" ] && continue
+        local root=$(readlink "$pid_dir/root" 2>/dev/null)
+        local exe=$(readlink "$pid_dir/exe" 2>/dev/null)
+        case "$root" in ${ROOTFS}|${ROOTFS}/) kill -9 "$pid" 2>/dev/null && KILL_COUNT=$((KILL_COUNT+1)) ;; esac
+        case "$exe" in ${ROOTFS}/*) kill -9 "$pid" 2>/dev/null && KILL_COUNT=$((KILL_COUNT+1)) ;; esac
+    done
+
+    echo "  Total killed: $KILL_COUNT processes"
+}
+
+# ============================================================
+# Unmount ALL container mounts
+# ============================================================
+_unmount_container() {
+    local NAME="$1"
+    local CONTAINER_DIR="$CONTAINERS_DIR/$NAME"
+    local ROOTFS="$CONTAINER_DIR/merged"
+
+    echo "  Unmounting filesystems..."
+    umount "$ROOTFS/dev/pts" 2>/dev/null
+    umount "$ROOTFS/dev/shm" 2>/dev/null
+    umount "$ROOTFS/dev" 2>/dev/null
+    umount "$ROOTFS/proc" 2>/dev/null
+    umount "$ROOTFS/sys" 2>/dev/null
+    # Lazy unmount if still busy
+    umount -l "$ROOTFS/dev/pts" 2>/dev/null
+    umount -l "$ROOTFS/dev/shm" 2>/dev/null
+    umount -l "$ROOTFS/dev" 2>/dev/null
+    umount -l "$ROOTFS/proc" 2>/dev/null
+    umount -l "$ROOTFS/sys" 2>/dev/null
+    umount -l "$ROOTFS" 2>/dev/null
+    echo "  Filesystems unmounted"
+}
+
+# ============================================================
+# Remove ALL iptables rules for container
+# ============================================================
+_remove_container_rules() {
+    local NAME="$1"
+    local CONTAINER_DIR="$CONTAINERS_DIR/$NAME"
+    local CONFIG="$CONTAINER_DIR/config.json"
+    local SSH_PORT=$(grep -o '"ssh_port":[^,]*' "$CONFIG" 2>/dev/null | cut -d: -f2 | tr -d ' ')
+    local IP=$(grep -o '"ip_address":[^,]*' "$CONFIG" 2>/dev/null | cut -d'"' -f4)
+    local IMAGE=$(grep -o '"image":"[^"]*"' "$CONFIG" 2>/dev/null | cut -d'"' -f4)
+    local MODE=$(get_mode)
+
+    # SSH port forwarding
+    if [ -n "$SSH_PORT" ] && [ "$SSH_PORT" != "null" ] && [ -n "$IP" ] && [ "$IP" != "none" ]; then
         if [ "$MODE" = "isolated" ]; then
-            remove_ssh_forward "$IP" "$SSH_PORT"
+            remove_ssh_forward "$IP" "$SSH_PORT" 2>/dev/null
         fi
+        iptables -t nat -D PREROUTING -p tcp --dport "$SSH_PORT" -j REDIRECT --to-port 22 2>/dev/null
+        iptables -t nat -D PREROUTING -p tcp --dport "$SSH_PORT" -j DNAT --to-destination "${IP}:22" 2>/dev/null
+        iptables -D FORWARD -p tcp -d "$IP" --dport 22 -j ACCEPT 2>/dev/null
     fi
 
-    # Remove service port forwarding
-    local IMAGE=$(grep -o '"image":"[^"]*"' "$CONFIG" | cut -d'"' -f4)
+    # Service port forwarding
     local SVC_PORT=""
     case "$IMAGE" in
         nginx*) SVC_PORT="80" ;;
-        apache*) SVC_PORT="9090" ;;
-        php*) SVC_PORT="8000" ;;
+        apache*|php*) SVC_PORT="80" ;;
         node*) SVC_PORT="3000" ;;
         python*) SVC_PORT="5000" ;;
     esac
-    if [ -n "$SVC_PORT" ] && [ "$IP" != "none" ] && [ -n "$IP" ]; then
-        local MODE=$(get_mode)
+    if [ -n "$SVC_PORT" ] && [ -n "$IP" ] && [ "$IP" != "none" ]; then
         if [ "$MODE" = "isolated" ]; then
             iptables -t nat -D PREROUTING -p tcp --dport "$SVC_PORT" -j DNAT --to-destination "${IP}:${SVC_PORT}" 2>/dev/null
             iptables -D FORWARD -p tcp -d "$IP" --dport "$SVC_PORT" -j ACCEPT 2>/dev/null
         fi
     fi
 
-    sed -i "s/\"status\": \"[^\"]*\"/\"status\": \"stopped\"/" "$CONFIG"
-    sed -i "s/\"pid\": [^,]*/\"pid\": null/" "$CONFIG"
-
-    echo "Container '$NAME' stopped"
-    return 0
+    # Custom port mappings
+    if [ "$MODE" = "isolated" ]; then
+        sh "$SCRIPTS_DIR/network.sh" remove_ports "$NAME" 2>/dev/null
+    fi
 }
 
 # ============================================================
@@ -1048,60 +1045,13 @@ cmd_delete() {
     echo "Deleting container: $NAME"
 
     # Kill ANY stray processes (should be stopped, but just in case)
-    local ROOTFS="$CONTAINER_DIR/merged"
-    for pid_dir in /proc/[0-9]*; do
-        local pid=$(basename "$pid_dir")
-        local exe=$(readlink "$pid_dir/exe" 2>/dev/null)
-        local cwd=$(readlink "$pid_dir/cwd" 2>/dev/null)
-        case "$exe" in ${ROOTFS}/*) kill -9 "$pid" 2>/dev/null ;; esac
-        case "$cwd" in ${ROOTFS}/*) kill -9 "$pid" 2>/dev/null ;; esac
-    done
-    local SSH_PORT=$(grep -o '"ssh_port":[^,]*' "$CONFIG" 2>/dev/null | cut -d: -f2 | tr -d ' ')
-    [ -n "$SSH_PORT" ] && pkill -9 -f "sshd.*-p.*${SSH_PORT}" 2>/dev/null
+    _kill_container_procs "$NAME"
 
     # Unmount everything
-    umount "$ROOTFS/dev/pts" 2>/dev/null
-    umount "$ROOTFS/dev/shm" 2>/dev/null
-    umount "$ROOTFS/dev" 2>/dev/null
-    umount "$ROOTFS/proc" 2>/dev/null
-    umount "$ROOTFS/sys" 2>/dev/null
-    umount "$ROOTFS/run" 2>/dev/null
-    umount "$ROOTFS/tmp" 2>/dev/null
-    umount -l "$ROOTFS/dev/pts" 2>/dev/null
-    umount -l "$ROOTFS/dev" 2>/dev/null
-    umount -l "$ROOTFS/proc" 2>/dev/null
-    umount -l "$ROOTFS/sys" 2>/dev/null
-    umount "$CONTAINER_DIR/merged" 2>/dev/null
-    umount -l "$CONTAINER_DIR/merged" 2>/dev/null
+    _unmount_container "$NAME"
 
-    # Clean iptables
-    local IP=$(grep -o '"ip_address":[^,]*' "$CONFIG" 2>/dev/null | cut -d'"' -f4)
-    if [ -n "$SSH_PORT" ] && [ "$SSH_PORT" != "null" ] && [ -n "$IP" ] && [ "$IP" != "none" ]; then
-        local MODE=$(get_mode)
-        if [ "$MODE" = "isolated" ]; then
-            remove_ssh_forward "$IP" "$SSH_PORT" 2>/dev/null
-        fi
-        iptables -t nat -D PREROUTING -p tcp --dport "$SSH_PORT" -j REDIRECT --to-port 22 2>/dev/null
-        iptables -t nat -D PREROUTING -p tcp --dport "$SSH_PORT" -j DNAT --to-destination "${IP}:22" 2>/dev/null
-        iptables -D FORWARD -p tcp -d "$IP" --dport 22 -j ACCEPT 2>/dev/null
-    fi
-
-    local IMAGE=$(grep -o '"image":"[^"]*"' "$CONFIG" 2>/dev/null | cut -d'"' -f4)
-    local SVC_PORT=""
-    case "$IMAGE" in
-        nginx*) SVC_PORT="8080" ;;
-        apache*) SVC_PORT="9090" ;;
-        php*) SVC_PORT="8000" ;;
-        node*) SVC_PORT="3000" ;;
-        python*) SVC_PORT="5000" ;;
-    esac
-    if [ -n "$SVC_PORT" ] && [ -n "$IP" ] && [ "$IP" != "none" ]; then
-        local MODE=$(get_mode)
-        if [ "$MODE" = "isolated" ]; then
-            iptables -t nat -D PREROUTING -p tcp --dport "$SVC_PORT" -j DNAT --to-destination "${IP}:${SVC_PORT}" 2>/dev/null
-            iptables -D FORWARD -p tcp -d "$IP" --dport "$SVC_PORT" -j ACCEPT 2>/dev/null
-        fi
-    fi
+    # Remove iptables rules
+    _remove_container_rules "$NAME"
 
     # Destroy network
     local MODE=$(get_mode)
