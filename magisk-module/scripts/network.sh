@@ -268,6 +268,26 @@ cmd_apply_ports() {
 }
 
 # ============================================================
+# Remove port forwarding rules for container
+# ============================================================
+cmd_remove_ports() {
+    local NAME="$1"
+    local CONFIG="$ANK_DIR/containers/$NAME/config.json"
+    [ -f "$CONFIG" ] || return 1
+
+    local IP=$(grep -o '"ip_address": *"[^"]*"' "$CONFIG" | cut -d'"' -f4)
+    [ -z "$IP" ] || [ "$IP" = "none" ] && return 0
+
+    # Remove all iptables rules matching this container IP
+    iptables -t nat -S 2>/dev/null | grep "$IP" | sed 's/-A/-D/g' | while read rule; do
+        iptables -t nat $rule 2>/dev/null
+    done
+    iptables -S 2>/dev/null | grep "$IP" | sed 's/-A/-D/g' | while read rule; do
+        iptables $rule 2>/dev/null
+    done
+}
+
+# ============================================================
 # COMPAT MODE policies (simplified iptables)
 # ============================================================
 
@@ -379,6 +399,7 @@ case "$CMD" in
     apply_policies_compat) cmd_apply_policies_compat "$NAME" ;;
     apply_ports)         cmd_apply_ports "$NAME" ;;
     apply_ports_compat)  cmd_apply_ports_compat "$NAME" ;;
+    remove_ports)        cmd_remove_ports "$NAME" ;;
     destroy)             cmd_destroy "$NAME" ;;
     destroy_compat)      cmd_destroy_compat "$NAME" ;;
     cleanup)             cmd_cleanup ;;
@@ -386,7 +407,7 @@ case "$CMD" in
     setup_bridge_compat) setup_bridge_compat ;;
     info)                cmd_info ;;
     *)
-        echo "Usage: $0 {create|create_compat|apply_policies|apply_ports|destroy|cleanup|info} <name>"
+        echo "Usage: $0 {create|create_compat|apply_policies|apply_ports|remove_ports|destroy|cleanup|info} <name>"
         exit 1
         ;;
 esac
