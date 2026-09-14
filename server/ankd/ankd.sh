@@ -549,9 +549,13 @@ RESTART_POLICY=$svc_restart
 RESTART_DELAY=3
 ANK_EOF
     
+    # Generate script immediately so user can start without daemon-reload
+    local new_uuid=$(_ankd_uuid)
+    _ankd_generate_service "$new_uuid" "$svc_name" > /dev/null 2>&1
+
     echo ""
     echo "Created $ank_file"
-    echo "Run 'ankctl daemon-reload' to activate."
+    echo "Run 'ankctl start $svc_name' to start."
 }
 
 # ============================================================
@@ -602,24 +606,10 @@ cmd_daemon_reload() {
         done
         
         if [ $exists -eq 0 ]; then
-            # Generate new script
-            local uuid=$(cat /dev/urandom 2>/dev/null | head -c 3 | od -An -tx1 | tr -d ' \n' | head -c 6)
-            [ -z "$uuid" ] && uuid=$(printf "%06x" $((RANDOM % 16777216)))
-            
-            # Parse and generate
-            local cmd="" dir="/"
-            while IFS= read -r line; do
-                case "$line" in \#*|"") continue ;; esac
-                local key=$(echo "$line" | cut -d'=' -f1 | tr -d ' ')
-                local val=$(echo "$line" | cut -d'=' -f2- | sed 's/^ *//;s/ *$//')
-                val=$(echo "$val" | sed 's/^"//;s/"$//' | sed "s/^'//;s/'$//")
-                case "$key" in
-                    CMD) cmd="$val" ;;
-                    DIR) dir="$val" ;;
-                esac
-            done < "$svc_file"
-            
-            [ -n "$cmd" ] && _ankd_generate_service "$uuid" "$name" > /dev/null 2>&1
+            local uuid=$(_ankd_uuid)
+            _ankd_reset_vars
+            _ankd_parse_ank "$svc_file"
+            [ -n "$ANK_CMD" ] && _ankd_generate_service "$uuid" "$name" > /dev/null 2>&1
             count=$((count + 1))
         fi
     done
