@@ -589,3 +589,6 @@ html[data-theme="light"] .icon-toggle .bi-moon-stars { display: inline; }
     .stats-grid { grid-template-columns: 1fr 1fr; }
     .detail-stats { grid-template-columns: repeat(2, 1fr); }
 }
+
+@keyframes restart-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+.restart-spin { display: inline-block; animation: restart-spin 1s linear infinite; }

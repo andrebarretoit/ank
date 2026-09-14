@@ -176,6 +176,7 @@ _ankd_parse_ank() {
             TYPE)           ANK_TYPE="$val" ;;
             DEPENDS)        ANK_DEPENDS="$val" ;;
             LOG_FILE)       ANK_LOG_FILE="$val" ;;
+            PORT)           ANK_PORT="$val" ;;
         esac
     done < "$file"
 }
@@ -193,6 +194,7 @@ _ankd_reset_vars() {
     ANK_TYPE="daemon"
     ANK_DEPENDS=""
     ANK_LOG_FILE=""
+    ANK_PORT=""
 }
 
 # ============================================================
@@ -830,6 +832,19 @@ _ankd_daemon() {
     echo ""
     echo "  Container ready."
     echo "  ========================"
+
+    # Show service ports
+    local _svc_ports=""
+    for svc_file in "$ANKD_SERVICES"/*.ankd; do
+        [ -f "$svc_file" ] || continue
+        local _p=$(grep "^PORT=" "$svc_file" 2>/dev/null | cut -d= -f2)
+        [ -z "$_p" ] && continue
+        local _n=$(basename "$svc_file" .ankd | sed 's/^[0-9]*-//')
+        [ "$_n" = "sshd" ] && continue
+        _svc_ports="${_svc_ports:+$_svc_ports, }${_n}=${_p}"
+    done
+    [ -n "$_svc_ports" ] && _ankd_boot "INFO" "Service port(s): $_svc_ports"
+
     _ankd_boot "INFO" "ankd running. Waiting for services..."
     
     # Wait for all children — check services by tag

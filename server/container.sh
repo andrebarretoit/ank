@@ -392,6 +392,7 @@ SSHD_EOF
 NAME=$SVC_NAME
 CMD=$SVC_CMD
 DIR=$SVC_DIR
+PORT=$SVC_PORT
 PID_FILE=/run/${SVC_NAME}.pid
 STOP_SIGNAL=TERM
 RESTART_POLICY=always
@@ -724,13 +725,18 @@ cmd_start() {
 
     echo "Starting container: $NAME (mode: $MODE, port: $SSH_PORT)"
 
-    # Ensure nginx runs in foreground (daemon off) — inject at start time
-    # for both new and existing containers
+    # Ensure services are properly configured at start time
     case "${TEMPLATE_ID:-$IMAGE}" in
         nginx*)
             if [ -f "$ROOTFS/etc/nginx/nginx.conf" ]; then
                 grep -q "^daemon off" "$ROOTFS/etc/nginx/nginx.conf" 2>/dev/null || \
                     sed -i '1i daemon off;' "$ROOTFS/etc/nginx/nginx.conf" 2>/dev/null
+            fi
+            ;;
+        apache*)
+            if [ -f "$ROOTFS/etc/apache2/httpd.conf" ]; then
+                grep -q "^Listen 9090" "$ROOTFS/etc/apache2/httpd.conf" 2>/dev/null || \
+                    sed -i 's/^Listen 80/Listen 9090/' "$ROOTFS/etc/apache2/httpd.conf" 2>/dev/null
             fi
             ;;
     esac
@@ -945,12 +951,13 @@ cmd_start() {
         # In shared_host/shared_network/lite modes, sshd listens directly on SSH_PORT
     fi
 
-    # Setup service port forwarding (nginx=80, apache/php=80, node=3000, python=5000)
+    # Setup service port forwarding
     local SVC_PORT=""
     local IMAGE=$(grep -o '"image":"[^"]*"' "$CONFIG" | cut -d'"' -f4)
     case "$IMAGE" in
-        nginx*) SVC_PORT="80" ;;
-        apache*|php*) SVC_PORT="80" ;;
+        nginx*) SVC_PORT="8080" ;;
+        apache*) SVC_PORT="9090" ;;
+        php*) SVC_PORT="8000" ;;
         node*) SVC_PORT="3000" ;;
         python*) SVC_PORT="5000" ;;
     esac
@@ -1020,13 +1027,17 @@ cmd_stop() {
     local KILL_COUNT=0
 
     # ============================================================
-    # PHASE 0: Kill ankd daemon FIRST to stop restart loop
+    # PHASE 0: Kill ankd daemon + container init to stop restart loop
+    #          and all child processes in one shot via process group
     # ============================================================
     echo "  Stopping ankd daemon..."
     if [ -n "$PID" ] && [ "$PID" != "null" ]; then
+        kill -9 -- "-$PID" 2>/dev/null
         kill -9 "$PID" 2>/dev/null
-        echo "    ankd daemon killed"
+        echo "    ankd daemon killed (PGID $PID)"
     fi
+    # Brief wait for restart loop to notice daemon death
+    sleep 1
 
     # ============================================================
     # PHASE 1: Kill all services by PGID, read straight from the pgid
@@ -1069,11 +1080,14 @@ cmd_stop() {
         local p=$(basename "$pid_dir" 2>/dev/null)
         [ -z "$p" ] && continue
         [ "$p" = "1" ] && continue
+        [ ! -d "$pid_dir" ] && continue
         local root=$(readlink "$pid_dir/root" 2>/dev/null)
         local exe=$(readlink "$pid_dir/exe" 2>/dev/null)
+        local cwd=$(readlink "$pid_dir/cwd" 2>/dev/null)
         local belongs=0
         case "$root" in ${ROOTFS}|${ROOTFS}/) belongs=1 ;; esac
         case "$exe" in ${ROOTFS}/*) belongs=1 ;; esac
+        case "$cwd" in ${ROOTFS}/*) belongs=1 ;; esac
         [ "$belongs" -eq 1 ] && {
             kill -9 "$p" 2>/dev/null && SWEEP_COUNT=$((SWEEP_COUNT+1))
         }
@@ -1086,11 +1100,12 @@ cmd_stop() {
             local p=$(basename "$pid_dir" 2>/dev/null)
             [ -z "$p" ] && continue
             [ "$p" = "1" ] && continue
+            [ ! -d "$pid_dir" ] && continue
             local their_mnt=$(readlink "$pid_dir/ns/mnt" 2>/dev/null)
             [ "$their_mnt" = "$MY_MNT" ] && continue
             local exe=$(readlink "$pid_dir/exe" 2>/dev/null)
             case "$exe" in
-                */sshd|*/nginx|*/busybox*)
+                */sshd|*/httpd|*/nginx|*/php*|*/node|*/python*)
                     kill -9 "$p" 2>/dev/null && SWEEP_COUNT=$((SWEEP_COUNT+1))
                     ;;
             esac

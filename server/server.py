@@ -452,7 +452,7 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         pass
 
-HTTPServer(('0.0.0.0', 8000), Handler).serve_forever()"""
+HTTPServer(('0.0.0.0', 5000), Handler).serve_forever()"""
 
 # ============================================================
 # S6 service definitions for templates
@@ -1177,6 +1177,8 @@ small{color:#334155}
     def route_get(self, path, parsed):
         if path == "/api/status":
             self.api_status()
+        elif path == "/api/health":
+            self.send_json({"status": "ok"})
         elif path == "/api/protocol":
             proto = "http"
             try:
@@ -2617,6 +2619,7 @@ small{color:#334155}
                 elif template_id == "apache":
                     static_dir = template["static_path"]
                     _chroot(f'mkdir -p {static_dir}')
+                    _chroot(f'sed -i "s/^Listen 80/Listen 9090/" /etc/apache2/httpd.conf 2>/dev/null')
                     _write_file(os.path.join(merged, static_dir.lstrip('/'), 'index.html'), ANK_APACHE_HTML)
                     _write_ank_config(merged, 'apache', 9090, static_dir, "true" if _s6_enabled else "false")
 
@@ -2830,7 +2833,7 @@ small{color:#334155}
                     svc_ankd = os.path.join(svc_dir, "02-app.ankd")
                     if not os.path.exists(svc_ankd):
                         with open(svc_ankd, "w") as f:
-                            f.write(f"NAME=app\nCMD={cmd_line}\nDIR={workdir}\nPID_FILE=/run/app.pid\nSTOP_SIGNAL=TERM\nRESTART_POLICY=always\nRESTART_DELAY=3\n")
+                            f.write(f"NAME=app\nCMD={cmd_line}\nDIR={workdir}\nPORT={app_port}\nPID_FILE=/run/app.pid\nSTOP_SIGNAL=TERM\nRESTART_POLICY=always\nRESTART_DELAY=3\n")
                         log(f"Generated .ankd: {svc_ankd}")
                         with open(log_path, "a") as lf:
                             lf.write(f"Generated .ankd: app -> {cmd_line} (dir: {workdir})\n")
@@ -3828,8 +3831,8 @@ small{color:#334155}
                 f.write(f"NAME=sshd\nCMD=/usr/sbin/sshd -D -p {ssh_port} -o PasswordAuthentication=yes -o PermitRootLogin=yes -e\nDIR=/\nPID_FILE=/run/sshd.pid\nSTOP_SIGNAL=TERM\nRESTART_POLICY=always\nRESTART_DELAY=3\n")
         # Create service-specific .ankd based on template
         svc_map = {
-            "nginx": ("nginx", "nginx", "/var/www/html", "80"),
-            "apache": ("apache", "httpd -D FOREGROUND", "/var/www/localhost/htdocs", "80"),
+            "nginx": ("nginx", "nginx", "/var/www/html", "8080"),
+            "apache": ("apache", "httpd -D FOREGROUND", "/var/www/localhost/htdocs", "9090"),
             "php": ("php", "php82 -S 0.0.0.0:8000 -t /var/www/php", "/var/www/php", "8000"),
             "node": ("node", "node server.js", "/var/www/app", "3000"),
             "python": ("python", "python3 server.py", "/var/www/app", "5000"),
@@ -3839,7 +3842,7 @@ small{color:#334155}
                 svc_ankd = os.path.join(services_dir, f"02-{svc_name}.ankd")
                 if not os.path.exists(svc_ankd):
                     with open(svc_ankd, "w") as f:
-                        f.write(f"NAME={svc_name}\nCMD={cmd}\nDIR={svc_dir}\nPID_FILE=/run/{svc_name}.pid\nSTOP_SIGNAL=TERM\nRESTART_POLICY=always\nRESTART_DELAY=3\n")
+                        f.write(f"NAME={svc_name}\nCMD={cmd}\nDIR={svc_dir}\nPORT={port}\nPID_FILE=/run/{svc_name}.pid\nSTOP_SIGNAL=TERM\nRESTART_POLICY=always\nRESTART_DELAY=3\n")
                 # Inject daemon off for nginx
                 if key == "nginx":
                     nginx_conf = os.path.join(rootfs, "etc/nginx/nginx.conf")

@@ -1339,11 +1339,66 @@ document.getElementById('restart-server-btn')?.addEventListener('click', async (
     const ok = await confirmAction('Restart Server', 'This will stop all containers and restart the ANK server. Continue?');
     if (!ok) return;
     try {
-        toast('Restarting server...', 'warning');
         await api('POST', '/system/restart-server');
-        document.body.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100vh;background:#0f172a;color:#e2e8f0;font-family:sans-serif;text-align:center"><div><h1 style="font-size:32px;margin-bottom:16px">Server Restarting...</h1><p style="color:#94a3b8">The ANK server is restarting. This page will reload shortly.</p></div></div>';
-        setTimeout(() => location.reload(), 5000);
-    } catch (e) { toast(`Failed: ${e.message}`, 'error'); }
+    } catch (e) { /* server dies before responding, that's expected */ }
+
+    // Show progress overlay
+    const overlay = document.createElement('div');
+    overlay.id = 'restart-overlay';
+    overlay.style.cssText = 'position:fixed;inset:0;z-index:99999;background:#0f172a;color:#e2e8f0;display:flex;align-items:center;justify-content:center;font-family:system-ui,sans-serif';
+    const steps = [
+        'Stopping running containers...',
+        'Restarting ANK server...',
+        'Waiting for server to come back...',
+        'Done! Redirecting to login...'
+    ];
+    let currentStep = 0;
+    overlay.innerHTML = `<div style="max-width:420px;width:90%;text-align:center">
+        <h2 style="font-size:24px;margin:0 0 24px">Restarting Server</h2>
+        <div id="restart-steps" style="text-align:left"></div>
+        <div style="margin-top:24px;height:4px;background:#1e293b;border-radius:2px;overflow:hidden">
+            <div id="restart-bar" style="height:100%;width:0%;background:linear-gradient(90deg,#009639,#22c55e);transition:width 0.5s ease"></div>
+        </div>
+    </div>`;
+    document.body.appendChild(overlay);
+
+    const stepsEl = overlay.querySelector('#restart-steps');
+    const bar = overlay.querySelector('#restart-bar');
+
+    function showStep(i) {
+        if (i >= steps.length) return;
+        currentStep = i;
+        stepsEl.innerHTML = steps.map((s, idx) => {
+            const color = idx < i ? '#22c55e' : idx === i ? '#fbbf24' : '#475569';
+            const icon = idx < i ? '&#10003;' : idx === i ? '<span class="restart-spin">&#8987;</span>' : '&#9675;';
+            return `<div style="display:flex;align-items:center;gap:10px;padding:6px 0;color:${color};font-size:14px"><span style="width:20px;text-align:center">${icon}</span>${s}</div>`;
+        }).join('');
+        bar.style.width = `${((i + 1) / steps.length) * 100}%`;
+    }
+    showStep(0);
+
+    // Step 1: Wait a bit for containers to stop
+    await new Promise(r => setTimeout(r, 3000));
+    showStep(1);
+
+    // Step 2: Wait for server to die then come back
+    await new Promise(r => setTimeout(r, 2000));
+    showStep(2);
+
+    // Step 3: Poll until server responds
+    let tries = 0;
+    const maxTries = 60;
+    while (tries < maxTries) {
+        await new Promise(r => setTimeout(r, 2000));
+        tries++;
+        try {
+            const resp = await fetch('/api/health', { method: 'GET', signal: AbortSignal.timeout(3000) });
+            if (resp.ok) break;
+        } catch (_) {}
+    }
+    showStep(3);
+    await new Promise(r => setTimeout(r, 1000));
+    window.location.href = '/login';
 });
 
 document.getElementById('uninstall-btn')?.addEventListener('click', async () => {
