@@ -31,6 +31,21 @@ _port_lock = threading.Lock()
 _build_lock = threading.Lock()
 _building = False
 
+# --- Container status debouncing -------------------------------------------
+# check_container_running() is a single best-effort snapshot; any one of its
+# signals (cgroup, marker file, pid) can independently glitch for a tick on
+# Android (SELinux, overlayfs mount timing, a service respawn) without the
+# container actually having died. To satisfy "status never flips to stopped
+# while the container is alive", the poller only trusts should_mark_stopped(),
+# which requires several *consecutive* failed snapshots (spread over multiple
+# 15s poll cycles) and ignores everything during a short grace window right
+# after a container reports "running".
+_status_lock = threading.Lock()
+_status_fail_counts = {}     # name -> consecutive failed-check count
+_status_grace_until = {}     # name -> monotonic() time before which checks are skipped
+STATUS_FAIL_THRESHOLD = 3    # consecutive failures required before flipping to stopped
+STATUS_GRACE_SECONDS = 12    # skip checks for this long right after a start
+
 ANK_DIR = os.environ.get("ANK_DIR", "/data/local/ank")
 ANK_SDCARD = "/sdcard/AndroidKonteiner"
 CONTAINERS_DIR = os.path.join(ANK_DIR, "containers")
@@ -329,24 +344,135 @@ def get_container_stats(name):
         pass
     return {"memory_bytes": mem, "memory_limit": lim, "cpu_usage": cpu, "pids": pids}
 
-def check_container_running(name):
+def _cgroup_has_live_pids(name):
+    """Primary liveness signal: is any PID still a member of the container's
+    cgroup ("/sys/fs/cgroup/ank/{name}/pids.current" > 0)?
+
+    This is the most robust of the three signals available to us:
+    - It's a plain read of a cgroupfs pseudo-file, which root always has
+      access to -- unlike /proc/*/cmdline (SELinux-blocked) or the marker
+      file (depends on overlayfs upperdir visibility).
+    - Every descendant process forked inside the container inherits cgroup
+      membership automatically (cgroup namespaces aren't used here), so it
+      keeps working even when the original tracked PID dies and ankd
+      respawns a service under a new PID -- the exact "PID issue" scenario
+      described for this bug.
+    Returns True/False, or None if the signal isn't available (cgroups
+    disabled for this mode, or the cgroup directory doesn't exist).
+    """
+    p = os.path.join("/sys/fs/cgroup/ank", name, "pids.current")
+    try:
+        with open(p) as f:
+            return int(f.read().strip()) > 0
+    except (OSError, ValueError):
+        return None
+
+
+def _marker_present(name):
+    """Secondary signal: host-written marker file under the container's
+    rootfs. Can go stale/invisible on overlayfs mount hiccups, so it's only
+    ever used to say "yes" -- never treated as authoritative for "no"."""
     marker = os.path.join(CONTAINERS_DIR, name, "merged", "tmp", "ankd-running")
     try:
-        if os.path.exists(marker):
+        return os.path.exists(marker)
+    except OSError:
+        return None
+
+
+def _pid_alive(pid):
+    """Tertiary signal: is the tracked PID alive? Checks /proc/<pid> first
+    (a plain stat, which survives SELinux restrictions that block reading
+    /proc/*/cmdline or /proc/*/status content), then falls back to
+    kill(pid, 0). A PermissionError from kill() still means the process
+    exists (we're just not allowed to signal it), so that counts as alive.
+    """
+    if not pid:
+        return None
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return None
+    try:
+        if os.path.isdir(f"/proc/{pid}"):
             return True
-    except Exception:
+    except OSError:
         pass
-    config = load_container_config(name)
-    if not config:
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
         return False
-    pid = config.get("pid")
-    if pid:
-        try:
-            os.kill(int(pid), 0)
-            return True
-        except (OSError, ProcessLookupError, ValueError):
-            pass
-    return False
+    except PermissionError:
+        return True
+    except OSError:
+        return None
+
+
+def check_container_running(name):
+    """Single best-effort snapshot combining all three signals. Any signal
+    that reports "alive" is trusted immediately (a container is running if
+    ANY evidence says so, since the signals fail independently for unrelated
+    environment reasons, not because the container died). Only reports False
+    when every signal that could actually be read said "no". If every signal
+    was unavailable, we can't tell -- assume still running rather than risk
+    a false "stopped" (requirement: never flip to stopped incorrectly).
+
+    NOTE: this is a single point-in-time check and can glitch. Callers that
+    decide whether to change a container's stored status (the /containers
+    poller, the terminal auth check) must go through should_mark_stopped()
+    instead, which debounces this across multiple polls.
+    """
+    config = load_container_config(name)
+    pid = config.get("pid") if config else None
+
+    cgroup_signal = _cgroup_has_live_pids(name)
+    if cgroup_signal:
+        return True
+    marker_signal = _marker_present(name)
+    if marker_signal:
+        return True
+    pid_signal = _pid_alive(pid)
+    if pid_signal:
+        return True
+
+    if any(signal_ is False for signal_ in (cgroup_signal, marker_signal, pid_signal)):
+        return False
+    return True
+
+
+def should_mark_stopped(name):
+    """Debounced decision used by anything that's about to persist a
+    "running" -> "stopped" transition. Requires STATUS_FAIL_THRESHOLD
+    consecutive failed check_container_running() snapshots, and never fires
+    during the STATUS_GRACE_SECONDS window right after a container was last
+    (re)started, so a single transient signal glitch can never flip status.
+    """
+    now = time.monotonic()
+    with _status_lock:
+        if now < _status_grace_until.get(name, 0):
+            return False
+        if check_container_running(name):
+            _status_fail_counts[name] = 0
+            return False
+        count = _status_fail_counts.get(name, 0) + 1
+        _status_fail_counts[name] = count
+        return count >= STATUS_FAIL_THRESHOLD
+
+
+def note_container_started(name):
+    """Reset debounce state and open a grace window. Call whenever a
+    container's status is set to "running"."""
+    with _status_lock:
+        _status_fail_counts[name] = 0
+        _status_grace_until[name] = time.monotonic() + STATUS_GRACE_SECONDS
+
+
+def note_container_stopped(name):
+    """Clear debounce state. Call whenever a container's status is set to
+    anything other than "running" (stopped, stopping, failed, building)."""
+    with _status_lock:
+        _status_fail_counts.pop(name, None)
+        _status_grace_until.pop(name, None)
 
 def get_mode():
     try:
@@ -1053,10 +1179,11 @@ small{color:#334155}
             if not config:
                 self._ws_send_error(404, f"Container '{container_name}' not found")
                 return
-            if config.get("status") == "running" and not check_container_running(container_name):
+            if config.get("status") == "running" and should_mark_stopped(container_name):
                 config["status"] = "stopped"
                 config["pid"] = None
                 save_container_config(container_name, config)
+                note_container_stopped(container_name)
             if config.get("status") != "running":
                 self._ws_send_error(400, f"Container '{container_name}' is not running (status: {config.get('status', 'unknown')})")
                 return
@@ -1503,10 +1630,11 @@ small{color:#334155}
                 except Exception:
                     continue
                 if config:
-                    if config.get("status") == "running" and not check_container_running(name):
+                    if config.get("status") == "running" and should_mark_stopped(name):
                         config["status"] = "stopped"
                         config["pid"] = None
                         save_container_config(name, config)
+                        note_container_stopped(name)
                     config["stats"] = get_container_stats(name)
                     containers.append(config)
         self.send_json(containers)
@@ -1637,10 +1765,17 @@ small{color:#334155}
                         log(f"ERROR: start {name}: {output}")
                         cfg["status"] = "stopped"
                         cfg["pid"] = None
+                        save_container_config(name, cfg)
+                        note_container_stopped(name)
                     else:
                         log(f"Container {name} started")
                         cfg["status"] = "running"
-                    save_container_config(name, cfg)
+                        save_container_config(name, cfg)
+                        # Open a grace window and reset the failure counter so
+                        # the very next poll (which can land within a second
+                        # or two of this) doesn't misread a not-yet-settled
+                        # marker/cgroup as "stopped".
+                        note_container_started(name)
             except Exception as e:
                 log(f"ERROR: start thread {name}: {e}")
                 cfg = load_container_config(name)
@@ -1648,6 +1783,7 @@ small{color:#334155}
                     cfg["status"] = "stopped"
                     cfg["pid"] = None
                     save_container_config(name, cfg)
+                    note_container_stopped(name)
         import threading
         threading.Thread(target=do_start, daemon=True).start()
         self.send_json({"message": f"Container '{name}' starting"})
@@ -1660,6 +1796,7 @@ small{color:#334155}
         # Write status BEFORE spawning thread
         config["status"] = "stopping"
         save_container_config(name, config)
+        note_container_stopped(name)
         def do_stop():
             try:
                 log_path = os.path.join(ANK_DIR, "logs", f"{name}.log")
@@ -1701,6 +1838,7 @@ small{color:#334155}
                     cfg["status"] = "stopped"
                     cfg["pid"] = None
                     save_container_config(name, cfg)
+                    note_container_stopped(name)
             except Exception as e:
                 log(f"ERROR: stop thread {name}: {e}")
                 cfg = load_container_config(name)
@@ -1708,6 +1846,7 @@ small{color:#334155}
                     cfg["status"] = "stopped"
                     cfg["pid"] = None
                     save_container_config(name, cfg)
+                    note_container_stopped(name)
         import threading
         threading.Thread(target=do_stop, daemon=True).start()
         self.send_json({"message": f"Container '{name}' stopping"})
@@ -1947,10 +2086,13 @@ small{color:#334155}
                         log(f"ERROR: restart {name}: {output}")
                         cfg3["status"] = "stopped"
                         cfg3["pid"] = None
+                        save_container_config(name, cfg3)
+                        note_container_stopped(name)
                     else:
                         log(f"Container {name} restarted")
                         cfg3["status"] = "running"
-                    save_container_config(name, cfg3)
+                        save_container_config(name, cfg3)
+                        note_container_started(name)
             except Exception as e:
                 log(f"ERROR: restart thread {name}: {e}")
                 cfg = load_container_config(name)
@@ -1958,6 +2100,7 @@ small{color:#334155}
                     cfg["status"] = "stopped"
                     cfg["pid"] = None
                     save_container_config(name, cfg)
+                    note_container_stopped(name)
         import threading
         threading.Thread(target=do_restart, daemon=True).start()
         self.send_json({"message": f"Container '{name}' restarting"})

@@ -964,8 +964,19 @@ cmd_start() {
         exit 1
     fi
 
-    # Move to cgroup
+    # Move to cgroup. The cgroup dir is only created once by `cmd_create`,
+    # but `cmd_stop` removes it again on every stop (PHASE 6), so on any
+    # start after the first one it won't exist yet -- recreate it here.
+    # This matters beyond resource limits: the server's status checker
+    # reads pids.current from this cgroup as its primary "is this container
+    # actually alive" signal (it's immune to overlayfs/SELinux visibility
+    # issues that the marker file and raw PID checks can hit), so keeping
+    # it populated across the container's whole lifecycle is required for
+    # that check to work reliably, not just at first creation.
     local CGROUP="/sys/fs/cgroup/ank/$NAME"
+    if [ ! -d "$CGROUP" ]; then
+        sh "$SCRIPTS_DIR/resources.sh" setup "$NAME" 268435456 50 2>/dev/null
+    fi
     if [ -d "$CGROUP" ]; then
         echo "$PID" > "$CGROUP/cgroup.procs" 2>/dev/null
     fi
