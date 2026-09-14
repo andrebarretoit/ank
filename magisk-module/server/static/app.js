@@ -1138,6 +1138,7 @@ document.getElementById('create-form').addEventListener('submit', async (e) => {
             } else {
                 toast(`Deploying template "${templateId}" as "${name}"...`, 'info');
                 await api('POST', '/images/deploy', { template: templateId, name, root_password: rootPass });
+                loadContainers();
                 pollContainerStatus(name, 0);
             }
             hideModal('create-modal');
@@ -1830,6 +1831,7 @@ document.getElementById('ankfile-build-btn')?.addEventListener('click', async ()
     try {
         toast(`Building from Ankfile as "${name}"...`, 'info');
         await api('POST', '/images/ankfile', { content, name });
+        loadContainers();
         pollContainerStatus(name, 0);
     } catch (e) { toast(`Failed: ${e.message}`, 'error'); }
 });
