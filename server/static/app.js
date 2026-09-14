@@ -639,7 +639,7 @@ async function startContainer(name) {
 }
 async function stopContainer(name) {
     setContainerLoading(name, 'stop');
-    try { await api('POST', `/containers/${name}/stop`); toast(`Container "${name}" stopped`, 'success'); clearContainerLoading(name); } catch (e) { toast(`Failed: ${e.message}`, 'error'); clearContainerLoading(name); }
+    try { await api('POST', `/containers/${name}/stop`); toast(`Stopping "${name}"...`, 'info'); } catch (e) { toast(`Failed: ${e.message}`, 'error'); clearContainerLoading(name); }
 }
 async function restartContainer(name) {
     setContainerLoading(name, 'restart');
@@ -1301,19 +1301,33 @@ document.getElementById('panel-settings-form').addEventListener('submit', async 
     const refresh = document.getElementById('setting-refresh').value;
     const autostart = document.getElementById('setting-autostart').checked;
     const nodeName = document.getElementById('setting-node-name')?.value?.trim() || '';
-    const enableRemote = document.getElementById('setting-remote-mgmt')?.checked ?? false;
-    const managerIp = document.getElementById('setting-manager-ip')?.value?.trim() || '';
     const defaultPass = document.getElementById('setting-default-pass')?.value?.trim() || '';
-    const sshEnabled = document.getElementById('setting-ssh-enabled')?.checked ?? false;
-    const sshPort = document.getElementById('setting-ssh-port')?.value || '2200';
     try {
-        await api('POST', '/config', { bind_address: bind, refresh_interval: parseInt(refresh), autostart_on_boot: autostart, node_name: nodeName, enable_remote_management: enableRemote, manager_ip: managerIp, default_container_password: defaultPass, ssh_enabled: sshEnabled, ssh_port: parseInt(sshPort) });
+        await api('POST', '/config', { bind_address: bind, refresh_interval: parseInt(refresh), autostart_on_boot: autostart, node_name: nodeName, default_container_password: defaultPass });
         refreshSeconds = parseInt(refresh);
         localStorage.setItem('ank_refresh', refresh);
         startRefreshTimer();
-        toast('Panel settings saved', 'success');
+        toast('Server settings saved', 'success');
     } catch (e) { toast(`Failed: ${e.message}`, 'error'); }
 });
+
+async function saveSSHSettings() {
+    const sshEnabled = document.getElementById('setting-ssh-enabled')?.checked ?? true;
+    const sshPort = document.getElementById('setting-ssh-port')?.value || '2200';
+    try {
+        await api('POST', '/config', { ssh_enabled: sshEnabled, ssh_port: parseInt(sshPort) });
+        toast('SSH settings saved', 'success');
+    } catch (e) { toast(`Failed: ${e.message}`, 'error'); }
+}
+
+async function saveRemoteSettings() {
+    const enableRemote = document.getElementById('setting-remote-mgmt')?.checked ?? false;
+    const managerIp = document.getElementById('setting-manager-ip')?.value?.trim() || '';
+    try {
+        await api('POST', '/config', { enable_remote_management: enableRemote, manager_ip: managerIp });
+        toast('Remote settings saved', 'success');
+    } catch (e) { toast(`Failed: ${e.message}`, 'error'); }
+}
 
 document.getElementById('restart-device-btn')?.addEventListener('click', async () => {
     const ok = await confirmAction('Restart Device', 'This will reboot the Android device. Keep USB connected. Continue?');
@@ -1367,19 +1381,16 @@ async function loadSettings() {
         if (managerIpEl) managerIpEl.value = cfg.manager_ip || '';
         const defaultPassEl = document.getElementById('setting-default-pass');
         if (defaultPassEl) defaultPassEl.value = cfg.default_container_password || '';
+        const sshEnabledEl = document.getElementById('setting-ssh-enabled');
+        if (sshEnabledEl) sshEnabledEl.checked = cfg.ssh_enabled !== false;
+        const sshPortEl = document.getElementById('setting-ssh-port');
+        if (sshPortEl) sshPortEl.value = cfg.ssh_port || 2200;
+        const sshUserEl = document.getElementById('setting-ssh-user');
+        if (sshUserEl) sshUserEl.value = cfg.username || '';
         const mipGroup = document.getElementById('manager-ip-group');
         if (mipGroup) mipGroup.style.display = remoteMgmtEl?.checked ? 'block' : 'none';
         if (remoteMgmtEl) remoteMgmtEl.addEventListener('change', () => {
             document.getElementById('manager-ip-group').style.display = remoteMgmtEl.checked ? 'block' : 'none';
-        });
-        const sshEnabledEl = document.getElementById('setting-ssh-enabled');
-        if (sshEnabledEl) sshEnabledEl.checked = cfg.ssh_enabled === true;
-        const sshPortEl = document.getElementById('setting-ssh-port');
-        if (sshPortEl) sshPortEl.value = cfg.ssh_port || 2200;
-        const sshPortGroup = document.getElementById('ssh-port-group');
-        if (sshPortGroup) sshPortGroup.style.display = sshEnabledEl?.checked ? 'block' : 'none';
-        if (sshEnabledEl) sshEnabledEl.addEventListener('change', () => {
-            document.getElementById('ssh-port-group').style.display = sshEnabledEl.checked ? 'block' : 'none';
         });
         const nodeName = cfg.node_name || '';
         document.getElementById('sidebar-title').textContent = nodeName ? `ANK - ${nodeName}` : 'ANK';

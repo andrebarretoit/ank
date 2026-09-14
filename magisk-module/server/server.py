@@ -198,6 +198,7 @@ def load_config():
     except (FileNotFoundError, json.JSONDecodeError):
         return {"version": "2.0.0", "panel_port": 8001, "username": "ank",
                 "password": "ank123", "first_boot": True,
+                "ssh_enabled": True, "ssh_port": 2200,
                 "default_container_password": "ank123",
                 "network": {"bridge": "ank0", "subnet": "10.20.30.0", "gateway": "10.20.30.1", "nat": True}}
 
@@ -1649,7 +1650,7 @@ small{color:#334155}
                 with open(log_path, "a") as lf:
                     lf.write(f"[boot] {ts} Stopping services...\n")
                     lf.flush()
-                output, code = run_script("container.sh", "stop", name)
+                output, code = run_script("container.sh", "stop", name, timeout=90)
                 # Write stop output to log
                 try:
                     ts2 = datetime.now().strftime("%H:%M:%S")
@@ -1660,24 +1661,37 @@ small{color:#334155}
                         lf.flush()
                 except Exception:
                     pass
+                # Verify container is actually dead before marking stopped
+                import time
+                for _ in range(10):
+                    cfg = load_container_config(name)
+                    if cfg:
+                        pid = cfg.get("pid")
+                        if pid:
+                            try:
+                                os.kill(pid, 0)
+                                time.sleep(1)
+                                continue
+                            except OSError:
+                                pass
+                    break
                 cfg = load_container_config(name)
                 if cfg:
-                    if code != 0:
+                    if code != 0 and "timed out" not in output:
                         log(f"ERROR: stop {name}: {output}")
-                    else:
-                        log(f"Container {name} stopped")
-                        cfg["status"] = "stopped"
+                    log(f"Container {name} stopped")
+                    cfg["status"] = "stopped"
+                    cfg["pid"] = None
                     save_container_config(name, cfg)
             except Exception as e:
                 log(f"ERROR: stop thread {name}: {e}")
                 cfg = load_container_config(name)
                 if cfg:
                     cfg["status"] = "stopped"
+                    cfg["pid"] = None
                     save_container_config(name, cfg)
         import threading
         threading.Thread(target=do_stop, daemon=True).start()
-        config["status"] = "stopping"
-        save_container_config(name, config)
         self.send_json({"message": f"Container '{name}' stopping"})
 
     def api_delete_container(self, name):

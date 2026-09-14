@@ -327,7 +327,7 @@ EXPOSE 8080</textarea>
                         </div>
                     </div>
                     <div class="card">
-                        <div class="card-header"><h3><i class="bi bi-hdd-network"></i> Panel</h3></div>
+                        <div class="card-header"><h3><i class="bi bi-hdd-network"></i> Server</h3></div>
                         <div class="card-body">
                             <form id="panel-settings-form">
                                 <div class="form-group">
@@ -335,22 +335,24 @@ EXPOSE 8080</textarea>
                                     <input type="text" id="setting-node-name" placeholder="e.g. ank-prod01" maxlength="30">
                                     <small style="color:var(--text-muted);font-size:11px;margin-top:4px;display:block">Identifies this server in the sidebar and on remote nodes</small>
                                 </div>
-                                <div class="form-group">
-                                    <label>Bind Address</label>
-                                    <select id="setting-bind">
-                                        <option value="0.0.0.0">0.0.0.0 (all interfaces)</option>
-                                        <option value="127.0.0.1">127.0.0.1 (localhost only)</option>
-                                    </select>
-                                </div>
-                                <div class="form-group">
-                                    <label>Auto-Refresh Interval</label>
-                                    <select id="setting-refresh">
-                                        <option value="5">5 seconds</option>
-                                        <option value="10" selected>10 seconds</option>
-                                        <option value="30">30 seconds</option>
-                                        <option value="60">60 seconds</option>
-                                        <option value="0">Disabled</option>
-                                    </select>
+                                <div class="form-row">
+                                    <div class="form-group">
+                                        <label>Bind Address</label>
+                                        <select id="setting-bind">
+                                            <option value="0.0.0.0">0.0.0.0 (all)</option>
+                                            <option value="127.0.0.1">127.0.0.1</option>
+                                        </select>
+                                    </div>
+                                    <div class="form-group">
+                                        <label>Auto-Refresh</label>
+                                        <select id="setting-refresh">
+                                            <option value="5">5s</option>
+                                            <option value="10" selected>10s</option>
+                                            <option value="30">30s</option>
+                                            <option value="60">60s</option>
+                                            <option value="0">Off</option>
+                                        </select>
+                                    </div>
                                 </div>
                                 <div class="form-group">
                                     <label class="checkbox-label" style="display:flex;align-items:center;gap:8px;cursor:pointer">
@@ -358,41 +360,58 @@ EXPOSE 8080</textarea>
                                         <i class="bi bi-power" style="color:var(--accent)"></i>
                                         Start server on device boot
                                     </label>
-                                    <small style="color:var(--text-muted);font-size:11px;margin-top:4px;display:block">Server starts automatically when device powers on (via Magisk service.sh + service.d fallback)</small>
-                                </div>
-                                <div class="form-group">
-                                    <label class="checkbox-label" style="display:flex;align-items:center;gap:8px;cursor:pointer">
-                                        <input type="checkbox" id="setting-remote-mgmt" style="width:18px;height:18px;accent-color:var(--accent)">
-                                        <i class="bi bi-diagram-3" style="color:var(--accent)"></i>
-                                        Enable Remote Management
-                                    </label>
-                                    <small style="color:var(--text-muted);font-size:11px;margin-top:4px;display:block">Allow other ANK instances to pair with and manage this node</small>
-                                </div>
-                                <div class="form-group" id="manager-ip-group" style="display:none">
-                                    <label>Manager IP / Range</label>
-                                    <input type="text" id="setting-manager-ip" placeholder="192.168.1.100 or 192.168.0.0/24 or 0.0.0.0" maxlength="30">
-                                    <small style="color:var(--text-muted);font-size:11px;margin-top:4px;display:block">Accepts: single IP, CIDR range (e.g. 192.168.0.0/24), or 0.0.0.0 (any). Leave empty to block all.</small>
-                                </div>
-                                <div class="form-group">
-                                    <label class="checkbox-label" style="display:flex;align-items:center;gap:8px;cursor:pointer">
-                                        <input type="checkbox" id="setting-ssh-enabled" style="width:18px;height:18px;accent-color:var(--accent)">
-                                        <i class="bi bi-terminal" style="color:var(--accent)"></i>
-                                        Enable SSH Connection
-                                    </label>
-                                    <small style="color:var(--text-muted);font-size:11px;margin-top:4px;display:block">SSH server on the Android host. Connect with: <code style="background:var(--bg-secondary);padding:1px 5px;border-radius:3px">ssh admin@&lt;IP&gt; -p &lt;port&gt;</code></small>
-                                </div>
-                                <div class="form-group" id="ssh-port-group" style="display:none">
-                                    <label>SSH Port</label>
-                                    <input type="number" id="setting-ssh-port" value="2200" min="1024" max="65535">
-                                    <small style="color:var(--text-muted);font-size:11px;margin-top:4px;display:block">Uses the same username and password as this panel</small>
                                 </div>
                                 <div class="form-group">
                                     <label>Default Container Password</label>
                                     <input type="password" id="setting-default-pass" placeholder="ank123" minlength="4">
-                                    <small style="color:var(--text-muted);font-size:11px;margin-top:4px;display:block">Used when deploying templates or creating containers without specifying a password</small>
+                                    <small style="color:var(--text-muted);font-size:11px;margin-top:4px;display:block">Used when creating containers without specifying a password</small>
                                 </div>
                                 <button type="submit" class="btn btn-primary"><i class="bi bi-check-lg"></i> Save</button>
                             </form>
+                        </div>
+                    </div>
+                    <div class="card">
+                        <div class="card-header"><h3><i class="bi bi-terminal"></i> SSH</h3></div>
+                        <div class="card-body">
+                            <div class="form-group">
+                                <label class="checkbox-label" style="display:flex;align-items:center;gap:8px;cursor:pointer">
+                                    <input type="checkbox" id="setting-ssh-enabled" checked style="width:18px;height:18px;accent-color:var(--accent)">
+                                    <i class="bi bi-power" style="color:var(--accent)"></i>
+                                    Enable SSH Connection
+                                </label>
+                                <small style="color:var(--text-muted);font-size:11px;margin-top:4px;display:block">SSH server on the Android host</small>
+                            </div>
+                            <div class="form-row">
+                                <div class="form-group">
+                                    <label>Port</label>
+                                    <input type="number" id="setting-ssh-port" value="2200" min="1024" max="65535">
+                                </div>
+                                <div class="form-group">
+                                    <label>Username</label>
+                                    <input type="text" id="setting-ssh-user" readonly style="color:var(--text-muted)">
+                                </div>
+                            </div>
+                            <small style="color:var(--text-muted);font-size:11px;display:block;margin-bottom:8px">Connect: <code style="background:var(--bg-secondary);padding:1px 5px;border-radius:3px">ssh user@&lt;IP&gt; -p &lt;port&gt;</code> — uses the same password as this panel</small>
+                            <button type="button" class="btn btn-primary" onclick="saveSSHSettings()"><i class="bi bi-check-lg"></i> Save SSH</button>
+                        </div>
+                    </div>
+                    <div class="card">
+                        <div class="card-header"><h3><i class="bi bi-diagram-3"></i> Remote Management</h3></div>
+                        <div class="card-body">
+                            <div class="form-group">
+                                <label class="checkbox-label" style="display:flex;align-items:center;gap:8px;cursor:pointer">
+                                    <input type="checkbox" id="setting-remote-mgmt" style="width:18px;height:18px;accent-color:var(--accent)">
+                                    <i class="bi bi-diagram-3" style="color:var(--accent)"></i>
+                                    Enable Remote Management
+                                </label>
+                                <small style="color:var(--text-muted);font-size:11px;margin-top:4px;display:block">Allow other ANK instances to pair with this node</small>
+                            </div>
+                            <div class="form-group" id="manager-ip-group" style="display:none">
+                                <label>Manager IP / Range</label>
+                                <input type="text" id="setting-manager-ip" placeholder="192.168.0.0/24 or 0.0.0.0" maxlength="30">
+                                <small style="color:var(--text-muted);font-size:11px;margin-top:4px;display:block">Single IP, CIDR range, or 0.0.0.0 (any)</small>
+                            </div>
+                            <button type="button" class="btn btn-primary" onclick="saveRemoteSettings()"><i class="bi bi-check-lg"></i> Save</button>
                         </div>
                     </div>
                     <div class="card">
@@ -423,7 +442,7 @@ EXPOSE 8080</textarea>
                                 <button type="button" class="btn btn-ghost" id="restart-server-btn"><i class="bi bi-arrow-repeat"></i> Restart Server</button>
                                 <button type="button" class="btn btn-ghost" id="restart-device-btn"><i class="bi bi-phone"></i> Restart Device</button>
                             </div>
-                            <p style="color:var(--text-secondary);font-size:13px;margin-bottom:12px">Completely remove ANK: all containers, images, configs, network rules, and the ANK directory. This cannot be undone.</p>
+                            <p style="color:var(--text-secondary);font-size:13px;margin-bottom:12px">Completely remove ANK: all containers, images, configs, and network rules. This cannot be undone.</p>
                             <button type="button" class="btn btn-danger" id="uninstall-btn"><i class="bi bi-trash3"></i> Uninstall ANK</button>
                         </div>
                     </div>
