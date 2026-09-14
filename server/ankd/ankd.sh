@@ -850,6 +850,7 @@ _ankd_daemon() {
     # Wait for all children — check services by tag
     # Track restart counts per service to prevent infinite restart loops
     local _restart_counts=""
+    local _given_up=""
     while true; do
         # Check for shutdown signal
         if [ -f "$ANKD_RUN/.shutdown" ]; then
@@ -861,6 +862,14 @@ _ankd_daemon() {
         for svc_file in "$ANKD_SERVICES"/*.ankd; do
             [ -f "$svc_file" ] || continue
             local svc_name=$(basename "$svc_file" .ankd | sed 's/^[0-9]*-//')
+
+            # Skip services that already gave up
+            local _already_gave_up=0
+            for gu in $_given_up; do
+                [ "$gu" = "$svc_name" ] && _already_gave_up=1 && break
+            done
+            [ "$_already_gave_up" -eq 1 ] && continue
+
             local svc_uuid=""
             for gen in "$ANKD_GENERATED"/*-${svc_name}.sh; do
                 [ -f "$gen" ] || continue
@@ -894,6 +903,7 @@ _ankd_daemon() {
 
                 if [ "$rcount" -gt 3 ]; then
                     _ankd_boot "FAIL" "$svc_name: service failed after 3 attempts, giving up"
+                    _given_up="$_given_up $svc_name"
                 elif [ "$policy" = "always" ] || [ "$policy" = "on-failure" ]; then
                     _ankd_boot "INFO" "Restarting $svc_name in ${delay}s (policy: $policy, attempt $rcount)"
                     _ankd_sleep "$delay"

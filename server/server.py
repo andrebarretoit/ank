@@ -1769,12 +1769,47 @@ small{color:#334155}
                 svc["pid"] = None
                 try:
                     uuid = None
+                    # Method 1: look in generated scripts dir (ANKD_GENERATED)
                     generated_dir = os.path.join(CONTAINERS_DIR, name, "merged", "etc", "ankd", "services")
                     if os.path.isdir(generated_dir):
                         for gen_f in os.listdir(generated_dir):
                             if gen_f.endswith(f"-{svc_name}.sh"):
                                 uuid = gen_f.split("-", 1)[0]
                                 break
+                    # Method 2: scan pids dir — find .pgid file whose uuid matches a generated script
+                    if not uuid:
+                        pids_dir = os.path.join(CONTAINERS_DIR, name, "merged", "etc", "ankd", "pids")
+                        if os.path.isdir(pids_dir):
+                            for pf_name in os.listdir(pids_dir):
+                                if not pf_name.endswith(".pgid"):
+                                    continue
+                                candidate_uuid = pf_name.replace(".pgid", "")
+                                # Check if this uuid has a matching generated script
+                                if os.path.isdir(generated_dir):
+                                    for gen_f in os.listdir(generated_dir):
+                                        if gen_f.startswith(f"{candidate_uuid}-") and gen_f.endswith(f"-{svc_name}.sh"):
+                                            uuid = candidate_uuid
+                                            break
+                                if uuid:
+                                    break
+                    # Method 3: scan pids dir and match by service name in .ankd
+                    if not uuid:
+                        pids_dir = os.path.join(CONTAINERS_DIR, name, "merged", "etc", "ankd", "pids")
+                        if os.path.isdir(pids_dir):
+                            for pf_name in os.listdir(pids_dir):
+                                if not pf_name.endswith(".pgid"):
+                                    continue
+                                candidate_uuid = pf_name.replace(".pgid", "")
+                                # Check if this uuid's pgid file is alive
+                                try:
+                                    with open(os.path.join(pids_dir, pf_name)) as pf:
+                                        pgid = int(pf.read().strip())
+                                    os.kill(pgid, 0)
+                                    svc["status"] = "running"
+                                    svc["pid"] = pgid
+                                    break
+                                except (OSError, ValueError, ProcessLookupError):
+                                    pass
                     if uuid:
                         pgid_file = os.path.join(CONTAINERS_DIR, name, "merged", "etc", "ankd", "pids", f"{uuid}.pgid")
                         if os.path.isfile(pgid_file):

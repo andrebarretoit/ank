@@ -27,14 +27,17 @@ async function api(method, path, body = null) {
     return data;
 }
 
-function toast(msg, type = 'info') {
+function toast(msg, type = 'info', duration = 4000) {
     const c = document.getElementById('toast-container');
     const el = document.createElement('div');
     const icons = { success: 'bi-check-circle-fill', error: 'bi-exclamation-circle-fill', info: 'bi-info-circle-fill', warning: 'bi-exclamation-triangle-fill' };
     el.className = `toast toast-${type}`;
-    el.innerHTML = `<i class="bi ${icons[type] || icons.info}"></i> ${msg}`;
+    el.style.display = 'flex';
+    el.style.alignItems = 'center';
+    el.innerHTML = `<i class="bi ${icons[type] || icons.info}"></i> <span>${msg}</span>`;
     c.appendChild(el);
-    setTimeout(() => { el.style.opacity = '0'; el.style.transform = 'translateX(100%)'; setTimeout(() => el.remove(), 300); }, 4000);
+    setTimeout(() => { el.style.opacity = '0'; el.style.transform = 'translateX(100%)'; setTimeout(() => el.remove(), 300); }, duration);
+    return el;
 }
 
 function confirmAction(title, message) {
@@ -435,7 +438,7 @@ function renderContainers(containers, nodeId) {
                     : `<button class="btn btn-success btn-sm" ${disabled ? 'disabled' : ''} onclick="event.stopPropagation(); ${startAction}"><i class="bi bi-play-fill"></i></button>`
                 }
                 <button class="btn btn-primary btn-sm" ${disabled ? 'disabled' : ''} onclick="event.stopPropagation(); ${restartAction}"><i class="bi bi-arrow-repeat"></i></button>
-                <button class="btn btn-danger btn-sm" ${disabled ? 'disabled' : ''} onclick="event.stopPropagation(); ${deleteAction}"><i class="bi bi-trash3"></i></button>
+                <button class="btn btn-danger btn-sm" ${(isRunning || isBuilding) ? 'disabled' : ''} onclick="event.stopPropagation(); ${deleteAction}"><i class="bi bi-trash3"></i></button>
             </div>
         </div>`;
     }).join('');
@@ -668,22 +671,64 @@ function clearContainerLoading(name) {
 }
 
 async function pollContainerStatus(name, attempt) {
-    if (attempt > 30) { loadAll(); return; }
+    if (attempt > 30) {
+        loadContainers();
+        return;
+    }
     try {
         const c = await api('GET', `/containers/${name}`);
         if (c.status === 'building' || c.status === 'starting' || c.status === 'stopping') {
+            updateContainerBadge(name, c.status);
             setTimeout(() => pollContainerStatus(name, attempt + 1), 2000);
         } else {
             if (c.package_failure) {
                 showApkFailureModal(name, c.package_failure);
             }
-            loadAll();
+            updateContainerBadge(name, c.status);
+            updateDetailButtons(name, c.status);
+            loadContainers();
             const detailModal = document.getElementById('detail-modal');
             if (detailModal && detailModal.style.display !== 'none' && document.getElementById('detail-name')?.textContent === name) {
                 showContainerDetail(name);
             }
         }
-    } catch (e) { loadAll(); }
+    } catch (e) { loadContainers(); }
+}
+
+function updateContainerBadge(name, status) {
+    const card = document.querySelector(`.container-card[data-name="${name}"]`);
+    if (!card) return;
+    const badge = card.querySelector('.status-badge');
+    if (!badge) return;
+    const isBuilding = status === 'building';
+    const isFailed = status === 'failed';
+    const statusClass = isBuilding ? 'status-building' : isFailed ? 'status-failed' : `status-${status}`;
+    const statusText = isBuilding ? 'Building...' : isFailed ? 'Failed' : status === 'starting' ? 'Starting...' : status === 'stopping' ? 'Stopping...' : status;
+    badge.className = `status-badge ${statusClass}`;
+    badge.innerHTML = `${isBuilding ? '<i class="bi bi-arrow-repeat spin"></i> ' : ''}${statusText}`;
+    const isRunning = status === 'running' || status === 'starting';
+    card.querySelectorAll('.container-actions button').forEach(btn => {
+        if (btn.classList.contains('btn-danger')) {
+            btn.disabled = isRunning || isBuilding;
+        } else if (btn.classList.contains('btn-warning')) {
+            btn.disabled = !isRunning;
+        } else if (btn.classList.contains('btn-success')) {
+            btn.disabled = isRunning || isBuilding;
+        }
+    });
+}
+
+function updateDetailButtons(name, status) {
+    if (!currentContainer || currentContainer.name !== name) return;
+    const isRunning = status === 'running' || status === 'starting';
+    const isBuilding = status === 'building';
+    const isFailed = status === 'failed';
+    const stopped = status === 'stopped' || status === 'stopping';
+    const isTransient = isBuilding || isFailed || status === 'starting' || status === 'stopping';
+    document.getElementById('detail-start').disabled = isRunning || isBuilding || isFailed;
+    document.getElementById('detail-stop').disabled = stopped || isBuilding || isFailed;
+    document.getElementById('detail-restart').disabled = isTransient;
+    document.getElementById('detail-delete').disabled = isRunning || isBuilding;
 }
 
 async function startContainer(name) {
@@ -758,7 +803,7 @@ async function showContainerDetail(name) {
         document.getElementById('detail-start').disabled = running || isBuilding || isFailed;
         document.getElementById('detail-stop').disabled = stopped || isBuilding || isFailed;
         document.getElementById('detail-restart').disabled = isTransient;
-        document.getElementById('detail-delete').disabled = isBuilding;
+        document.getElementById('detail-delete').disabled = running || isBuilding;
         document.getElementById('detail-start').onclick = () => startContainer(name);
         document.getElementById('detail-stop').onclick = () => stopContainer(name);
         document.getElementById('detail-restart').onclick = () => restartContainer(name);
@@ -936,6 +981,19 @@ document.getElementById('detail-network-form')?.addEventListener('submit', async
             policies: { inter_container_p2p: document.getElementById('detail-p2p').checked, allow_host_access: document.getElementById('detail-host').checked, allow_internet: document.getElementById('detail-internet').checked }
         });
         toast(`Network settings saved for "${name}"`, 'success');
+        if (ports.length > 0 && currentContainer.status === 'running') {
+            const toastEl = toast(`Port changed. Restart container to apply.`, 'warning', 8000);
+            const restartBtn = document.createElement('button');
+            restartBtn.className = 'btn btn-xs btn-warning';
+            restartBtn.style.cssText = 'margin-left:8px;font-size:11px;';
+            restartBtn.innerHTML = '<i class="bi bi-arrow-repeat"></i> Restart Now';
+            restartBtn.onclick = async () => {
+                restartBtn.disabled = true;
+                restartBtn.innerHTML = '<i class="bi bi-arrow-repeat spin"></i> Restarting...';
+                try { await restartContainer(name); } catch (e) {}
+            };
+            if (toastEl) toastEl.appendChild(restartBtn);
+        }
         showContainerDetail(name);
     } catch (e) { toast(`Failed: ${e.message}`, 'error'); }
 });

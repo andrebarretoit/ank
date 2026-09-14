@@ -1140,6 +1140,31 @@ cmd_stop() {
     fi
     [ "$SWEEP_COUNT" -gt 0 ] && echo "    Cleaned $SWEEP_COUNT remaining process(es)"
 
+    # ============================================================
+    # PHASE 2.5: Final kill — pkill by exe name inside container rootfs
+    # This catches any orphaned processes that survived the PGID kill
+    # and the /proc sweep (e.g. re-attached sshd sessions).
+    # ============================================================
+    if [ -d "$ROOTFS" ]; then
+        for svc_exe in sshd httpd nginx php-fpm node python3 python; do
+            local exe_path="$ROOTFS/usr/sbin/$svc_exe"
+            [ -f "$exe_path" ] || exe_path="$ROOTFS/usr/bin/$svc_exe"
+            [ -f "$exe_path" ] || exe_path="$ROOTFS/bin/$svc_exe"
+            if [ -f "$exe_path" ]; then
+                for pid_dir in /proc/[0-9]*; do
+                    local p=$(basename "$pid_dir" 2>/dev/null)
+                    [ -z "$p" ] && continue
+                    [ "$p" = "1" ] && continue
+                    [ ! -d "$pid_dir" ] && continue
+                    local exe=$(readlink "$pid_dir/exe" 2>/dev/null)
+                    case "$exe" in
+                        */$svc_exe) kill -9 "$p" 2>/dev/null ;;
+                    esac
+                done
+            fi
+        done
+    fi
+
     # Brief wait for zombie reaping
     [ "$SWEEP_COUNT" -gt 0 ] && sleep 1
 
