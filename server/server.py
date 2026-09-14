@@ -410,17 +410,17 @@ ANK_NODE_HTML = ANK_PAGE_HTML % ('#339933', '#22c55e', '#339933', 'Node.js Runni
 ANK_PYTHON_HTML = ANK_PAGE_HTML % ('#3776AB', '#ffd43b', '#3776AB', 'Python Running', 'Edit server.py via the<br>ANK Web Panel file explorer.', ANK_BRANDING)
 
 ANK_NGINX_CONF = """daemon off;
-events { worker_connections 1024; }
-http {
+events {{ worker_connections 1024; }}
+http {{
     include /etc/nginx/mime.types;
     default_type application/octet-stream;
-    server {
-        listen 8080;
+    server {{
+        listen {port};
         root /var/www/html;
         index index.html;
-        location / { try_files $uri $uri/ =404; }
-    }
-}"""
+        location / {{ try_files $uri $uri/ =404; }}
+    }}
+}}"""
 
 ANK_PHP_INDEX = """<?php
 $html = '<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>ANK - PHP</title>';
@@ -437,7 +437,8 @@ const srv = http.createServer((req, res) => {
     res.writeHead(200, {'Content-Type': 'text/html'});
     res.end('<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>ANK - Node.js</title><style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:-apple-system,sans-serif;background:#0f172a;color:#e2e8f0;min-height:100vh;display:flex;align-items:center;justify-content:center}.card{background:#1e293b;border-radius:16px;padding:48px;max-width:480px;width:90%;text-align:center;box-shadow:0 25px 50px rgba(0,0,0,.4)}.logo{font-size:48px;font-weight:800;background:linear-gradient(135deg,#339933,#22c55e);-webkit-background-clip:text;-webkit-text-fill-color:transparent;margin-bottom:8px}.sub{color:#94a3b8;font-size:14px;margin-bottom:24px}.badge{display:inline-block;background:rgba(34,197,94,.15);color:#22c55e;padding:6px 16px;border-radius:20px;font-size:13px;font-weight:600}.footer{margin-top:32px;color:#475569;font-size:12px}.footer a{color:#339933;text-decoration:none}</style></head><body><div class="card"><div class="logo">ANK</div><div class="sub">Android Konteiner</div><div class="badge">Node.js ' + process.version + ' Running</div><p style="margin-top:24px;color:#94a3b8">Edit server.js via the<br>ANK Web Panel file explorer.</p><div class="footer">by <a href="https://github.com/andrebarretoit">andrebarretoit</a></div></div></body></html>');
 });
-srv.listen(3000, () => console.log('ANK Node.js listening on :3000'));"""
+const PORT = process.env.ANK_PORT || {port};
+srv.listen(PORT, () => console.log('ANK Node.js listening on :' + PORT));"""
 
 ANK_PYTHON_SERVER = """from http.server import HTTPServer, BaseHTTPRequestHandler
 
@@ -452,7 +453,7 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         pass
 
-HTTPServer(('0.0.0.0', 5000), Handler).serve_forever()"""
+HTTPServer(('0.0.0.0', int(os.environ.get('ANK_PORT', '{port}'))), Handler).serve_forever()"""
 
 # ============================================================
 # S6 service definitions for templates
@@ -1261,6 +1262,11 @@ small{color:#334155}
             self.api_node_container_logs(parts[3], parts[5])
         elif path.startswith("/api/nodes/"):
             self.api_node_inspect(path.split("/")[3])
+        elif path.startswith("/api/containers/") and "/services/" in path and path.endswith("/logs"):
+            parts = path.split("/")
+            qs = parse_qs(parsed.query)
+            lines = int(qs.get("lines", ["50"])[0])
+            self.api_svc_logs(parts[3], parts[5], lines)
         elif path == "/api/system/dashboard":
             self.api_system_dashboard()
         else:
@@ -1858,6 +1864,27 @@ small{color:#334155}
                 return
             self.send_json({"message": f"Service '{service}' started"})
 
+    def api_svc_logs(self, name, service, lines=50):
+        config = load_container_config(name)
+        if not config:
+            self.send_error(404, f"Container '{name}' not found")
+            return
+        merged = os.path.join(CONTAINERS_DIR, name, "merged")
+        log_dir = os.path.join(merged, "var", "log", "ankd")
+        log_file = os.path.join(log_dir, f"{service}.log")
+        if not os.path.isfile(log_file):
+            self.send_json({"logs": f"No logs for service '{service}'"})
+            return
+        try:
+            import subprocess
+            result = subprocess.run(
+                ["tail", "-n", str(lines), log_file],
+                capture_output=True, text=True, timeout=5
+            )
+            self.send_json({"logs": result.stdout})
+        except Exception as e:
+            self.send_json({"logs": f"Error reading logs: {e}"})
+
     def api_restart_container(self, name):
         config = load_container_config(name)
         if not config:
@@ -2249,6 +2276,61 @@ small{color:#334155}
             config.setdefault("policies", {}).update(data["policies"])
         if "port_mappings" in data:
             config["port_mappings"] = data["port_mappings"]
+            # Port mirroring: update .ankd PORT= + config files
+            new_port = data["port_mappings"][0]["host_port"] if data["port_mappings"] else None
+            if new_port:
+                merged = os.path.join(CONTAINERS_DIR, name, "merged")
+                services_dir = os.path.join(merged, "etc", "ankd", "services.d")
+                if os.path.isdir(services_dir):
+                    for ank_file in os.listdir(services_dir):
+                        if not ank_file.endswith(".ankd"):
+                            continue
+                        fpath = os.path.join(services_dir, ank_file)
+                        try:
+                            with open(fpath, "r") as f:
+                                content = f.read()
+                            import re
+                            content = re.sub(r"^PORT=.*$", f"PORT={new_port}", content, flags=re.MULTILINE)
+                            with open(fpath, "w") as f:
+                                f.write(content)
+                        except Exception:
+                            pass
+                # Update service config files
+                if os.path.isdir(merged):
+                    _service = config.get("template", "")
+                    _sp = config.get("static_path", "")
+                    _s6 = "true" if config.get("s6", False) else "false"
+                    _write_ank_config(merged, _service, str(new_port), _sp, _s6)
+                    # Patch nginx.conf, httpd.conf, server.py, server.js
+                    if _service == "nginx":
+                        nginx_conf = os.path.join(merged, "etc/nginx/nginx.conf")
+                        if os.path.isfile(nginx_conf):
+                            with open(nginx_conf) as f: content = f.read()
+                            import re
+                            content = re.sub(r"listen\s+\d+", f"listen {new_port}", content)
+                            with open(nginx_conf, "w") as f: f.write(content)
+                    elif _service == "apache":
+                        httpd_conf = os.path.join(merged, "etc/apache2/httpd.conf")
+                        if os.path.isfile(httpd_conf):
+                            with open(httpd_conf) as f: content = f.read()
+                            import re
+                            content = re.sub(r"^Listen\s+\d+", f"Listen {new_port}", content, flags=re.MULTILINE)
+                            with open(httpd_conf, "w") as f: f.write(content)
+                    elif _service == "python":
+                        server_py = os.path.join(merged, "srv/server.py")
+                        if os.path.isfile(server_py):
+                            with open(server_py) as f: content = f.read()
+                            import re
+                            content = re.sub(r"PORT\s*=\s*\d+", f"PORT = {new_port}", content)
+                            content = re.sub(r"0\.0\.0\.0:\d+", f"0.0.0.0:{new_port}", content)
+                            with open(server_py, "w") as f: f.write(content)
+                    elif _service == "node":
+                        server_js = os.path.join(merged, "srv/server.js")
+                        if os.path.isfile(server_js):
+                            with open(server_js) as f: content = f.read()
+                            import re
+                            content = re.sub(r"listen\(\d+", f"listen({new_port}", content)
+                            with open(server_js, "w") as f: f.write(content)
         if "ip_address" in data:
             config["ip_address"] = data["ip_address"]
         if "autostart" in data:
@@ -2412,7 +2494,6 @@ small{color:#334155}
             "base": "apache-3.20",
             "packages": ["apache2", "curl"],
             "port": 9090,
-            "internal_port": 80,
             "category": "server",
             "serves_static": True,
             "static_path": "/var/www/localhost/htdocs"
@@ -2588,12 +2669,11 @@ small{color:#334155}
                     if template.get("port"):
                         desired_port = template["port"]
                         actual_port = self._find_free_port(desired_port)
-                        internal_port = template.get("internal_port", desired_port)
                         port_warnings = []
                         if actual_port != desired_port:
                             port_warnings.append(f"Port {desired_port} in use, using {actual_port} instead")
                             log(f"Port {desired_port} busy for {container_name}, using {actual_port}")
-                        config["port_mappings"] = [{"host_port": actual_port, "container_port": internal_port, "protocol": "tcp"}]
+                        config["port_mappings"] = [{"host_port": actual_port, "container_port": actual_port, "protocol": "tcp"}]
                         if port_warnings:
                             config["port_warning"] = "; ".join(port_warnings)
                     if template.get("serves_static"):
@@ -2604,43 +2684,60 @@ small{color:#334155}
                 if template.get("packages"):
                     pkg_list = " ".join(template["packages"])
                     log(f"Installing packages: {pkg_list} in {container_name}")
-                    r = _chroot(f"apk update && apk add --allow-untrusted {pkg_list}", timeout=180)
-                    output = (r.stdout or "") + (r.stderr or "")
-                    if r.returncode != 0:
-                        log(f"WARNING: apk install output: {output[-500:]}")
+                    apk_output = ""
+                    apk_rc = 1
+                    for attempt in range(1, 3):
+                        log(f"apk add attempt 2/{attempt}...")
+                        r = _chroot(f"apk update && apk add --allow-untrusted {pkg_list}", timeout=180)
+                        apk_output = (r.stdout or "") + (r.stderr or "")
+                        apk_rc = r.returncode
+                        if apk_rc == 0:
+                            log(f"OK: All packages installed")
+                            break
+                        if attempt < 2:
+                            log(f"WARN: apk add failed (rc={apk_rc}), retrying in 15s...")
+                            import time; time.sleep(15)
+                    if apk_rc != 0:
+                        log(f"FAIL: apk add failed after 2 attempts")
+                        config["package_failure"] = {
+                            "packages": template["packages"],
+                            "error": apk_output[-500:],
+                            "ssh_port": config.get("ssh_port", 22)
+                        }
+                        save_container_config(container_name, config)
 
                 if template_id == "nginx":
                     static_dir = template["static_path"]
                     _chroot(f'mkdir -p {static_dir} /run/nginx')
                     _write_file(os.path.join(merged, static_dir.lstrip('/'), 'index.html'), ANK_NGINX_HTML)
-                    _write_file(os.path.join(merged, 'etc/nginx/nginx.conf'), ANK_NGINX_CONF)
-                    _write_ank_config(merged, 'nginx', 8080, static_dir, "true" if _s6_enabled else "false")
+                    _write_file(os.path.join(merged, 'etc/nginx/nginx.conf'), ANK_NGINX_CONF.format(port=actual_port))
+                    _write_ank_config(merged, 'nginx', actual_port, static_dir, "true" if _s6_enabled else "false")
 
                 elif template_id == "apache":
                     static_dir = template["static_path"]
                     _chroot(f'mkdir -p {static_dir}')
-                    _chroot(f'sed -i "s/^Listen 80/Listen 9090/" /etc/apache2/httpd.conf 2>/dev/null')
+                    _chroot(f'sed -i "s/^Listen 80/Listen {actual_port}/" /etc/apache2/httpd.conf 2>/dev/null')
                     _write_file(os.path.join(merged, static_dir.lstrip('/'), 'index.html'), ANK_APACHE_HTML)
-                    _write_ank_config(merged, 'apache', 9090, static_dir, "true" if _s6_enabled else "false")
+                    _write_ank_config(merged, 'apache', actual_port, static_dir, "true" if _s6_enabled else "false")
 
                 elif template_id == "php":
                     php_dir = "/var/www/php"
                     _chroot(f'mkdir -p {php_dir}')
                     _write_file(os.path.join(merged, php_dir.lstrip('/'), 'index.php'), ANK_PHP_INDEX)
-                    _write_ank_config(merged, 'php', 8000, php_dir, "true" if _s6_enabled else "false")
+                    _write_ank_config(merged, 'php', actual_port, php_dir, "true" if _s6_enabled else "false")
 
                 elif template_id == "node":
                     node_dir = "/var/www/app"
                     _chroot(f'mkdir -p {node_dir}')
-                    _write_file(os.path.join(merged, node_dir.lstrip('/'), 'server.js'), ANK_NODE_SERVER)
+                    _write_file(os.path.join(merged, node_dir.lstrip('/'), 'server.js'), ANK_NODE_SERVER.format(port=actual_port))
                     _write_file(os.path.join(merged, node_dir.lstrip('/'), 'package.json'), '{"name":"ank-node-app","version":"1.0.0","main":"server.js"}')
-                    _write_ank_config(merged, 'node', 3000, node_dir, "true" if _s6_enabled else "false")
+                    _write_ank_config(merged, 'node', actual_port, node_dir, "true" if _s6_enabled else "false")
 
                 elif template_id == "python":
                     py_dir = "/var/www/app"
                     _chroot(f'mkdir -p {py_dir}')
-                    _write_file(os.path.join(merged, py_dir.lstrip('/'), 'server.py'), ANK_PYTHON_SERVER)
-                    _write_ank_config(merged, 'python', 5000, py_dir, "true" if _s6_enabled else "false")
+                    _write_file(os.path.join(merged, py_dir.lstrip('/'), 'server.py'), ANK_PYTHON_SERVER.format(port=actual_port))
+                    _write_ank_config(merged, 'python', actual_port, py_dir, "true" if _s6_enabled else "false")
 
                 cfg = load_container_config(container_name)
                 if cfg:
@@ -2814,7 +2911,22 @@ small{color:#334155}
                     r = _chroot(cmd, timeout=300)
                     output = (r.stdout or "") + (r.stderr or "")
                     if r.returncode != 0:
-                        log(f"Ankfile RUN failed: {output[-500:]}")
+                        # If it's an apk add command, retry once after 15s
+                        if "apk add" in cmd:
+                            log(f"Ankfile RUN apk failed, retrying in 15s...")
+                            import time; time.sleep(15)
+                            r = _chroot(cmd, timeout=300)
+                            output = (r.stdout or "") + (r.stderr or "")
+                            if r.returncode != 0:
+                                log(f"Ankfile RUN apk failed after retry")
+                                config["package_failure"] = {
+                                    "packages": cmd,
+                                    "error": output[-500:],
+                                    "ssh_port": config.get("ssh_port", 22)
+                                }
+                                save_container_config(container_name, config)
+                        else:
+                            log(f"Ankfile RUN failed: {output[-500:]}")
                         with open(log_path, "a") as lf:
                             lf.write(f"FAILED (rc={r.returncode}): {output[-500:]}\n")
                     else:

@@ -892,8 +892,8 @@ _ankd_daemon() {
                 [ -z "$policy" ] && policy="always"
                 [ -z "$delay" ] && delay="3"
 
-                if [ "$rcount" -gt 10 ]; then
-                    _ankd_boot "INFO" "Service $svc_name restarted $rcount times, giving up"
+                if [ "$rcount" -gt 3 ]; then
+                    _ankd_boot "FAIL" "$svc_name: service failed after 3 attempts, giving up"
                 elif [ "$policy" = "always" ] || [ "$policy" = "on-failure" ]; then
                     _ankd_boot "INFO" "Restarting $svc_name in ${delay}s (policy: $policy, attempt $rcount)"
                     _ankd_sleep "$delay"

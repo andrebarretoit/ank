@@ -142,6 +142,56 @@ function customModal(title, fields) {
     });
 }
 
+function showApkFailureModal(containerName, failure) {
+    const pkgs = Array.isArray(failure.packages) ? failure.packages.join(' ') : (failure.packages || '');
+    const sshPort = failure.ssh_port || 22;
+    const overlay = document.createElement('div');
+    overlay.id = 'apk-failure-overlay';
+    overlay.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.7);z-index:10000;display:flex;align-items:center;justify-content:center;';
+    overlay.innerHTML = `
+        <div style="background:var(--bg-primary);border:1px solid var(--border);border-radius:12px;width:90%;max-width:520px;padding:24px;">
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px;">
+                <i class="bi bi-exclamation-triangle" style="font-size:24px;color:var(--warning,#f59e0b);"></i>
+                <h3 style="margin:0;font-size:16px;">Package Install Failed</h3>
+            </div>
+            <p style="margin:0 0 12px;font-size:13px;color:var(--text-secondary);">
+                Failed to install packages after 2 attempts in container <strong>${containerName}</strong>:
+            </p>
+            <div style="background:var(--bg-tertiary);border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:16px;">
+                <code style="font-size:12px;color:var(--warning);">${pkgs}</code>
+            </div>
+            <p style="margin:0 0 8px;font-size:13px;color:var(--text-secondary);">
+                You can install manually via SSH:
+            </p>
+            <div style="display:flex;align-items:center;gap:8px;background:var(--bg-tertiary);border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:16px;">
+                <code id="apk-failure-ssh" style="font-size:12px;flex:1;user-select:all;">ssh root@${window.location.hostname} -p ${sshPort}</code>
+                <button class="btn btn-xs btn-ghost" onclick="navigator.clipboard.writeText(document.getElementById('apk-failure-ssh').textContent);toast('Copied!','success')"><i class="bi bi-clipboard"></i></button>
+            </div>
+            <p style="margin:0 0 16px;font-size:12px;color:var(--text-muted);">
+                Then run: <code>apk add --allow-untrusted ${pkgs}</code>
+            </p>
+            <div style="display:flex;gap:8px;justify-content:flex-end;">
+                <button class="btn btn-danger btn-sm" id="apk-fail-cancel"><i class="bi bi-trash3"></i> Cancel & Remove</button>
+                <button class="btn btn-primary btn-sm" id="apk-fail-continue"><i class="bi bi-check-lg"></i> Continue Build</button>
+            </div>
+        </div>`;
+    document.body.appendChild(overlay);
+    document.getElementById('apk-fail-continue').addEventListener('click', () => {
+        overlay.remove();
+        toast(`Container "${containerName}" deployed without packages. Install via SSH.`, 'warning');
+        loadAll();
+    });
+    document.getElementById('apk-fail-cancel').addEventListener('click', async () => {
+        overlay.remove();
+        try {
+            await api('DELETE', `/containers/${containerName}`);
+            toast(`Container "${containerName}" deleted`, 'success');
+            loadAll();
+        } catch (e) { toast(`Failed to delete: ${e.message}`, 'error'); }
+    });
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+}
+
 function logout() {
     ankToken = '';
     localStorage.removeItem('ank_token');
@@ -624,6 +674,9 @@ async function pollContainerStatus(name, attempt) {
         if (c.status === 'building' || c.status === 'starting' || c.status === 'stopping') {
             setTimeout(() => pollContainerStatus(name, attempt + 1), 2000);
         } else {
+            if (c.package_failure) {
+                showApkFailureModal(name, c.package_failure);
+            }
             loadAll();
             const detailModal = document.getElementById('detail-modal');
             if (detailModal && detailModal.style.display !== 'none' && document.getElementById('detail-name')?.textContent === name) {
@@ -812,13 +865,10 @@ async function showContainerDetail(name) {
 
 function renderPortMappings(ports) {
     const list = document.getElementById('port-mappings-list');
-    if (!ports.length) { list.innerHTML = ''; return; }
+    if (!ports.length) { list.innerHTML = '<div style="color:var(--text-muted);font-size:12px;">No port configured</div>'; return; }
     list.innerHTML = ports.map((p, i) => `
         <div class="port-row">
-            <div style="flex:1"><label style="font-size:11px;color:var(--text-muted);margin-bottom:2px;display:block">Host Port</label><input type="number" placeholder="8080" value="${p.host_port || ''}" data-idx="${i}" data-field="host_port"></div>
-            <span style="color:var(--text-muted);align-self:flex-end;padding-bottom:10px">→</span>
-            <div style="flex:1"><label style="font-size:11px;color:var(--text-muted);margin-bottom:2px;display:block">Container Port</label><input type="number" placeholder="80" value="${p.container_port || ''}" data-idx="${i}" data-field="container_port"></div>
-            <div style="width:70px"><label style="font-size:11px;color:var(--text-muted);margin-bottom:2px;display:block">Proto</label><select data-idx="${i}" data-field="protocol"><option value="tcp" ${p.protocol==='tcp'?'selected':''}>TCP</option><option value="udp" ${p.protocol==='udp'?'selected':''}>UDP</option></select></div>
+            <div style="flex:1"><label style="font-size:11px;color:var(--text-muted);margin-bottom:2px;display:block">Port</label><input type="number" placeholder="8080" value="${p.host_port || ''}" data-idx="${i}" data-field="host_port"></div>
             <button type="button" class="btn btn-ghost btn-sm remove-port" data-idx="${i}" style="align-self:flex-end;margin-bottom:6px"><i class="bi bi-x-lg"></i></button>
         </div>
     `).join('');
@@ -843,10 +893,9 @@ document.getElementById('detail-settings-form')?.addEventListener('submit', asyn
     const ports = [];
     portRows.forEach(row => {
         const hp = row.querySelector('[data-field="host_port"]');
-        const cp = row.querySelector('[data-field="container_port"]');
-        const pr = row.querySelector('[data-field="protocol"]');
-        if (hp && cp && (hp.value || cp.value)) {
-            ports.push({ host_port: parseInt(hp.value)||0, container_port: parseInt(cp.value)||0, protocol: pr.value });
+        if (hp && hp.value) {
+            const port = parseInt(hp.value) || 0;
+            ports.push({ host_port: port, container_port: port, protocol: 'tcp' });
         }
     });
     await btnLoading(btn, async () => {
@@ -875,10 +924,10 @@ document.getElementById('detail-network-form')?.addEventListener('submit', async
     const ports = [];
     rows.forEach(row => {
         const hp = row.querySelector('[data-field="host_port"]');
-        const cp = row.querySelector('[data-field="container_port"]');
         const pr = row.querySelector('[data-field="protocol"]');
-        if (hp && cp && (hp.value || cp.value)) {
-            ports.push({ host_port: parseInt(hp.value)||0, container_port: parseInt(cp.value)||0, protocol: pr.value });
+        if (hp && hp.value) {
+            const port = parseInt(hp.value) || 0;
+            ports.push({ host_port: port, container_port: port, protocol: pr ? pr.value : 'tcp' });
         }
     });
     try {
@@ -1030,6 +1079,7 @@ document.getElementById('create-form').addEventListener('submit', async (e) => {
             } else {
                 toast(`Deploying template "${templateId}" as "${name}"...`, 'info');
                 await api('POST', '/images/deploy', { template: templateId, name, root_password: rootPass });
+                pollContainerStatus(name, 0);
             }
             hideModal('create-modal');
             document.getElementById('create-form').reset();
@@ -1121,7 +1171,7 @@ async function deployTemplate(id, name, baseReady) {
     try {
         toast(`Deploying ${name} as "${containerName}"...`, 'info');
         await api('POST', '/images/deploy', { template: id, name: containerName, root_password: rootPass });
-        toast(`${name} deployed as "${containerName}"`, 'success');
+        pollContainerStatus(containerName, 0);
         loadAll();
     } catch (e) { toast(`Failed: ${e.message}`, 'error'); }
 }
@@ -1716,7 +1766,11 @@ document.getElementById('ankfile-build-btn')?.addEventListener('click', async ()
     const name = document.getElementById('ankfile-name')?.value?.trim() || 'ank-build';
     if (!content) { toast('Ankfile is empty', 'error'); return; }
     if (!content.includes('FROM')) { toast('Ankfile must have a FROM instruction', 'error'); return; }
-    try { toast(`Building from Ankfile as "${name}"...`, 'info'); await api('POST', '/images/ankfile', { content, name }); toast(`Ankfile built as "${name}"`, 'success'); loadAll(); } catch (e) { toast(`Failed: ${e.message}`, 'error'); }
+    try {
+        toast(`Building from Ankfile as "${name}"...`, 'info');
+        await api('POST', '/images/ankfile', { content, name });
+        pollContainerStatus(name, 0);
+    } catch (e) { toast(`Failed: ${e.message}`, 'error'); }
 });
 
 document.getElementById('ankfile-example-btn')?.addEventListener('click', () => {
@@ -2343,20 +2397,17 @@ async function taskManagerServiceAction(service, action) {
 async function taskManagerViewLog(service) {
     if (!currentContainer) return;
     try {
-        const data = await api('GET', `/containers/${currentContainer.name}/logs`);
-        // Filter log lines for this service
-        const lines = (data || '').split('\n').filter(l => l.includes(`[${service}]`) || l.includes(service));
-        const last20 = lines.slice(-30).join('\n') || 'No log entries for this service';
-        // Show in a modal overlay
+        const data = await api('GET', `/containers/${currentContainer.name}/services/${service}/logs?lines=50`);
+        const logs = data.logs || 'No logs for this service';
         const overlay = document.createElement('div');
         overlay.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.7);z-index:10000;display:flex;align-items:center;justify-content:center;';
         overlay.innerHTML = `
             <div style="background:var(--bg-primary);border:1px solid var(--border);border-radius:12px;width:90%;max-width:700px;max-height:80vh;display:flex;flex-direction:column;">
                 <div style="display:flex;justify-content:space-between;align-items:center;padding:12px 16px;border-bottom:1px solid var(--border);">
-                    <h4 style="margin:0;font-size:14px;"><i class="bi bi-journal-text"></i> ${service} — Log</h4>
+                    <h4 style="margin:0;font-size:14px;"><i class="bi bi-journal-text"></i> ${service} — Logs</h4>
                     <button class="btn btn-xs btn-ghost" onclick="this.closest('div[style*=fixed]').remove()"><i class="bi bi-x-lg"></i></button>
                 </div>
-                <pre style="margin:0;padding:16px;overflow:auto;flex:1;font-size:12px;line-height:1.5;color:var(--text-primary);background:transparent;">${last20.replace(/</g, '&lt;')}</pre>
+                <pre style="margin:0;padding:16px;overflow:auto;flex:1;font-size:12px;line-height:1.5;color:var(--text-primary);background:transparent;">${logs.replace(/</g, '&lt;')}</pre>
             </div>`;
         document.body.appendChild(overlay);
         overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
