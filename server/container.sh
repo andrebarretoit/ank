@@ -996,28 +996,39 @@ cmd_stop() {
     fi
 
     # ============================================================
-    # PHASE 1: Kill all services by TAG ({INSTANCE_UUID}-*-ANK)
+    # PHASE 1: Kill all services by PGID, read straight from the pgid
+    # registry ankd keeps under the container's own rootfs
+    # (containers/<name>/merged/etc/ankd/pids/*.pgid). That directory is
+    # real disk (/etc), not tmpfs, so it's directly visible from the host
+    # with no bind mount and no need to grep `ps` for a tag. Every ankd
+    # service is started via setsid, so its recorded pid is simultaneously
+    # its PGID: one "kill -9 -PGID" takes down the master and every forked
+    # child (nginx workers included) in one shot.
     # ============================================================
-    echo "  Phase 1: Stopping services by tag..."
+    echo "  Phase 1: Stopping services by process group..."
 
-    local INSTANCE_UUID=$(grep -o '"instance_uuid": *"[^"]*"' "$CONFIG" 2>/dev/null | cut -d'"' -f4)
-    [ -z "$INSTANCE_UUID" ] && INSTANCE_UUID="$NAME"
-
-    # Find all tagged master PIDs
-    for tag_pid in $(ps 2>/dev/null | grep "${INSTANCE_UUID}-.*-ANK" | grep -v grep | awk '{print $1}'); do
-        # Get tag name for logging
-        local tag_name=$(tr '\0' ' ' < "/proc/$tag_pid/cmdline" 2>/dev/null | grep -o "${INSTANCE_UUID}-[^ ]*-ANK" | head -1)
-        # Kill children first
-        for child_pid in $(pgrep -P "$tag_pid" 2>/dev/null); do
-            kill -9 "$child_pid" 2>/dev/null && KILL_COUNT=$((KILL_COUNT+1))
+    local ANKD_PIDS_DIR="$ROOTFS/etc/ankd/pids"
+    if [ -d "$ANKD_PIDS_DIR" ]; then
+        for pgid_file in "$ANKD_PIDS_DIR"/*.pgid; do
+            [ -f "$pgid_file" ] || continue
+            local svc_uuid=$(basename "$pgid_file" .pgid)
+            local pgid=$(cat "$pgid_file" 2>/dev/null)
+            [ -z "$pgid" ] && continue
+            kill -9 -- "-$pgid" 2>/dev/null && KILL_COUNT=$((KILL_COUNT+1))
+            kill -9 "$pgid" 2>/dev/null
+            rm -f "$pgid_file" 2>/dev/null
+            echo "    Stopped service $svc_uuid (PGID $pgid)"
         done
-        # Kill master
-        kill -9 "$tag_pid" 2>/dev/null && KILL_COUNT=$((KILL_COUNT+1))
-        echo "    Stopped ${tag_name:-PID $tag_pid}"
-    done
+    fi
 
     # ============================================================
-    # PHASE 2: Kill any remaining processes in container rootfs
+    # PHASE 2: Safety-net sweep for anything that escaped its process
+    # group (e.g. an interactive sshd login session that called its own
+    # setsid). Uses readlink on /proc/*/root and /proc/*/exe only - cheap
+    # single syscalls that hold up fine under Android's SELinux, unlike
+    # reading /proc/*/cmdline or /proc/*/environ content which is what was
+    # unreliable/slow before. Runs once here at teardown, not in any
+    # polling loop, so the cost is a non-issue.
     # ============================================================
     echo "  Phase 2: Sweeping remaining processes..."
     local SWEEP_COUNT=0
@@ -1025,17 +1036,14 @@ cmd_stop() {
         local p=$(basename "$pid_dir" 2>/dev/null)
         [ -z "$p" ] && continue
         [ "$p" = "1" ] && continue
-        local cmdline=$(tr '\0' ' ' < "$pid_dir/cmdline" 2>/dev/null)
-        # Kill processes rooted in this container's rootfs
-        echo "$cmdline" | grep -q "$ROOTFS" 2>/dev/null && {
+        local root=$(readlink "$pid_dir/root" 2>/dev/null)
+        local exe=$(readlink "$pid_dir/exe" 2>/dev/null)
+        local belongs=0
+        case "$root" in ${ROOTFS}|${ROOTFS}/) belongs=1 ;; esac
+        case "$exe" in ${ROOTFS}/*) belongs=1 ;; esac
+        [ "$belongs" -eq 1 ] && {
             kill -9 "$p" 2>/dev/null && SWEEP_COUNT=$((SWEEP_COUNT+1))
         }
-        # Kill sshd on this container's port
-        if [ -n "$SSH_PORT" ]; then
-            echo "$cmdline" | grep -q "sshd.*-p.*${SSH_PORT}" 2>/dev/null && {
-                kill -9 "$p" 2>/dev/null && SWEEP_COUNT=$((SWEEP_COUNT+1))
-            }
-        fi
     done
     [ "$SWEEP_COUNT" -gt 0 ] && echo "    Cleaned $SWEEP_COUNT remaining process(es)"
 
@@ -1167,15 +1175,17 @@ _kill_container_procs() {
         done < "/sys/fs/cgroup/ank/$NAME/cgroup.procs" 2>/dev/null
     fi
 
-    # Phase 3: Kill ALL sshd processes on this container's port
-    if [ -n "$SSH_PORT" ]; then
-        for pid_dir in /proc/[0-9]*; do
-            local pid=$(basename "$pid_dir" 2>/dev/null)
-            [ -z "$pid" ] && continue
-            local cmdline=$(tr '\0' ' ' < "$pid_dir/cmdline" 2>/dev/null)
-            if echo "$cmdline" | grep -q "sshd.*-p.*${SSH_PORT}" 2>/dev/null; then
-                kill -9 "$pid" 2>/dev/null && KILL_COUNT=$((KILL_COUNT+1))
-            fi
+    # Phase 3: Kill ANK services by PGID registry (etc/ankd/pids/*.pgid on
+    # real disk, host-visible, no /proc scanning needed - see cmd_stop)
+    local ANKD_PIDS_DIR="$CONTAINER_DIR/merged/etc/ankd/pids"
+    if [ -d "$ANKD_PIDS_DIR" ]; then
+        for pgid_file in "$ANKD_PIDS_DIR"/*.pgid; do
+            [ -f "$pgid_file" ] || continue
+            local pgid=$(cat "$pgid_file" 2>/dev/null)
+            [ -z "$pgid" ] && continue
+            kill -9 -- "-$pgid" 2>/dev/null && KILL_COUNT=$((KILL_COUNT+1))
+            kill -9 "$pgid" 2>/dev/null
+            rm -f "$pgid_file" 2>/dev/null
         done
     fi
 

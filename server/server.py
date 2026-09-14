@@ -227,6 +227,50 @@ def save_container_config(name, config):
     except Exception:
         pass
 
+def _ank_service_uuid(container_name, service_name):
+    """Look up a service's generated-script uuid by scanning
+    merged/etc/ankd/services for '<uuid>-<service_name>.sh'."""
+    generated_dir = os.path.join(CONTAINERS_DIR, container_name, "merged", "etc", "ankd", "services")
+    try:
+        for f in os.listdir(generated_dir):
+            if f.endswith(f"-{service_name}.sh"):
+                return f.split("-", 1)[0]
+    except OSError:
+        pass
+    return None
+
+def _ank_stop_service_pgid(container_name, service_name):
+    """Stop a single service by reading its pgid from the registry ankd
+    keeps at merged/etc/ankd/pids/<uuid>.pgid (real disk, host-visible,
+    no bind mount needed). Every ankd service is started via setsid, so
+    the recorded pid is simultaneously its process-group id: os.killpg
+    takes down the master and every forked child (e.g. nginx workers) in
+    one call, with no ps/pgrep subprocess calls and no /proc scanning."""
+    uuid = _ank_service_uuid(container_name, service_name)
+    if not uuid:
+        return False
+    pgid_file = os.path.join(CONTAINERS_DIR, container_name, "merged", "etc", "ankd", "pids", f"{uuid}.pgid")
+    try:
+        with open(pgid_file) as f:
+            pgid = int(f.read().strip())
+    except (OSError, ValueError):
+        return False
+    try:
+        os.killpg(pgid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    except PermissionError:
+        pass
+    try:
+        os.kill(pgid, signal.SIGKILL)  # belt-and-suspenders on the leader itself
+    except (ProcessLookupError, PermissionError):
+        pass
+    try:
+        os.remove(pgid_file)
+    except OSError:
+        pass
+    return True
+
 def run_script(script, *args, timeout=60):
     script_path = os.path.join(SCRIPTS_DIR, script)
     cmd_parts = ["/system/bin/sh", script_path] + list(args)
@@ -1651,7 +1695,7 @@ small{color:#334155}
             self.send_error(404, f"Container '{name}' not found")
             return
         instance_uuid = config.get("instance_uuid", name)
-        services_dir = os.path.join(CONTAINERS_DIR, name, "merged", "etc", "ankd", "services")
+        services_dir = os.path.join(CONTAINERS_DIR, name, "merged", "etc", "ankd", "services.d")
         services = []
         if os.path.isdir(services_dir):
             for f in sorted(os.listdir(services_dir)):
@@ -1674,22 +1718,31 @@ small{color:#334155}
                                 svc["restart_policy"] = line[15:].strip('"')
                 except Exception:
                     pass
-                # Check if service is running by finding its tag in process list
+                # Check if running via the pgid registry ankd keeps at
+                # merged/etc/ankd/pids/<uuid>.pgid - real disk (not tmpfs),
+                # so it's directly readable from here with no ps/tag
+                # matching and no /proc scanning. ankd starts every service
+                # with setsid, so the recorded pid is also its pgid/sid.
                 svc["status"] = "stopped"
                 svc["pid"] = None
                 try:
-                    import subprocess
-                    result = subprocess.run(
-                        ["ps", "-eo", "pid,args"],
-                        capture_output=True, text=True, timeout=3
-                    )
-                    for line in result.stdout.split("\n"):
-                        if instance_uuid in line and "-ANK" in line and svc_name in line:
-                            parts = line.split()
-                            if len(parts) >= 1:
-                                svc["status"] = "running"
-                                svc["pid"] = int(parts[0])
+                    uuid = None
+                    generated_dir = os.path.join(CONTAINERS_DIR, name, "merged", "etc", "ankd", "services")
+                    if os.path.isdir(generated_dir):
+                        for gen_f in os.listdir(generated_dir):
+                            if gen_f.endswith(f"-{svc_name}.sh"):
+                                uuid = gen_f.split("-", 1)[0]
                                 break
+                    if uuid:
+                        pgid_file = os.path.join(CONTAINERS_DIR, name, "merged", "etc", "ankd", "pids", f"{uuid}.pgid")
+                        if os.path.isfile(pgid_file):
+                            with open(pgid_file) as pf:
+                                pgid = int(pf.read().strip())
+                            os.kill(pgid, 0)  # raises if not alive
+                            svc["status"] = "running"
+                            svc["pid"] = pgid
+                except (OSError, ValueError, ProcessLookupError):
+                    pass
                 except Exception:
                     pass
                 services.append(svc)
@@ -1705,7 +1758,7 @@ small{color:#334155}
         if not svc_name or not cmd:
             self.send_error(400, "name and cmd required")
             return
-        services_dir = os.path.join(CONTAINERS_DIR, name, "merged", "etc", "ankd", "services")
+        services_dir = os.path.join(CONTAINERS_DIR, name, "merged", "etc", "ankd", "services.d")
         os.makedirs(services_dir, exist_ok=True)
         ank_file = os.path.join(services_dir, f"{svc_name}.ankd")
         if os.path.exists(ank_file):
@@ -1728,7 +1781,7 @@ small{color:#334155}
             self.send_error(404, f"Container '{name}' not found")
             return
         instance_uuid = config.get("instance_uuid", name)
-        services_dir = os.path.join(CONTAINERS_DIR, name, "merged", "etc", "ankd", "services")
+        services_dir = os.path.join(CONTAINERS_DIR, name, "merged", "etc", "ankd", "services.d")
         ank_file = os.path.join(services_dir, f"{service}.ankd")
         if action != "delete" and not os.path.exists(ank_file):
             self.send_error(404, f"Service '{service}' not found")
@@ -1755,54 +1808,13 @@ small{color:#334155}
             self.send_json({"message": f"Service '{service}' disabled"})
             return
         if action == "stop":
-            # Kill by tag using ps + pgrep
-            try:
-                import subprocess
-                result = subprocess.run(
-                    ["ps", "-eo", "pid,args"],
-                    capture_output=True, text=True, timeout=3
-                )
-                for line in result.stdout.split("\n"):
-                    if instance_uuid in line and "-ANK" in line and service in line:
-                        pid = line.split()[0]
-                        # Kill children first
-                        children = subprocess.run(
-                            ["pgrep", "-P", pid],
-                            capture_output=True, text=True, timeout=3
-                        )
-                        for cpid in children.stdout.strip().split("\n"):
-                            if cpid:
-                                subprocess.run(["kill", "-9", cpid], capture_output=True)
-                        # Kill master
-                        subprocess.run(["kill", "-9", pid], capture_output=True)
-                        break
-            except Exception:
-                pass
+            _ank_stop_service_pgid(name, service)
             self.send_json({"message": f"Service '{service}' stopped"})
             return
         if action in ("start", "restart"):
             if action == "restart":
                 # Stop first
-                try:
-                    import subprocess
-                    result = subprocess.run(
-                        ["ps", "-eo", "pid,args"],
-                        capture_output=True, text=True, timeout=3
-                    )
-                    for line in result.stdout.split("\n"):
-                        if instance_uuid in line and "-ANK" in line and service in line:
-                            pid = line.split()[0]
-                            children = subprocess.run(
-                                ["pgrep", "-P", pid],
-                                capture_output=True, text=True, timeout=3
-                            )
-                            for cpid in children.stdout.strip().split("\n"):
-                                if cpid:
-                                    subprocess.run(["kill", "-9", cpid], capture_output=True)
-                            subprocess.run(["kill", "-9", pid], capture_output=True)
-                            break
-                except Exception:
-                    pass
+                _ank_stop_service_pgid(name, service)
             # Start via ankd exec
             output, code = run_script("container.sh", "exec", name, f"/usr/ankd/core/ankd.sh start {service}")
             if code != 0:
