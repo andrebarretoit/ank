@@ -851,6 +851,9 @@ _ankd_daemon() {
     [ -n "$_svc_ports" ] && _ankd_boot "INFO" "Service port(s): $_svc_ports"
 
     _ankd_boot "INFO" "ankd running. Waiting for services..."
+
+    # Create running marker for host-side status detection
+    echo "running" > /tmp/ankd-running 2>/dev/null
     
     # Wait for all children — check services by tag
     # Track restart counts per service to prevent infinite restart loops
@@ -939,6 +942,9 @@ _ankd_daemon() {
         done
         _ankd_sleep 3
     done
+
+    # Remove running marker on shutdown
+    rm -f /tmp/ankd-running 2>/dev/null
 }
 
 # ============================================================

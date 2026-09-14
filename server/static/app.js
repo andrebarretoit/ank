@@ -1399,6 +1399,8 @@ function startRefreshTimer() {
             if (selectedNode !== 'local') {
                 loadContainers();
                 loadImages();
+            } else {
+                loadContainers();
             }
         } catch (e) { }
     }, refreshSeconds * 1000);

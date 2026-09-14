@@ -330,33 +330,11 @@ def get_container_stats(name):
     return {"memory_bytes": mem, "memory_limit": lim, "cpu_usage": cpu, "pids": pids}
 
 def check_container_running(name):
-    config = load_container_config(name)
-    if not config:
+    marker = os.path.join(CONTAINERS_DIR, name, "merged", "tmp", "ankd-running")
+    try:
+        return os.path.exists(marker)
+    except Exception:
         return False
-    ssh_port = config.get("ssh_port")
-    if ssh_port:
-        try:
-            import socket
-            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.settimeout(1)
-            s.connect(("127.0.0.1", int(ssh_port)))
-            s.close()
-            return True
-        except Exception:
-            pass
-    pid = config.get("pid")
-    if pid:
-        try:
-            os.kill(pid, 0)
-            return True
-        except OSError:
-            pass
-        try:
-            if os.path.exists(f"/proc/{pid}"):
-                return True
-        except Exception:
-            pass
-    return False
 
 def get_mode():
     try:
