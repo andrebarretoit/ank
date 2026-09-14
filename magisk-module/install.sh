@@ -480,8 +480,47 @@ if [ -f "$ANKFS/usr/bin/apk" ]; then
         touch "$ANKFS/root/.ssh/authorized_keys"
         chmod 600 "$ANKFS/root/.ssh/authorized_keys"
         mkdir -p "$ANKFS/run/sshd"
-        log OK "openssh configured"
+        # Configure sshd for ANK SSH access (port 2200)
+        mkdir -p "$ANKFS/etc/ssh/sshd_config.d"
+        cat > "$ANKFS/etc/ssh/ank-sshd.conf" << 'SSHEOF'
+Port 2200
+ListenAddress 0.0.0.0
+PermitRootLogin yes
+PasswordAuthentication yes
+ChallengeResponseAuthentication no
+X11Forwarding no
+AllowTcpForwarding no
+PidFile /run/ankd/sshd.pid
+Subsystem sftp internal-sftp
+SSHEOF
+        # Merge into main sshd_config
+        if [ -f "$ANKFS/etc/ssh/sshd_config" ]; then
+            grep -v "^Port \|^ListenAddress \|^PermitRootLogin \|^PasswordAuthentication \|^ChallengeResponse \|^X11Forwarding \|^AllowTcpForwarding \|^PidFile \|^Subsystem sftp" \
+                "$ANKFS/etc/ssh/sshd_config" > "$ANKFS/etc/ssh/sshd_config.tmp" 2>/dev/null
+            cat "$ANKFS/etc/ssh/ank-sshd.conf" >> "$ANKFS/etc/ssh/sshd_config.tmp"
+            mv "$ANKFS/etc/ssh/sshd_config.tmp" "$ANKFS/etc/ssh/sshd_config"
+        fi
+        mkdir -p "$ANKFS/run/ankd"
+        log OK "openssh configured (port 2200)"
     fi
+fi
+
+# Install ankcoreshell in ankfs
+if [ -f "$SRC/server/ankcoreshell.sh" ]; then
+    cp "$SRC/server/ankcoreshell.sh" "$ANKFS/ankcoreshell.sh"
+    chmod 755 "$ANKFS/ankcoreshell.sh"
+    # Set root shell to ankcoreshell
+    sed -i 's|^root:[^:]*:[^:]*:[^:]*:[^:]*:[^:]*:.*|root:x:0:0:root:/root:/ankcoreshell.sh|' "$ANKFS/etc/passwd" 2>/dev/null
+    log OK "ankcoreshell installed"
+fi
+
+# Set root password in ankfs from config.json
+ANK_PASS=$(grep -o '"password":"[^"]*"' "$ANK_DIR/config.json" 2>/dev/null | head -1 | cut -d'"' -f4)
+[ -z "$ANK_PASS" ] && ANK_PASS="ank123"
+if [ -f "$ANKFS/usr/sbin/chpasswd" ] || [ -f "$ANKFS/usr/bin/chpasswd" ]; then
+    echo "root:${ANK_PASS}" | chroot "$ANKFS" /bin/sh -c "cat > /tmp/pw && chpasswd" 2>/dev/null || \
+    echo "root:${ANK_PASS}" | chroot "$ANKFS" /sbin/chpasswd 2>/dev/null || true
+    log OK "root password set in ankfs"
 fi
 
 # Copy openssh binaries + libs to container base image
@@ -543,6 +582,11 @@ done
 mkdir -p "$ANKFS/opt/ank/scripts"
 for f in "$SRC/scripts/"*.sh; do [ -f "$f" ] && cp "$f" "$ANKFS/opt/ank/scripts/"; done
 mkdir -p "$ANKFS/opt/ank/bin"
+mkdir -p "$ANK_DIR/core/ankd"
+if [ -d "$SRC/server/ankd" ]; then
+    cp -r "$SRC/server/ankd/"* "$ANK_DIR/core/ankd/" 2>/dev/null
+    chmod 755 "$ANK_DIR/core/ankd/"*.sh 2>/dev/null
+fi
 if [ -f "$SRC/server/static/ank-cli.py" ]; then
     cp "$SRC/server/static/ank-cli.py" "$ANKFS/opt/ank/bin/ank"
     cp "$SRC/server/static/ank-cli.py" "$ANKFS/opt/ank/bin/ank-core"

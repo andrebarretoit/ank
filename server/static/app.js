@@ -1304,8 +1304,10 @@ document.getElementById('panel-settings-form').addEventListener('submit', async 
     const enableRemote = document.getElementById('setting-remote-mgmt')?.checked ?? false;
     const managerIp = document.getElementById('setting-manager-ip')?.value?.trim() || '';
     const defaultPass = document.getElementById('setting-default-pass')?.value?.trim() || '';
+    const sshEnabled = document.getElementById('setting-ssh-enabled')?.checked ?? false;
+    const sshPort = document.getElementById('setting-ssh-port')?.value || '2200';
     try {
-        await api('POST', '/config', { bind_address: bind, refresh_interval: parseInt(refresh), autostart_on_boot: autostart, node_name: nodeName, enable_remote_management: enableRemote, manager_ip: managerIp, default_container_password: defaultPass });
+        await api('POST', '/config', { bind_address: bind, refresh_interval: parseInt(refresh), autostart_on_boot: autostart, node_name: nodeName, enable_remote_management: enableRemote, manager_ip: managerIp, default_container_password: defaultPass, ssh_enabled: sshEnabled, ssh_port: parseInt(sshPort) });
         refreshSeconds = parseInt(refresh);
         localStorage.setItem('ank_refresh', refresh);
         startRefreshTimer();
@@ -1369,6 +1371,15 @@ async function loadSettings() {
         if (mipGroup) mipGroup.style.display = remoteMgmtEl?.checked ? 'block' : 'none';
         if (remoteMgmtEl) remoteMgmtEl.addEventListener('change', () => {
             document.getElementById('manager-ip-group').style.display = remoteMgmtEl.checked ? 'block' : 'none';
+        });
+        const sshEnabledEl = document.getElementById('setting-ssh-enabled');
+        if (sshEnabledEl) sshEnabledEl.checked = cfg.ssh_enabled === true;
+        const sshPortEl = document.getElementById('setting-ssh-port');
+        if (sshPortEl) sshPortEl.value = cfg.ssh_port || 2200;
+        const sshPortGroup = document.getElementById('ssh-port-group');
+        if (sshPortGroup) sshPortGroup.style.display = sshEnabledEl?.checked ? 'block' : 'none';
+        if (sshEnabledEl) sshEnabledEl.addEventListener('change', () => {
+            document.getElementById('ssh-port-group').style.display = sshEnabledEl.checked ? 'block' : 'none';
         });
         const nodeName = cfg.node_name || '';
         document.getElementById('sidebar-title').textContent = nodeName ? `ANK - ${nodeName}` : 'ANK';

@@ -114,12 +114,27 @@ def _validate_token(token):
         return False
     with _tokens_lock:
         info = _tokens.get(token)
-        if not info:
-            return False
-        if time.time() > info["expires"]:
-            del _tokens[token]
-            return False
-    return True
+        if info:
+            if time.time() > info["expires"]:
+                del _tokens[token]
+                return False
+            return True
+    try:
+        nodes_dir = os.path.join(ANK_DIR, "nodes")
+        if os.path.isdir(nodes_dir):
+            for fname in os.listdir(nodes_dir):
+                if not fname.endswith(".json"):
+                    continue
+                try:
+                    with open(os.path.join(nodes_dir, fname)) as f:
+                        cfg = json.load(f)
+                    if cfg.get("token") == token:
+                        return True
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    return False
 
 def _detect_client(handler):
     """Detect client type: browser, panel, cli, installer, unknown"""
@@ -143,6 +158,29 @@ def _get_client_token(handler):
         return auth[7:]
     return None
 
+def _ip_in_range(ip, ip_range):
+    if not ip_range or ip_range == "0.0.0.0":
+        return True
+    if "/" not in ip_range:
+        return ip == ip_range
+    try:
+        import ipaddress
+        return ipaddress.ip_address(ip) in ipaddress.ip_network(ip_range, strict=False)
+    except Exception:
+        return ip == ip_range
+
+def _check_manager_ip(handler):
+    config = load_config()
+    if not config.get("enable_remote_management"):
+        return True
+    mgr_ip = config.get("manager_ip", "")
+    if not mgr_ip:
+        return True
+    client_ip = handler.client_address[0]
+    if client_ip in ("127.0.0.1", "::1"):
+        return True
+    return _ip_in_range(client_ip, mgr_ip)
+
 def _check_auth(handler):
     """Check authentication: token-based for API clients, reject browsers"""
     client = _detect_client(handler)
@@ -158,8 +196,9 @@ def load_config():
         with open(CONFIG_FILE, "r") as f:
             return json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
-        return {"version": "2.0.0", "panel_port": 8001, "username": "admin",
-                "password": "admin123", "first_boot": True,
+        return {"version": "2.0.0", "panel_port": 8001, "username": "ank",
+                "password": "ank123", "first_boot": True,
+                "default_container_password": "ank123",
                 "network": {"bridge": "ank0", "subnet": "10.20.30.0", "gateway": "10.20.30.1", "nat": True}}
 
 def save_config(config):
@@ -187,6 +226,50 @@ def save_container_config(name, config):
         os.chmod(path, 0o666)
     except Exception:
         pass
+
+def _ank_service_uuid(container_name, service_name):
+    """Look up a service's generated-script uuid by scanning
+    merged/etc/ankd/services for '<uuid>-<service_name>.sh'."""
+    generated_dir = os.path.join(CONTAINERS_DIR, container_name, "merged", "etc", "ankd", "services")
+    try:
+        for f in os.listdir(generated_dir):
+            if f.endswith(f"-{service_name}.sh"):
+                return f.split("-", 1)[0]
+    except OSError:
+        pass
+    return None
+
+def _ank_stop_service_pgid(container_name, service_name):
+    """Stop a single service by reading its pgid from the registry ankd
+    keeps at merged/etc/ankd/pids/<uuid>.pgid (real disk, host-visible,
+    no bind mount needed). Every ankd service is started via setsid, so
+    the recorded pid is simultaneously its process-group id: os.killpg
+    takes down the master and every forked child (e.g. nginx workers) in
+    one call, with no ps/pgrep subprocess calls and no /proc scanning."""
+    uuid = _ank_service_uuid(container_name, service_name)
+    if not uuid:
+        return False
+    pgid_file = os.path.join(CONTAINERS_DIR, container_name, "merged", "etc", "ankd", "pids", f"{uuid}.pgid")
+    try:
+        with open(pgid_file) as f:
+            pgid = int(f.read().strip())
+    except (OSError, ValueError):
+        return False
+    try:
+        os.killpg(pgid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    except PermissionError:
+        pass
+    try:
+        os.kill(pgid, signal.SIGKILL)  # belt-and-suspenders on the leader itself
+    except (ProcessLookupError, PermissionError):
+        pass
+    try:
+        os.remove(pgid_file)
+    except OSError:
+        pass
+    return True
 
 def run_script(script, *args, timeout=60):
     script_path = os.path.join(SCRIPTS_DIR, script)
@@ -1007,6 +1090,9 @@ small{color:#334155}
             if auth != 'authorized':
                 self.send_error(401, "Unauthorized")
                 return
+            if not _check_manager_ip(self):
+                self.send_error(403, "Forbidden: IP not allowed")
+                return
             try:
                 self.route_get(path, parsed)
             except Exception as e:
@@ -1018,13 +1104,16 @@ small{color:#334155}
         parsed = urlparse(self.path)
         path = parsed.path
         if path.startswith("/api/"):
-            if path != "/api/auth/login":
+            if path != "/api/auth/login" and path != "/api/nodes/pairing/request":
                 auth = _check_auth(self)
                 if auth == 'browser':
                     self.send_404_html()
                     return
                 if auth != 'authorized':
                     self.send_error(401, "Unauthorized")
+                    return
+                if not _check_manager_ip(self):
+                    self.send_error(403, "Forbidden: IP not allowed")
                     return
             try:
                 self.route_post(path, parsed)
@@ -1044,6 +1133,9 @@ small{color:#334155}
             if auth != 'authorized':
                 self.send_error(401, "Unauthorized")
                 return
+            if not _check_manager_ip(self):
+                self.send_error(403, "Forbidden: IP not allowed")
+                return
             if "/upload" in path:
                 try:
                     self.api_upload_file(path)
@@ -1062,6 +1154,9 @@ small{color:#334155}
                 return
             if auth != 'authorized':
                 self.send_error(401, "Unauthorized")
+                return
+            if not _check_manager_ip(self):
+                self.send_error(403, "Forbidden: IP not allowed")
                 return
             self.route_delete(path, parsed)
             return
@@ -1139,6 +1234,8 @@ small{color:#334155}
             self.api_backup_inspect(path.split("/")[3])
         elif path == "/api/nodes":
             self.api_list_nodes()
+        elif path == "/api/nodes/manager":
+            self.api_get_manager()
         elif path == "/api/nodes/pairing":
             self.api_list_pairing_requests()
         elif path.startswith("/api/nodes/") and path.endswith("/containers"):
@@ -1181,6 +1278,26 @@ small{color:#334155}
             self.api_exec_container(path.split("/")[3], data)
         elif path.startswith("/api/containers/") and path.endswith("/update"):
             self.api_update_container(path.split("/")[3], data)
+        elif "/services" in path and path.startswith("/api/containers/"):
+            parts = path.split("/")
+            name = parts[3]
+            if path.endswith("/services"):
+                if method == "GET":
+                    self.api_list_services(name)
+                elif method == "POST":
+                    self.api_add_service(name, data)
+            elif "/services/" in path and path.endswith("/start"):
+                self.api_service_action(name, parts[5], "start")
+            elif "/services/" in path and path.endswith("/stop"):
+                self.api_service_action(name, parts[5], "stop")
+            elif "/services/" in path and path.endswith("/restart"):
+                self.api_service_action(name, parts[5], "restart")
+            elif "/services/" in path and path.endswith("/enable"):
+                self.api_service_action(name, parts[5], "enable")
+            elif "/services/" in path and path.endswith("/disable"):
+                self.api_service_action(name, parts[5], "disable")
+            elif "/services/" in path and method == "DELETE":
+                self.api_service_action(name, parts[5], "delete")
         elif "/files/write" in path and path.startswith("/api/containers/"):
             name = path.split("/")[3]
             self.api_files_write(name, data)
@@ -1190,6 +1307,8 @@ small{color:#334155}
         elif "/files/rename" in path and path.startswith("/api/containers/"):
             name = path.split("/")[3]
             self.api_files_rename(name, data)
+        elif path == "/api/images/upload":
+            self.api_receive_image_upload()
         elif path == "/api/images/pull":
             self.api_pull_image(data)
         elif path == "/api/images/templates":
@@ -1262,10 +1381,16 @@ small{color:#334155}
         elif path.startswith("/api/nodes/") and path.endswith("/images/transfer"):
             parts = path.split("/")
             self.api_node_image_transfer(parts[3], data)
+        elif path.startswith("/api/nodes/") and path.endswith("/containers"):
+            parts = path.split("/")
+            self.api_node_container_create(parts[3], data)
         else:
             self.send_error(404, "Not Found")
 
     def route_delete(self, path, parsed=None):
+        if path == "/api/nodes/manager":
+            self.api_revoke_manager()
+            return
         if "/files" in path and path.startswith("/api/containers/"):
             parts = path.split("/")
             name = parts[3]
@@ -1340,6 +1465,8 @@ small{color:#334155}
                 f.write(f"Senha: {new_pass}\n")
         except Exception:
             pass
+        # Sync password to ankfs sshd
+        self._sync_ankfs_password(new_pass)
         self.send_json({"success": True, "message": "Password changed"})
 
     # ============================================================
@@ -1516,7 +1643,23 @@ small{color:#334155}
         save_container_config(name, config)
         def do_stop():
             try:
+                log_path = os.path.join(ANK_DIR, "logs", f"{name}.log")
+                from datetime import datetime
+                ts = datetime.now().strftime("%H:%M:%S")
+                with open(log_path, "a") as lf:
+                    lf.write(f"[boot] {ts} Stopping services...\n")
+                    lf.flush()
                 output, code = run_script("container.sh", "stop", name)
+                # Write stop output to log
+                try:
+                    ts2 = datetime.now().strftime("%H:%M:%S")
+                    with open(log_path, "a") as lf:
+                        for line in output.strip().split("\n"):
+                            lf.write(f"[stop] {ts2} {line}\n")
+                        lf.write(f"[stop] {ts2} Container stopped\n")
+                        lf.flush()
+                except Exception:
+                    pass
                 cfg = load_container_config(name)
                 if cfg:
                     if code != 0:
@@ -1547,6 +1690,139 @@ small{color:#334155}
             self.send_error(500, f"Failed to delete: {output}")
             return
         self.send_json({"message": f"Container '{name}' deleted"})
+
+    def api_list_services(self, name):
+        config = load_container_config(name)
+        if not config:
+            self.send_error(404, f"Container '{name}' not found")
+            return
+        instance_uuid = config.get("instance_uuid", name)
+        services_dir = os.path.join(CONTAINERS_DIR, name, "merged", "etc", "ankd", "services.d")
+        services = []
+        if os.path.isdir(services_dir):
+            for f in sorted(os.listdir(services_dir)):
+                if not f.endswith(".ankd"):
+                    continue
+                svc_name = f.replace(".ankd", "")
+                if "-" in svc_name:
+                    svc_name = svc_name.split("-", 1)[1]
+                svc = {"name": svc_name, "file": f, "enabled": True, "restart_policy": "always", "cmd": ""}
+                # Read .ankd config
+                try:
+                    with open(os.path.join(services_dir, f)) as fh:
+                        for line in fh:
+                            line = line.strip()
+                            if line.startswith("CMD="):
+                                svc["cmd"] = line[4:].strip('"')
+                            elif line.startswith("ENABLED="):
+                                svc["enabled"] = line[8:].strip('"') == "true"
+                            elif line.startswith("RESTART_POLICY="):
+                                svc["restart_policy"] = line[15:].strip('"')
+                except Exception:
+                    pass
+                # Check if running via the pgid registry ankd keeps at
+                # merged/etc/ankd/pids/<uuid>.pgid - real disk (not tmpfs),
+                # so it's directly readable from here with no ps/tag
+                # matching and no /proc scanning. ankd starts every service
+                # with setsid, so the recorded pid is also its pgid/sid.
+                svc["status"] = "stopped"
+                svc["pid"] = None
+                try:
+                    uuid = None
+                    generated_dir = os.path.join(CONTAINERS_DIR, name, "merged", "etc", "ankd", "services")
+                    if os.path.isdir(generated_dir):
+                        for gen_f in os.listdir(generated_dir):
+                            if gen_f.endswith(f"-{svc_name}.sh"):
+                                uuid = gen_f.split("-", 1)[0]
+                                break
+                    if uuid:
+                        pgid_file = os.path.join(CONTAINERS_DIR, name, "merged", "etc", "ankd", "pids", f"{uuid}.pgid")
+                        if os.path.isfile(pgid_file):
+                            with open(pgid_file) as pf:
+                                pgid = int(pf.read().strip())
+                            os.kill(pgid, 0)  # raises if not alive
+                            svc["status"] = "running"
+                            svc["pid"] = pgid
+                except (OSError, ValueError, ProcessLookupError):
+                    pass
+                except Exception:
+                    pass
+                services.append(svc)
+        self.send_json({"services": services, "instance_uuid": instance_uuid})
+
+    def api_add_service(self, name, data):
+        config = load_container_config(name)
+        if not config:
+            self.send_error(404, f"Container '{name}' not found")
+            return
+        svc_name = data.get("name", "").strip()
+        cmd = data.get("cmd", "").strip()
+        if not svc_name or not cmd:
+            self.send_error(400, "name and cmd required")
+            return
+        services_dir = os.path.join(CONTAINERS_DIR, name, "merged", "etc", "ankd", "services.d")
+        os.makedirs(services_dir, exist_ok=True)
+        ank_file = os.path.join(services_dir, f"{svc_name}.ankd")
+        if os.path.exists(ank_file):
+            self.send_error(409, f"Service '{svc_name}' already exists")
+            return
+        enabled = data.get("enabled", True)
+        policy = data.get("restart_policy", "on-failure")
+        delay = data.get("restart_delay", "2")
+        with open(ank_file, "w") as f:
+            f.write(f"NAME={svc_name}\n")
+            f.write(f"CMD={cmd}\n")
+            f.write(f"ENABLED={str(enabled).lower()}\n")
+            f.write(f"RESTART_POLICY={policy}\n")
+            f.write(f"RESTART_DELAY={delay}\n")
+        self.send_json({"message": f"Service '{svc_name}' created", "name": svc_name}, 201)
+
+    def api_service_action(self, name, service, action):
+        config = load_container_config(name)
+        if not config:
+            self.send_error(404, f"Container '{name}' not found")
+            return
+        instance_uuid = config.get("instance_uuid", name)
+        services_dir = os.path.join(CONTAINERS_DIR, name, "merged", "etc", "ankd", "services.d")
+        ank_file = os.path.join(services_dir, f"{service}.ankd")
+        if action != "delete" and not os.path.exists(ank_file):
+            self.send_error(404, f"Service '{service}' not found")
+            return
+        if action == "delete":
+            if os.path.exists(ank_file):
+                os.remove(ank_file)
+            self.send_json({"message": f"Service '{service}' deleted"})
+            return
+        if action == "enable":
+            with open(ank_file, "r") as f:
+                content = f.read()
+            content = content.replace("ENABLED=false", "ENABLED=true")
+            with open(ank_file, "w") as f:
+                f.write(content)
+            self.send_json({"message": f"Service '{service}' enabled"})
+            return
+        if action == "disable":
+            with open(ank_file, "r") as f:
+                content = f.read()
+            content = content.replace("ENABLED=true", "ENABLED=false")
+            with open(ank_file, "w") as f:
+                f.write(content)
+            self.send_json({"message": f"Service '{service}' disabled"})
+            return
+        if action == "stop":
+            _ank_stop_service_pgid(name, service)
+            self.send_json({"message": f"Service '{service}' stopped"})
+            return
+        if action in ("start", "restart"):
+            if action == "restart":
+                # Stop first
+                _ank_stop_service_pgid(name, service)
+            # Start via ankd exec
+            output, code = run_script("container.sh", "exec", name, f"/usr/ankd/core/ankd.sh start {service}")
+            if code != 0:
+                self.send_error(500, f"Failed to start service: {output}")
+                return
+            self.send_json({"message": f"Service '{service}' started"})
 
     def api_restart_container(self, name):
         config = load_container_config(name)
@@ -2168,7 +2444,7 @@ small{color:#334155}
             self.send_error(400, "Base ank-alpinebase-3.20 image not found. Reinstall the module.")
             return
 
-        root_password = data.get("root_password", "admin123")
+        root_password = data.get("root_password") or load_config().get("default_container_password", "ank123")
 
         # Write stub config with "building" status immediately
         stub_dir = os.path.join(CONTAINERS_DIR, container_name)
@@ -2204,7 +2480,7 @@ small{color:#334155}
                     lf.flush()
 
                 pkgs = " ".join(template.get("packages", []))
-                output, code = run_script("container.sh", "create", container_name, "ank-alpinebase-3.20", str(root_password), str(ssh_port), pkgs, timeout=300)
+                output, code = run_script("container.sh", "create", container_name, "ank-alpinebase-3.20", str(root_password), str(ssh_port), pkgs, template_id, timeout=300)
                 with open(log_path, "a") as lf:
                     lf.write(output + "\n")
                     lf.flush()
@@ -2870,29 +3146,426 @@ small{color:#334155}
 
     def _get_man_page(self, cmd):
         man_pages = {
-            "ps": "ank ps\n\nList all containers with their status, IP, image, and PID.\n\nUsage: ank ps\n\nExample:\n  ank ps\n  NAME                 STATUS     IP               IMAGE\n  my-site              running    10.20.30.3       alpine-3.20",
-            "start": "ank start <name>\n\nStart a stopped container.\n\nUsage: ank start <name>\n\nExample:\n  ank start my-site",
-            "stop": "ank stop <name>\n\nStop a running container.\n\nUsage: ank stop <name>",
-            "restart": "ank restart <name>\n\nRestart a container (stop + start).\n\nUsage: ank restart <name>",
-            "rm": "ank rm <name>\n\nDelete a container and its data permanently.\n\nUsage: ank rm <name>",
-            "logs": "ank logs <name>\n\nView the last 50 lines of container logs.\n\nUsage: ank logs <name>",
-            "exec": "ank exec <name> <command>\n\nExecute a command inside a running container.\n\nUsage: ank exec <name> <command>\n\nExample:\n  ank exec my-site ls /var/www/html",
-            "inspect": "ank inspect <name>\n\nShow detailed container configuration.\n\nUsage: ank inspect <name>",
-            "images": "ank images\n\nList all downloaded base images.\n\nUsage: ank images",
-            "templates": "ank templates\n\nList available deployment templates.\n\nUsage: ank templates",
-            "deploy": "ank deploy <template> <name>\n\nDeploy a container from a template.\n\nUsage: ank deploy <template> <name>\n\nTemplates: alpine, python, nginx, apache, php, node\n\nExample:\n  ank deploy nginx my-site",
+            "ps": (
+                "ANK PS - LIST CONTAINERS\n"
+                "═══════════════════════════════════════════════════════════════\n\n"
+                "NAME\n"
+                "    ank ps - List all containers with status, IP, image, and PID.\n\n"
+                "SYNOPSIS\n"
+                "    ank ps\n\n"
+                "DESCRIPTION\n"
+                "    Displays a table of all containers. Each row shows:\n"
+                "    - NAME: Container name (unique identifier)\n"
+                "    - STATUS: running | stopped | error\n"
+                "    - IP: Container IP on the ank0 bridge (e.g. 10.20.30.3)\n"
+                "    - IMAGE: Base image used (e.g. alpine-3.20, nginx-3.20)\n"
+                "    - PID: Main process ID (0 if not running)\n\n"
+                "EXAMPLES\n"
+                "    ank ps\n"
+                "    NAME                 STATUS       IP               IMAGE\n"
+                "    my-site              running      10.20.30.3       nginx-3.20\n"
+                "    dev-server           stopped      -                python-3.20\n\n"
+                "TIPS\n"
+                "    - Use 'ank start <name>' to start a stopped container\n"
+                "    - Use 'ank logs <name>' to view container logs\n"
+                "    - Use 'ank inspect <name>' for detailed info"
+            ),
+            "start": (
+                "ANK START - START CONTAINER\n"
+                "═══════════════════════════════════════════════════════════════\n\n"
+                "NAME\n"
+                "    ank start - Start a stopped container.\n\n"
+                "SYNOPSIS\n"
+                "    ank start <name>\n\n"
+                "DESCRIPTION\n"
+                "    Starts a previously created or stopped container.\n"
+                "    The container's filesystem is mounted, network is configured,\n"
+                "    and services (sshd, nginx, etc.) are launched.\n\n"
+                "    On start, ANK will:\n"
+                "    1. Mount the overlay filesystem (merged dir)\n"
+                "    2. Configure network (bridge, iptables, DNS)\n"
+                "    3. Set root password from config.json\n"
+                "    4. Start sshd on the configured port\n"
+                "    5. Mark container as 'running' in config\n\n"
+                "OPTIONS\n"
+                "    <name>     Name of the container (from 'ank ps')\n\n"
+                "EXAMPLES\n"
+                "    ank start my-site\n"
+                "    ank start dev-server\n\n"
+                "EXIT STATUS\n"
+                "    0    Container started successfully\n"
+                "    1    Container not found or already running\n\n"
+                "SEE ALSO\n"
+                "    ank stop, ank restart, ank ps"
+            ),
+            "stop": (
+                "ANK STOP - STOP CONTAINER\n"
+                "═══════════════════════════════════════════════════════════════\n\n"
+                "NAME\n"
+                "    ank stop - Stop a running container.\n\n"
+                "SYNOPSIS\n"
+                "    ank stop <name>\n\n"
+                "DESCRIPTION\n"
+                "    Gracefully stops a running container. All processes inside\n"
+                "    the container are terminated, SSH connections are closed,\n"
+                "    and network rules are removed.\n\n"
+                "    On stop, ANK will:\n"
+                "    1. Kill the container's main process tree (recursive)\n"
+                "    2. Kill all sshd processes on the container's port\n"
+                "    3. Remove iptables rules and network namespace\n"
+                "    4. Unmount overlay filesystems\n"
+                "    5. Mark container as 'stopped' in config\n\n"
+                "OPTIONS\n"
+                "    <name>     Name of the container\n\n"
+                "EXIT STATUS\n"
+                "    0    Container stopped successfully\n"
+                "    1    Container not found or not running\n\n"
+                "SEE ALSO\n"
+                "    ank start, ank restart, ank rm"
+            ),
+            "restart": (
+                "ANK RESTART - RESTART CONTAINER\n"
+                "═══════════════════════════════════════════════════════════════\n\n"
+                "NAME\n"
+                "    ank restart - Restart a container (stop + start).\n\n"
+                "SYNOPSIS\n"
+                "    ank restart <name>\n\n"
+                "DESCRIPTION\n"
+                "    Convenience command that performs 'ank stop' followed by\n"
+                "    'ank start' on the specified container. Useful when you\n"
+                "    need to reload configuration or apply changes.\n\n"
+                "OPTIONS\n"
+                "    <name>     Name of the container\n\n"
+                "EXAMPLES\n"
+                "    ank restart my-site\n\n"
+                "SEE ALSO\n"
+                "    ank start, ank stop"
+            ),
+            "rm": (
+                "ANK RM - DELETE CONTAINER\n"
+                "═══════════════════════════════════════════════════════════════\n\n"
+                "NAME\n"
+                "    ank rm - Delete a container and all its data.\n\n"
+                "SYNOPSIS\n"
+                "    ank rm <name>\n\n"
+                "DESCRIPTION\n"
+                "    Permanently removes a container. If the container is\n"
+                "    running, it is stopped first. All data in the container\n"
+                "    (filesystem, config, logs) is deleted.\n\n"
+                "    WARNING: This action is irreversible!\n\n"
+                "OPTIONS\n"
+                "    <name>     Name of the container\n\n"
+                "EXAMPLES\n"
+                "    ank rm my-site\n"
+                "    ank rm -f my-site    # Force delete\n\n"
+                "SEE ALSO\n"
+                "    ank stop, ank ps"
+            ),
+            "logs": (
+                "ANK LOGS - VIEW CONTAINER LOGS\n"
+                "═══════════════════════════════════════════════════════════════\n\n"
+                "NAME\n"
+                "    ank logs - Display the last lines of container logs.\n\n"
+                "SYNOPSIS\n"
+                "    ank logs <name>\n\n"
+                "DESCRIPTION\n"
+                "    Shows the last 50 lines from the container's log file.\n"
+                "    Logs include boot messages, service starts, and any\n"
+                "    output from processes inside the container.\n\n"
+                "OPTIONS\n"
+                "    <name>     Name of the container\n\n"
+                "EXAMPLES\n"
+                "    ank logs my-site\n"
+                "    ank logs my-site | tail -20\n\n"
+                "SEE ALSO\n"
+                "    ank exec, ank start"
+            ),
+            "exec": (
+                "ANK EXEC - EXECUTE COMMAND\n"
+                "═══════════════════════════════════════════════════════════════\n\n"
+                "NAME\n"
+                "    ank exec - Execute a command inside a running container.\n\n"
+                "SYNOPSIS\n"
+                "    ank exec <name> <command> [args...]\n\n"
+                "DESCRIPTION\n"
+                "    Runs the specified command inside the container's\n"
+                "    filesystem using chroot. The command runs as root.\n\n"
+                "OPTIONS\n"
+                "    <name>      Name of the container\n"
+                "    <command>   Command to execute\n"
+                "    [args...]   Optional arguments for the command\n\n"
+                "EXAMPLES\n"
+                "    ank exec my-site ls /var/www/html\n"
+                "    ank exec my-site cat /etc/nginx/nginx.conf\n"
+                "    ank exec my-site apk update\n\n"
+                "SEE ALSO\n"
+                "    ank ssh, ank start"
+            ),
+            "inspect": (
+                "ANK INSPECT - INSPECT CONTAINER\n"
+                "═══════════════════════════════════════════════════════════════\n\n"
+                "NAME\n"
+                "    inspect - Show detailed information about a container.\n\n"
+                "SYNOPSIS\n"
+                "    ank inspect <name>\n\n"
+                "DESCRIPTION\n"
+                "    Displays comprehensive details including:\n"
+                "    - Name, status, image, PID\n"
+                "    - IP address and SSH port\n"
+                "    - Creation date and last start time\n"
+                "    - Resource limits (RAM, CPU)\n"
+                "    - Network configuration\n\n"
+                "OPTIONS\n"
+                "    <name>     Name of the container\n\n"
+                "EXAMPLES\n"
+                "    ank inspect my-site\n\n"
+                "SEE ALSO\n"
+                "    ank ps"
+            ),
+            "images": (
+                "ANK IMAGES - LIST IMAGES\n"
+                "═══════════════════════════════════════════════════════════════\n\n"
+                "NAME\n"
+                "    ank images - List all available container images.\n\n"
+                "SYNOPSIS\n"
+                "    ank images\n\n"
+                "DESCRIPTION\n"
+                "    Shows all container images available on this device.\n"
+                "    Images are the base filesystems used to create containers.\n\n"
+                "EXAMPLES\n"
+                "    ank images\n\n"
+                "SEE ALSO\n"
+                "    ank pull, ank deploy"
+            ),
+            "templates": (
+                "ANK TEMPLATES - LIST TEMPLATES\n"
+                "═══════════════════════════════════════════════════════════════\n\n"
+                "NAME\n"
+                "    ank templates - List available deploy templates.\n\n"
+                "SYNOPSIS\n"
+                "    ank templates\n\n"
+                "DESCRIPTION\n"
+                "    Shows all pre-configured deployment templates:\n"
+                "    alpine, python, nginx, apache, php, node\n\n"
+                "EXAMPLES\n"
+                "    ank templates\n\n"
+                "SEE ALSO\n"
+                "    ank deploy, ank images"
+            ),
+            "deploy": (
+                "ANK DEPLOY - DEPLOY FROM TEMPLATE\n"
+                "═══════════════════════════════════════════════════════════════\n\n"
+                "NAME\n"
+                "    ank deploy - Create and configure a container from a template.\n\n"
+                "SYNOPSIS\n"
+                "    ank deploy <template> <name>\n\n"
+                "DESCRIPTION\n"
+                "    Deploys a new container based on a pre-configured template.\n"
+                "    The container is created with the default root password\n"
+                "    configured in Settings (default: ank123).\n\n"
+                "TEMPLATES\n"
+                "    alpine    Base Alpine Linux (no extra packages)\n"
+                "    python    Python 3.12 + pip\n"
+                "    nginx     Nginx + curl (port 8080)\n"
+                "    apache    Apache2 + curl (port 9090)\n"
+                "    php       PHP 8.2 + mbstring + json + cgi\n"
+                "    node      Node.js 20 + npm (port 3000)\n\n"
+                "OPTIONS\n"
+                "    <template>  Template ID (see 'ank templates')\n"
+                "    <name>      Name for the new container (must be unique)\n\n"
+                "EXAMPLES\n"
+                "    ank deploy nginx my-site\n"
+                "    ank deploy python ml-server\n\n"
+                "SEE ALSO\n"
+                "    ank templates, ank images, ank pull"
+            ),
         }
         return man_pages.get(cmd, f"No manual entry for 'ank {cmd}'. Available commands: {', '.join(man_pages.keys())}")
 
     def _get_core_man_page(self, cmd):
         man_pages = {
-            "status": "ank-core status\n\nShow system status including uptime, container count, and mode.\n\nUsage: ank-core status",
-            "restart": "ank-core restart\n\nRestart the ANK server. All running containers stay alive.\n\nUsage: ank-core restart",
-            "shell": "ank-core shell\n\nFull host shell access. Commands run directly on the Android host.\n\nUsage: ank-core shell\n\nWarning: Use with caution. You have root access.",
-            "info": "ank-core info\n\nShow device information (model, kernel, memory).\n\nUsage: ank-core info",
-            "network": "ank-core network\n\nShow network configuration (bridge, subnet, gateway).\n\nUsage: ank-core network",
-            "clean": "ank-core clean\n\nClean up orphaned resources (network namespaces, temp files).\n\nUsage: ank-core clean",
-            "logs": "ank-core logs\n\nShow the last 30 lines of server logs.\n\nUsage: ank-core logs",
+            "status": (
+                "ANK-CORE STATUS\n"
+                "═══════════════════════════════════════════════════════════════\n\n"
+                "NAME\n"
+                "    ank-core status - Display ANK engine status and statistics.\n\n"
+                "SYNOPSIS\n"
+                "    ank-core status\n\n"
+                "DESCRIPTION\n"
+                "    Shows a comprehensive overview of the ANK engine including:\n"
+                "    - Engine version\n"
+                "    - Container counts (running / stopped / total)\n"
+                "    - Operating mode (compat or isolated)\n"
+                "    - Server port\n\n"
+                "OUTPUT\n"
+                "    ANK Engine v2.0.0\n"
+                "    Containers: 3 running, 1 stopped, 4 total\n"
+                "    Mode:       compat\n"
+                "    Port:       8001\n\n"
+                "MODES\n"
+                "    compat      Traditional mode (full compatibility)\n"
+                "    isolated    Enhanced isolation (uses PID namespaces)\n\n"
+                "EXAMPLES\n"
+                "    ank-core status\n\n"
+                "SEE ALSO\n"
+                "    ank-core info, ank ps"
+            ),
+            "restart": (
+                "ANK-CORE RESTART\n"
+                "═══════════════════════════════════════════════════════════════\n\n"
+                "NAME\n"
+                "    ank-core restart - Restart the ANK server process.\n\n"
+                "SYNOPSIS\n"
+                "    ank-core restart\n\n"
+                "DESCRIPTION\n"
+                "    Stops the ANK server and starts it again. Running containers\n"
+                "    remain alive (they are not stopped).\n\n"
+                "    Use this command when:\n"
+                "    - You changed server configuration\n"
+                "    - The web panel is not responding\n"
+                "    - After installing/updating the ANK module\n\n"
+                "    The restart process:\n"
+                "    1. Kills the existing server process\n"
+                "    2. Waits for cleanup\n"
+                "    3. Starts a fresh server instance\n\n"
+                "WARNING\n"
+                "    Running containers stay alive but the web panel will be\n"
+                "    briefly unavailable during restart.\n\n"
+                "EXAMPLES\n"
+                "    ank-core restart\n\n"
+                "SEE ALSO\n"
+                "    ank-core status, ank-core logs"
+            ),
+            "shell": (
+                "ANK-CORE SHELL\n"
+                "═══════════════════════════════════════════════════════════════\n\n"
+                "NAME\n"
+                "    ank-core shell - Open a full host shell.\n\n"
+                "SYNOPSIS\n"
+                "    ank-core shell\n\n"
+                "DESCRIPTION\n"
+                "    Opens an interactive shell with root access to the Android\n"
+                "    host. Commands run directly on the host system.\n\n"
+                "WARNING\n"
+                "    This gives you ROOT access to the device.\n"
+                "    Be very careful with what commands you run.\n"
+                "    Mistakes can brick your device.\n\n"
+                "USE CASES\n"
+                "    - Debugging ANK internals\n"
+                "    - Inspecting host network configuration\n"
+                "    - Checking system-level processes\n"
+                "    - Manual cleanup of stuck resources\n\n"
+                "EXAMPLES\n"
+                "    ank-core shell\n"
+                "    # You are now in a root shell on the host\n"
+                "    ls /data/ank/\n"
+                "    ps aux | grep ank\n\n"
+                "SEE ALSO\n"
+                "    ank-core logs, ank-core clean"
+            ),
+            "info": (
+                "ANK-CORE INFO\n"
+                "═══════════════════════════════════════════════════════════════\n\n"
+                "NAME\n"
+                "    ank-core info - Show detailed device information.\n\n"
+                "SYNOPSIS\n"
+                "    ank-core info\n\n"
+                "DESCRIPTION\n"
+                "    Displays comprehensive system information about the host\n"
+                "    device. This includes:\n\n"
+                "    DEVICE INFO\n"
+                "    - OS version (Android version)\n"
+                "    - Device model\n"
+                "    - Kernel version\n"
+                "    - CPU model and core count\n"
+                "    - RAM usage (used / total / percentage)\n"
+                "    - Storage usage on /data partition\n"
+                "    - System uptime\n"
+                "    - CPU load average\n\n"
+                "    ANK INFO\n"
+                "    - Container count (running / total)\n"
+                "    - Available images\n"
+                "    - Operating mode\n\n"
+                "EXAMPLES\n"
+                "    ank-core info\n\n"
+                "SEE ALSO\n"
+                "    ank-core status, ank-core network"
+            ),
+            "network": (
+                "ANK-CORE NETWORK\n"
+                "═══════════════════════════════════════════════════════════════\n\n"
+                "NAME\n"
+                "    ank-core network - Show ANK network configuration.\n\n"
+                "SYNOPSIS\n"
+                "    ank-core network\n\n"
+                "DESCRIPTION\n"
+                "    Displays the virtual network configuration used by containers.\n"
+                "    ANK creates an isolated bridge network for containers.\n\n"
+                "FIELDS\n"
+                "    Bridge     Virtual bridge interface (default: ank0)\n"
+                "    Subnet     Container subnet (default: 10.20.30.0/24)\n"
+                "    Gateway    Gateway IP for containers (default: 10.20.30.1)\n"
+                "    NAT        Network address translation (true/false)\n\n"
+                "NETWORK ARCHITECTURE\n"
+                "    Containers get IPs in the 10.20.30.x range.\n"
+                "    The bridge (ank0) connects containers to the host.\n"
+                "    NAT allows containers to access the internet.\n"
+                "    Port mapping (npad) enables host access to containers.\n\n"
+                "EXAMPLES\n"
+                "    ank-core network\n\n"
+                "SEE ALSO\n"
+                "    ank-core info, ank-core clean"
+            ),
+            "clean": (
+                "ANK-CORE CLEAN\n"
+                "═══════════════════════════════════════════════════════════════\n\n"
+                "NAME\n"
+                "    ank-core clean - Clean up orphaned resources.\n\n"
+                "SYNOPSIS\n"
+                "    ank-core clean\n\n"
+                "DESCRIPTION\n"
+                "    Removes orphaned resources left behind after crashes or\n"
+                "    improper shutdowns. This includes:\n"
+                "    - Orphaned network namespaces\n"
+                "    - Leftover veth interfaces\n"
+                "    - Unused cgroup hierarchies\n"
+                "    - Stale PID files\n"
+                "    - Temporary files\n\n"
+                "    Safe to run at any time. Only removes resources not\n"
+                "    currently in use by running containers.\n\n"
+                "WHEN TO USE\n"
+                "    - After a device crash or forced restart\n"
+                "    - If containers show unexpected network errors\n"
+                "    - If disk usage seems higher than expected\n"
+                "    - As periodic maintenance\n\n"
+                "EXAMPLES\n"
+                "    ank-core clean\n\n"
+                "SEE ALSO\n"
+                "    ank-core network, ank-core status"
+            ),
+            "logs": (
+                "ANK-CORE LOGS\n"
+                "═══════════════════════════════════════════════════════════════\n\n"
+                "NAME\n"
+                "    ank-core logs - Show ANK server logs.\n\n"
+                "SYNOPSIS\n"
+                "    ank-core logs\n\n"
+                "DESCRIPTION\n"
+                "    Displays the last 30 lines of the ANK server log file.\n"
+                "    The log contains startup messages, API requests, errors,\n"
+                "    and other server events.\n\n"
+                "LOG LOCATION\n"
+                "    /data/ank/logs/server.log\n\n"
+                "TIPS\n"
+                "    - Use 'ank-core logs' to check for startup errors\n"
+                "    - Look for 'ERROR' or 'WARN' messages\n"
+                "    - Logs rotate automatically (oldest entries removed)\n\n"
+                "EXAMPLES\n"
+                "    ank-core logs\n"
+                "    ank-core logs | grep ERROR\n\n"
+                "SEE ALSO\n"
+                "    ank logs <container>, ank-core status"
+            ),
         }
         return man_pages.get(cmd, f"No manual entry for 'ank-core {cmd}'. Available commands: {', '.join(man_pages.keys())}")
 
@@ -3022,7 +3695,18 @@ small{color:#334155}
             config["node_name"] = data["node_name"]
         if "enable_remote_management" in data:
             config["enable_remote_management"] = data["enable_remote_management"]
+        if "manager_ip" in data:
+            config["manager_ip"] = data["manager_ip"]
+        if "default_container_password" in data:
+            config["default_container_password"] = data["default_container_password"]
+        if "ssh_enabled" in data:
+            config["ssh_enabled"] = data["ssh_enabled"]
+        if "ssh_port" in data:
+            config["ssh_port"] = int(data["ssh_port"])
         save_config(config)
+        # Sync sshd if SSH settings changed
+        if "ssh_enabled" in data or "ssh_port" in data:
+            self._sync_sshd(config)
         self.send_json({"message": "Configuration updated"})
 
     def api_restart_device(self):
@@ -3066,6 +3750,60 @@ small{color:#334155}
             log("RESTART_SERVER: Done")
         threading.Thread(target=_restart, daemon=True).start()
         self.send_json({"message": "Server restarting..."})
+
+    def _sync_sshd(self, config):
+        """Start/stop/reconfigure sshd in ankfs based on config."""
+        import threading
+        def _do():
+            ankfs = os.path.join(ANK_DIR, "ankfs")
+            ssh_enabled = config.get("ssh_enabled", False)
+            ssh_port = config.get("ssh_port", 2200)
+            ssh_pid = os.path.join(ankfs, "run/ankd/sshd.pid")
+            # Kill existing sshd
+            try:
+                with open(ssh_pid) as f:
+                    old_pid = int(f.read().strip())
+                os.kill(old_pid, 15)  # SIGTERM
+                import time; time.sleep(1)
+            except Exception:
+                pass
+            os.system(f"pkill -f 'sshd.*{ankfs}' 2>/dev/null")
+            if not ssh_enabled:
+                log(f"sshd disabled")
+                return
+            # Update port in sshd config
+            sshd_conf = os.path.join(ankfs, "etc/ssh/sshd_config")
+            if os.path.isfile(sshd_conf):
+                import re
+                with open(sshd_conf) as f:
+                    content = f.read()
+                content = re.sub(r'^Port\s+\d+', f'Port {ssh_port}', content, flags=re.MULTILINE)
+                with open(sshd_conf, 'w') as f:
+                    f.write(content)
+            # Set root password from config
+            password = config.get("password", "ank123")
+            self._sync_ankfs_password(password)
+            # Start sshd
+            os.makedirs(os.path.join(ankfs, "run/ankd"), exist_ok=True)
+            os.system(f"chroot {ankfs} /usr/sbin/sshd -D -p {ssh_port} -o PidFile=/run/ankd/sshd.pid </dev/null >/dev/null 2>&1 &")
+            log(f"sshd started on port {ssh_port}")
+        threading.Thread(target=_do, daemon=True).start()
+
+    def _sync_ankfs_password(self, password):
+        """Sync root password to ankfs /etc/shadow for SSH auth."""
+        ankfs = os.path.join(ANK_DIR, "ankfs")
+        if os.path.isfile(os.path.join(ankfs, "sbin/chpasswd")):
+            try:
+                import subprocess
+                proc = subprocess.Popen(
+                    ["chroot", ankfs, "/sbin/chpasswd"],
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL
+                )
+                proc.communicate(input=f"root:{password}".encode(), timeout=5)
+            except Exception:
+                pass
 
     def api_uninstall(self):
         import threading
@@ -3187,6 +3925,30 @@ small{color:#334155}
                         "size_human": self._fmt_size(size)
                     })
         self.send_json(images)
+
+    def api_receive_image_upload(self):
+        import tarfile, io
+        content_length = int(self.headers.get("Content-Length", 0))
+        if content_length == 0:
+            self.send_error(400, "Empty body")
+            return
+        raw = self.rfile.read(content_length)
+        try:
+            tar = tarfile.open(fileobj=io.BytesIO(raw), mode="r:gz")
+        except Exception as e:
+            self.send_error(400, f"Invalid tar.gz: {e}")
+            return
+        os.makedirs(IMAGES_DIR, exist_ok=True)
+        extracted = []
+        for member in tar.getmembers():
+            if member.isdir():
+                continue
+            top = member.name.split("/")[0]
+            if top and top not in extracted:
+                extracted.append(top)
+            tar.extract(member, IMAGES_DIR)
+        tar.close()
+        self.send_json({"ok": True, "images": extracted, "count": len(extracted)})
 
     def api_system_info(self):
         global _device_cache
@@ -3529,11 +4291,20 @@ small{color:#334155}
     # Nodes API
     # ============================================================
 
+    _node_manager_instance = None
+
     def _get_node_manager(self):
+        if AnkHandler._node_manager_instance is not None:
+            return AnkHandler._node_manager_instance
         try:
             from node_manager import NodeManager
-            return NodeManager()
-        except Exception:
+            nm = NodeManager()
+            AnkHandler._node_manager_instance = nm
+            nm.start_heartbeat(30)
+            log("[NODE] Heartbeat started")
+            return nm
+        except Exception as e:
+            log(f"[NODE] Failed to start NodeManager: {e}")
             return None
 
     def api_list_nodes(self):
@@ -3543,6 +4314,22 @@ small{color:#334155}
             return
         nodes = nm.list_nodes()
         self.send_json({"nodes": nodes})
+
+    def api_get_manager(self):
+        nm = self._get_node_manager()
+        if not nm:
+            self.send_json({"manager": None})
+            return
+        info = nm.get_manager_info()
+        self.send_json({"manager": info})
+
+    def api_revoke_manager(self):
+        nm = self._get_node_manager()
+        if not nm:
+            self.send_json({"ok": False, "error": "NodeManager unavailable"}, 500)
+            return
+        ok = nm.revoke_manager()
+        self.send_json({"ok": ok})
 
     def api_node_inspect(self, node_id):
         nm = self._get_node_manager()
@@ -3773,6 +4560,18 @@ small{color:#334155}
             return
         result = nm.transfer_image_to_node(node_id, image_name)
         self.send_json(result)
+
+    def api_node_container_create(self, node_id, data):
+        nm = self._get_node_manager()
+        if not nm:
+            self.send_json({"error": "node_manager not available"}, 500)
+            return
+        name = data.get("name", "")
+        if not name:
+            self.send_json({"error": "Container name required"}, 400)
+            return
+        result = nm.create_container_on_node(node_id, data)
+        self.send_json(result if result else {"message": f"Container '{name}' creation sent"})
 
     # ============================================================
     # System Dashboard (aggregate across nodes)

@@ -119,3 +119,28 @@ echo $! > "$SERVER_PID_FILE"
 
 log "Server started (PID: $(cat $SERVER_PID_FILE)) | Arch: $ARCH | Musl: $MUSL"
 log "Panel: http://localhost:8001"
+
+# Start sshd in ankfs (SSH access to ANK shell)
+SSH_ENABLED="1"
+SSH_PORT="2200"
+if [ -f "$CONFIG" ]; then
+    SE=$(grep -o '"ssh_enabled"[[:space:]]*:[[:space:]]*[a-z]*' "$CONFIG" 2>/dev/null | grep -o '[a-z]*$')
+    [ "$SE" = "false" ] && SSH_ENABLED="0"
+    SP=$(grep -o '"ssh_port"[[:space:]]*:[[:space:]]*[0-9]*' "$CONFIG" 2>/dev/null | grep -o '[0-9]*$')
+    [ -n "$SP" ] && SSH_PORT="$SP"
+fi
+
+if [ "$SSH_ENABLED" = "1" ] && [ -f "$ROOTFS/usr/sbin/sshd" ]; then
+    mkdir -p "$ROOTFS/run/ankd" 2>/dev/null
+    mkdir -p "$ROOTFS/dev/pts" 2>/dev/null
+    mount -t devpts devpts "$ROOTFS/dev/pts" 2>/dev/null
+    # Set root password from config
+    ANK_PASS=$(grep -o '"password":"[^"]*"' "$CONFIG" 2>/dev/null | head -1 | cut -d'"' -f4)
+    [ -z "$ANK_PASS" ] && ANK_PASS="ank123"
+    echo "root:${ANK_PASS}" | chroot "$ROOTFS" /sbin/chpasswd 2>/dev/null || true
+    # Start sshd
+    chroot "$ROOTFS" /usr/sbin/sshd -D -p "$SSH_PORT" -o "PidFile=/run/ankd/sshd.pid" &
+    log "sshd started on port $SSH_PORT"
+else
+    log "sshd disabled or not found"
+fi

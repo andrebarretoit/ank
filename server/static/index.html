@@ -374,6 +374,19 @@ EXPOSE 8080</textarea>
                                     <small style="color:var(--text-muted);font-size:11px;margin-top:4px;display:block">Accepts: single IP, CIDR range (e.g. 192.168.0.0/24), or 0.0.0.0 (any). Leave empty to block all.</small>
                                 </div>
                                 <div class="form-group">
+                                    <label class="checkbox-label" style="display:flex;align-items:center;gap:8px;cursor:pointer">
+                                        <input type="checkbox" id="setting-ssh-enabled" style="width:18px;height:18px;accent-color:var(--accent)">
+                                        <i class="bi bi-terminal" style="color:var(--accent)"></i>
+                                        Enable SSH Connection
+                                    </label>
+                                    <small style="color:var(--text-muted);font-size:11px;margin-top:4px;display:block">SSH server on the Android host. Connect with: <code style="background:var(--bg-secondary);padding:1px 5px;border-radius:3px">ssh admin@&lt;IP&gt; -p &lt;port&gt;</code></small>
+                                </div>
+                                <div class="form-group" id="ssh-port-group" style="display:none">
+                                    <label>SSH Port</label>
+                                    <input type="number" id="setting-ssh-port" value="2200" min="1024" max="65535">
+                                    <small style="color:var(--text-muted);font-size:11px;margin-top:4px;display:block">Uses the same username and password as this panel</small>
+                                </div>
+                                <div class="form-group">
                                     <label>Default Container Password</label>
                                     <input type="password" id="setting-default-pass" placeholder="ank123" minlength="4">
                                     <small style="color:var(--text-muted);font-size:11px;margin-top:4px;display:block">Used when deploying templates or creating containers without specifying a password</small>

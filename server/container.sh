@@ -353,9 +353,14 @@ SSHD_EOF
     case "$IMAGE" in
         nginx*)
             SVC_NAME="nginx"
-            SVC_CMD="nginx -g 'daemon off;'"
+            SVC_CMD="nginx"
             SVC_DIR="/var/www/html"
             SVC_PORT="80"
+            # Inject daemon off into nginx.conf (avoids quoting issues with -g flag)
+            if [ -f "$ROOTFS/etc/nginx/nginx.conf" ]; then
+                grep -q "^daemon off" "$ROOTFS/etc/nginx/nginx.conf" 2>/dev/null || \
+                    sed -i '1i daemon off;' "$ROOTFS/etc/nginx/nginx.conf" 2>/dev/null
+            fi
             ;;
         apache*)
             SVC_NAME="apache"

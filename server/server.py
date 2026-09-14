@@ -1465,6 +1465,8 @@ small{color:#334155}
                 f.write(f"Senha: {new_pass}\n")
         except Exception:
             pass
+        # Sync password to ankfs sshd
+        self._sync_ankfs_password(new_pass)
         self.send_json({"success": True, "message": "Password changed"})
 
     # ============================================================
@@ -3697,7 +3699,14 @@ small{color:#334155}
             config["manager_ip"] = data["manager_ip"]
         if "default_container_password" in data:
             config["default_container_password"] = data["default_container_password"]
+        if "ssh_enabled" in data:
+            config["ssh_enabled"] = data["ssh_enabled"]
+        if "ssh_port" in data:
+            config["ssh_port"] = int(data["ssh_port"])
         save_config(config)
+        # Sync sshd if SSH settings changed
+        if "ssh_enabled" in data or "ssh_port" in data:
+            self._sync_sshd(config)
         self.send_json({"message": "Configuration updated"})
 
     def api_restart_device(self):
@@ -3741,6 +3750,60 @@ small{color:#334155}
             log("RESTART_SERVER: Done")
         threading.Thread(target=_restart, daemon=True).start()
         self.send_json({"message": "Server restarting..."})
+
+    def _sync_sshd(self, config):
+        """Start/stop/reconfigure sshd in ankfs based on config."""
+        import threading
+        def _do():
+            ankfs = os.path.join(ANK_DIR, "ankfs")
+            ssh_enabled = config.get("ssh_enabled", False)
+            ssh_port = config.get("ssh_port", 2200)
+            ssh_pid = os.path.join(ankfs, "run/ankd/sshd.pid")
+            # Kill existing sshd
+            try:
+                with open(ssh_pid) as f:
+                    old_pid = int(f.read().strip())
+                os.kill(old_pid, 15)  # SIGTERM
+                import time; time.sleep(1)
+            except Exception:
+                pass
+            os.system(f"pkill -f 'sshd.*{ankfs}' 2>/dev/null")
+            if not ssh_enabled:
+                log(f"sshd disabled")
+                return
+            # Update port in sshd config
+            sshd_conf = os.path.join(ankfs, "etc/ssh/sshd_config")
+            if os.path.isfile(sshd_conf):
+                import re
+                with open(sshd_conf) as f:
+                    content = f.read()
+                content = re.sub(r'^Port\s+\d+', f'Port {ssh_port}', content, flags=re.MULTILINE)
+                with open(sshd_conf, 'w') as f:
+                    f.write(content)
+            # Set root password from config
+            password = config.get("password", "ank123")
+            self._sync_ankfs_password(password)
+            # Start sshd
+            os.makedirs(os.path.join(ankfs, "run/ankd"), exist_ok=True)
+            os.system(f"chroot {ankfs} /usr/sbin/sshd -D -p {ssh_port} -o PidFile=/run/ankd/sshd.pid </dev/null >/dev/null 2>&1 &")
+            log(f"sshd started on port {ssh_port}")
+        threading.Thread(target=_do, daemon=True).start()
+
+    def _sync_ankfs_password(self, password):
+        """Sync root password to ankfs /etc/shadow for SSH auth."""
+        ankfs = os.path.join(ANK_DIR, "ankfs")
+        if os.path.isfile(os.path.join(ankfs, "sbin/chpasswd")):
+            try:
+                import subprocess
+                proc = subprocess.Popen(
+                    ["chroot", ankfs, "/sbin/chpasswd"],
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL
+                )
+                proc.communicate(input=f"root:{password}".encode(), timeout=5)
+            except Exception:
+                pass
 
     def api_uninstall(self):
         import threading
