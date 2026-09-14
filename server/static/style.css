@@ -153,6 +153,8 @@ button, input, select, textarea { font-family: inherit; }
 .btn-danger:hover { filter: brightness(.92); }
 .btn-ghost { background: transparent; color: var(--text-secondary); border: 1px solid var(--border); }
 .btn-ghost:hover { background: var(--bg-hover); color: var(--text-primary); }
+.btn-secondary { background: var(--bg-secondary); color: var(--text-primary); border: 1px solid var(--border); }
+.btn-secondary:hover { background: var(--bg-hover); border-color: var(--accent); }
 .btn-sm { padding: 6px 12px; font-size: 12.5px; min-height: 32px; }
 .btn-xs { padding: 4px 8px; font-size: 11.5px; min-height: 26px; }
 .btn-icon { padding: 8px; min-width: 38px; }

@@ -899,6 +899,7 @@ document.querySelectorAll('.modal-tab').forEach(tab => {
         document.getElementById(`mtab-${tab.dataset.mtab}`).classList.add('active');
         if (tab.dataset.mtab === 'terminal' && currentContainer) initContainerTerminal();
         if (tab.dataset.mtab === 'files' && currentContainer) { fileContainerName = currentContainer.name; showFileExplorer(currentContainer.name); }
+        if (tab.dataset.mtab === 'taskmanager' && currentContainer) loadTaskManager();
     });
 });
 
@@ -1021,7 +1022,7 @@ document.getElementById('create-form').addEventListener('submit', async (e) => {
     const isRemote = nodeId !== 'local';
     if (imageVal.startsWith('template:')) {
         const templateId = imageVal.replace('template:', '');
-        const rootPass = document.getElementById('container-root-password').value || 'admin123';
+        const rootPass = document.getElementById('container-root-password').value || 'ank123';
         try {
             if (isRemote) {
                 toast(`Deploying template "${templateId}" as "${name}" on remote...`, 'info');
@@ -1103,9 +1104,14 @@ function renderTemplates(templates) {
 
 async function deployTemplate(id, name, baseReady) {
     if (!baseReady) { toast('Download the Alpine base image first (Pull Alpine)', 'warning'); return; }
+    let defaultPass = 'ank123';
+    try {
+        const cfg = await api('GET', '/config');
+        if (cfg && cfg.default_container_password) defaultPass = cfg.default_container_password;
+    } catch(e) {}
     const result = await customModal('Deploy ' + name, [
         { id: 'tpl-name', label: 'Container name:', type: 'text', value: name.toLowerCase().replace(/\s+/g, '-') },
-        { id: 'tpl-pass', label: 'Root password:', type: 'password', value: 'admin123' }
+        { id: 'tpl-pass', label: 'Root password:', type: 'password', value: defaultPass }
     ]);
     if (!result) return;
     const containerName = result['tpl-name'];
@@ -1297,8 +1303,9 @@ document.getElementById('panel-settings-form').addEventListener('submit', async 
     const nodeName = document.getElementById('setting-node-name')?.value?.trim() || '';
     const enableRemote = document.getElementById('setting-remote-mgmt')?.checked ?? false;
     const managerIp = document.getElementById('setting-manager-ip')?.value?.trim() || '';
+    const defaultPass = document.getElementById('setting-default-pass')?.value?.trim() || '';
     try {
-        await api('POST', '/config', { bind_address: bind, refresh_interval: parseInt(refresh), autostart_on_boot: autostart, node_name: nodeName, enable_remote_management: enableRemote, manager_ip: managerIp });
+        await api('POST', '/config', { bind_address: bind, refresh_interval: parseInt(refresh), autostart_on_boot: autostart, node_name: nodeName, enable_remote_management: enableRemote, manager_ip: managerIp, default_container_password: defaultPass });
         refreshSeconds = parseInt(refresh);
         localStorage.setItem('ank_refresh', refresh);
         startRefreshTimer();
@@ -1356,6 +1363,8 @@ async function loadSettings() {
         if (remoteMgmtEl) remoteMgmtEl.checked = cfg.enable_remote_management === true;
         const managerIpEl = document.getElementById('setting-manager-ip');
         if (managerIpEl) managerIpEl.value = cfg.manager_ip || '';
+        const defaultPassEl = document.getElementById('setting-default-pass');
+        if (defaultPassEl) defaultPassEl.value = cfg.default_container_password || '';
         const mipGroup = document.getElementById('manager-ip-group');
         if (mipGroup) mipGroup.style.display = remoteMgmtEl?.checked ? 'block' : 'none';
         if (remoteMgmtEl) remoteMgmtEl.addEventListener('change', () => {
@@ -2185,3 +2194,124 @@ function toggleTheme() { setTheme(getTheme() === 'dark' ? 'light' : 'dark'); }
 ['login', 'mobile', 'desktop'].forEach(ctx => {
     document.getElementById(`theme-toggle-${ctx}`)?.addEventListener('click', toggleTheme);
 });
+
+/* ============================================================
+   Task Manager — Service management for ankd
+   ============================================================ */
+
+async function loadTaskManager() {
+    if (!currentContainer) return;
+    const el = document.getElementById('taskmanager-services');
+    el.innerHTML = '<div class="empty-state">Loading...</div>';
+    try {
+        const data = await api('GET', `/containers/${currentContainer.name}/services`);
+        const services = data.services || [];
+        if (services.length === 0) {
+            el.innerHTML = '<div class="empty-state"><i class="bi bi-inbox" style="font-size:24px; opacity:0.3;"></i><br>No services configured</div>';
+            return;
+        }
+        let html = '';
+        for (const svc of services) {
+            const isRunning = svc.status === 'running';
+            const statusColor = isRunning ? 'var(--success)' : 'var(--text-muted)';
+            const statusBg = isRunning ? 'rgba(34,197,94,0.1)' : 'rgba(255,255,255,0.03)';
+            const enabledBadge = svc.enabled
+                ? '<span style="color:var(--success);font-size:11px;">ON</span>'
+                : '<span style="color:var(--text-muted);font-size:11px;">OFF</span>';
+
+            html += `<div style="display:flex;align-items:center;justify-content:space-between;padding:10px 12px;border:1px solid var(--border);border-radius:8px;margin-bottom:6px;background:${statusBg};">`;
+            // Left: name + status
+            html += `<div style="display:flex;align-items:center;gap:10px;">`;
+            html += `<div style="width:8px;height:8px;border-radius:50%;background:${statusColor};${isRunning ? 'box-shadow:0 0 6px ' + statusColor : ''}"></div>`;
+            html += `<div>`;
+            html += `<div style="font-weight:600;font-size:13px;">${svc.name} ${enabledBadge}</div>`;
+            html += `<div style="font-size:11px;color:var(--text-muted);margin-top:2px;">${svc.cmd || 'no command'}</div>`;
+            html += `</div></div>`;
+            // Right: actions
+            html += `<div style="display:flex;gap:4px;align-items:center;">`;
+            html += `<button class="btn btn-xs btn-ghost" onclick="taskManagerViewLog('${svc.name}')" title="View Log"><i class="bi bi-journal-text"></i></button>`;
+            if (isRunning) {
+                html += `<button class="btn btn-xs btn-warning" onclick="taskManagerServiceAction('${svc.name}','stop')" title="Stop"><i class="bi bi-stop-fill"></i></button>`;
+                html += `<button class="btn btn-xs btn-ghost" onclick="taskManagerServiceAction('${svc.name}','restart')" title="Restart"><i class="bi bi-arrow-clockwise"></i></button>`;
+            } else {
+                html += `<button class="btn btn-xs btn-success" onclick="taskManagerServiceAction('${svc.name}','start')" title="Start"><i class="bi bi-play-fill"></i></button>`;
+            }
+            if (svc.enabled) {
+                html += `<button class="btn btn-xs btn-ghost" onclick="taskManagerServiceAction('${svc.name}','disable')" title="Disable"><i class="bi bi-pause-circle"></i></button>`;
+            } else {
+                html += `<button class="btn btn-xs btn-ghost" onclick="taskManagerServiceAction('${svc.name}','enable')" title="Enable"><i class="bi bi-play-circle"></i></button>`;
+            }
+            html += `<button class="btn btn-xs btn-ghost" onclick="taskManagerServiceAction('${svc.name}','delete')" title="Delete" style="color:var(--danger);"><i class="bi bi-trash3"></i></button>`;
+            html += `</div></div>`;
+        }
+        el.innerHTML = html;
+    } catch (e) {
+        el.innerHTML = `<div class="empty-state">Failed to load services: ${e.message}</div>`;
+    }
+}
+
+async function taskManagerServiceAction(service, action) {
+    if (!currentContainer) return;
+    if (action === 'delete' && !confirm(`Delete service "${service}"?`)) return;
+    try {
+        if (action === 'delete') {
+            await api('DELETE', `/containers/${currentContainer.name}/services/${service}`);
+            toast(`Service "${service}" deleted`, 'success');
+        } else {
+            await api('POST', `/containers/${currentContainer.name}/services/${service}/${action}`);
+            toast(`Service "${service}" ${action}ed`, 'success');
+        }
+        setTimeout(loadTaskManager, 500);
+    } catch (e) {
+        toast(`Failed: ${e.message}`, 'error');
+    }
+}
+
+async function taskManagerViewLog(service) {
+    if (!currentContainer) return;
+    try {
+        const data = await api('GET', `/containers/${currentContainer.name}/logs`);
+        // Filter log lines for this service
+        const lines = (data || '').split('\n').filter(l => l.includes(`[${service}]`) || l.includes(service));
+        const last20 = lines.slice(-30).join('\n') || 'No log entries for this service';
+        // Show in a modal overlay
+        const overlay = document.createElement('div');
+        overlay.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.7);z-index:10000;display:flex;align-items:center;justify-content:center;';
+        overlay.innerHTML = `
+            <div style="background:var(--bg-primary);border:1px solid var(--border);border-radius:12px;width:90%;max-width:700px;max-height:80vh;display:flex;flex-direction:column;">
+                <div style="display:flex;justify-content:space-between;align-items:center;padding:12px 16px;border-bottom:1px solid var(--border);">
+                    <h4 style="margin:0;font-size:14px;"><i class="bi bi-journal-text"></i> ${service} — Log</h4>
+                    <button class="btn btn-xs btn-ghost" onclick="this.closest('div[style*=fixed]').remove()"><i class="bi bi-x-lg"></i></button>
+                </div>
+                <pre style="margin:0;padding:16px;overflow:auto;flex:1;font-size:12px;line-height:1.5;color:var(--text-primary);background:transparent;">${last20.replace(/</g, '&lt;')}</pre>
+            </div>`;
+        document.body.appendChild(overlay);
+        overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
+    } catch (e) {
+        toast(`Failed to load log: ${e.message}`, 'error');
+    }
+}
+
+function taskManagerAddService() {
+    document.getElementById('taskmanager-add-form').style.display = 'block';
+    document.getElementById('tm-svc-name').value = '';
+    document.getElementById('tm-svc-cmd').value = '';
+    document.getElementById('tm-svc-name').focus();
+}
+
+async function taskManagerSaveService() {
+    if (!currentContainer) return;
+    const name = document.getElementById('tm-svc-name').value.trim();
+    const cmd = document.getElementById('tm-svc-cmd').value.trim();
+    const policy = document.getElementById('tm-svc-policy').value;
+    const enabled = document.getElementById('tm-svc-enabled').checked;
+    if (!name || !cmd) { toast('Name and command required', 'error'); return; }
+    try {
+        await api('POST', `/containers/${currentContainer.name}/services`, { name, cmd, restart_policy: policy, enabled });
+        toast(`Service "${name}" created`, 'success');
+        document.getElementById('taskmanager-add-form').style.display = 'none';
+        loadTaskManager();
+    } catch (e) {
+        toast(`Failed: ${e.message}`, 'error');
+    }
+}

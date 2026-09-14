@@ -373,6 +373,11 @@ EXPOSE 8080</textarea>
                                     <input type="text" id="setting-manager-ip" placeholder="192.168.1.100 or 192.168.0.0/24 or 0.0.0.0" maxlength="30">
                                     <small style="color:var(--text-muted);font-size:11px;margin-top:4px;display:block">Accepts: single IP, CIDR range (e.g. 192.168.0.0/24), or 0.0.0.0 (any). Leave empty to block all.</small>
                                 </div>
+                                <div class="form-group">
+                                    <label>Default Container Password</label>
+                                    <input type="password" id="setting-default-pass" placeholder="ank123" minlength="4">
+                                    <small style="color:var(--text-muted);font-size:11px;margin-top:4px;display:block">Used when deploying templates or creating containers without specifying a password</small>
+                                </div>
                                 <button type="submit" class="btn btn-primary"><i class="bi bi-check-lg"></i> Save</button>
                             </form>
                         </div>
@@ -464,11 +469,12 @@ EXPOSE 8080</textarea>
             </div>
             <div class="modal-tabs">
                 <button class="modal-tab active" data-mtab="overview"><i class="bi bi-info-circle"></i> Overview</button>
-                <button class="modal-tab" data-mtab="settings"><i class="bi bi-gear"></i> Settings</button>
-                <button class="modal-tab" data-mtab="network"><i class="bi bi-hdd-network"></i> Networks</button>
                 <button class="modal-tab" data-mtab="terminal"><i class="bi bi-terminal"></i> Terminal</button>
                 <button class="modal-tab" data-mtab="files"><i class="bi bi-folder2-open"></i> Files</button>
+                <button class="modal-tab" data-mtab="taskmanager"><i class="bi bi-cpu"></i> Tasks</button>
+                <button class="modal-tab" data-mtab="network"><i class="bi bi-hdd-network"></i> Networks</button>
                 <button class="modal-tab" data-mtab="backup"><i class="bi bi-cloud-arrow-up"></i> Backup</button>
+                <button class="modal-tab" data-mtab="settings"><i class="bi bi-gear"></i> Settings</button>
             </div>
             <div class="modal-body">
                 <div id="mtab-overview" class="mtab active">
@@ -494,6 +500,34 @@ EXPOSE 8080</textarea>
                     <div class="detail-logs">
                         <div class="card-header"><h4><i class="bi bi-journal-text"></i> Logs</h4></div>
                         <pre id="detail-log-output" class="log-output">No logs available</pre>
+                    </div>
+                </div>
+                <div id="mtab-taskmanager" class="mtab">
+                    <div class="settings-section">
+                        <div class="settings-section-title"><i class="bi bi-cpu"></i> Services</div>
+                        <div id="taskmanager-services">
+                            <div class="empty-state">Loading services...</div>
+                        </div>
+                        <div style="margin-top: 12px;">
+                            <button class="btn btn-sm btn-primary" onclick="taskManagerAddService()"><i class="bi bi-plus"></i> Add Service</button>
+                        </div>
+                    </div>
+                    <div id="taskmanager-add-form" class="settings-section" style="display:none; margin-top: 12px;">
+                        <div class="settings-section-title"><i class="bi bi-plus-circle"></i> New Service</div>
+                        <div class="form-row">
+                            <div class="form-group"><label>Name</label><input type="text" id="tm-svc-name" placeholder="nginx, myapp..."></div>
+                            <div class="form-group"><label>Command</label><input type="text" id="tm-svc-cmd" placeholder="/bin/nginx -g 'daemon off;'"></div>
+                        </div>
+                        <div class="form-row">
+                            <div class="form-group"><label>Restart Policy</label>
+                                <select id="tm-svc-policy"><option value="on-failure">On Failure</option><option value="always">Always</option><option value="never">Never</option></select>
+                            </div>
+                            <div class="form-group"><label class="checkbox-label"><input type="checkbox" id="tm-svc-enabled" checked> Enabled</label></div>
+                        </div>
+                        <div style="margin-top: 8px;">
+                            <button class="btn btn-sm btn-primary" onclick="taskManagerSaveService()"><i class="bi bi-check"></i> Save</button>
+                            <button class="btn btn-sm btn-secondary" onclick="document.getElementById('taskmanager-add-form').style.display='none'"><i class="bi bi-x"></i> Cancel</button>
+                        </div>
                     </div>
                 </div>
                 <div id="mtab-settings" class="mtab">
@@ -688,7 +722,7 @@ EXPOSE 8080</textarea>
                 <p style="color:var(--text-muted);font-size:12px;margin-bottom:12px">Send a pairing request to a remote ANK device. The remote must have "Enable Remote Management" turned on.</p>
                 <div class="form-group"><label>Panel IP / Hostname</label><input type="text" id="node-hostname" placeholder="192.168.1.215" required></div>
                 <div class="form-group"><label>Panel Port</label><input type="number" id="node-panel-port" value="8001"></div>
-                <div class="form-group"><label>Panel User</label><input type="text" id="node-user" value="admin"></div>
+                            <div class="form-group"><label>Panel User</label><input type="text" id="node-user" value="ank"></div>
                 <div class="form-group"><label>Panel Password</label><input type="password" id="node-pass"></div>
                 <div class="form-group"><label>Alias (optional)</label><input type="text" id="node-alias" placeholder="Galaxy S24"></div>
             </div>
