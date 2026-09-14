@@ -132,15 +132,34 @@ fi
 
 if [ "$SSH_ENABLED" = "1" ] && [ -f "$ROOTFS/usr/sbin/sshd" ]; then
     mkdir -p "$ROOTFS/run/ankd" 2>/dev/null
-    mkdir -p "$ROOTFS/dev/pts" 2>/dev/null
+    mkdir -p "$ROOTFS/dev/pts" "$ROOTFS/dev/shm" 2>/dev/null
     mount -t devpts devpts "$ROOTFS/dev/pts" 2>/dev/null
+    mount -t proc proc "$ROOTFS/proc" 2>/dev/null
     # Set root password from config
     ANK_PASS=$(grep -o '"password":"[^"]*"' "$CONFIG" 2>/dev/null | head -1 | cut -d'"' -f4)
     [ -z "$ANK_PASS" ] && ANK_PASS="ank123"
-    echo "root:${ANK_PASS}" | chroot "$ROOTFS" /sbin/chpasswd 2>/dev/null || true
+    # Generate hash and write to shadow directly
+    if [ -f "$ROOTFS/usr/bin/openssl" ] || [ -f "$ROOTFS/usr/sbin/openssl" ]; then
+        ENC_PASS=$(chroot "$ROOTFS" /usr/bin/openssl passwd -1 "$ANK_PASS" 2>/dev/null || \
+                   chroot "$ROOTFS" /usr/sbin/openssl passwd -1 "$ANK_PASS" 2>/dev/null)
+        if [ -n "$ENC_PASS" ] && [ -f "$ROOTFS/etc/shadow" ]; then
+            sed -i "s|^root:[^:]*:|root:${ENC_PASS}:|" "$ROOTFS/etc/shadow" 2>/dev/null
+            log "Password set via shadow (openssl)"
+        fi
+    fi
+    # Generate host keys if missing
+    [ ! -f "$ROOTFS/etc/ssh/ssh_host_rsa_key" ] && \
+        chroot "$ROOTFS" /usr/bin/ssh-keygen -A 2>/dev/null || true
     # Start sshd
-    chroot "$ROOTFS" /usr/sbin/sshd -D -p "$SSH_PORT" -o "PidFile=/run/ankd/sshd.pid" &
-    log "sshd started on port $SSH_PORT"
+    chroot "$ROOTFS" /usr/sbin/sshd \
+        -D -p "$SSH_PORT" \
+        -o "PidFile=/run/ankd/sshd.pid" \
+        -o "PasswordAuthentication=yes" \
+        -o "PermitRootLogin=yes" \
+        -o "ChallengeResponseAuthentication=no" \
+        </dev/null >/dev/null 2>&1 &
+    SSHD_PID=$!
+    log "sshd started on port $SSH_PORT (PID: $SSHD_PID)"
 else
-    log "sshd disabled or not found"
+    log "sshd disabled or sshd not found"
 fi

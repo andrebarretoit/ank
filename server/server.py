@@ -1699,6 +1699,17 @@ small{color:#334155}
         instance_uuid = config.get("instance_uuid", name)
         services_dir = os.path.join(CONTAINERS_DIR, name, "merged", "etc", "ankd", "services.d")
         services = []
+        # If services.d is empty but container has a rootfs, generate .ankd files
+        # (handles containers created with older code that didn't have ankd)
+        if os.path.isdir(services_dir):
+            ank_files = [f for f in os.listdir(services_dir) if f.endswith(".ankd")]
+            if not ank_files:
+                merged = os.path.join(CONTAINERS_DIR, name, "merged")
+                template_id = config.get("template_id", config.get("image", ""))
+                ssh_port = config.get("ssh_port", 22)
+                # Generate default .ankd files inline
+                self._generate_ankd_files(services_dir, merged, template_id, ssh_port)
+                ank_files = [f for f in os.listdir(services_dir) if f.endswith(".ankd")] if os.path.isdir(services_dir) else []
         if os.path.isdir(services_dir):
             for f in sorted(os.listdir(services_dir)):
                 if not f.endswith(".ankd"):
@@ -3750,6 +3761,39 @@ small{color:#334155}
             log("RESTART_SERVER: Done")
         threading.Thread(target=_restart, daemon=True).start()
         self.send_json({"message": "Server restarting..."})
+
+    def _generate_ankd_files(self, services_dir, rootfs, template_id, ssh_port):
+        """Generate .ankd service files for containers created with older code."""
+        os.makedirs(services_dir, exist_ok=True)
+        # Always create sshd service
+        sshd_ankd = os.path.join(services_dir, "01-sshd.ankd")
+        if not os.path.exists(sshd_ankd):
+            with open(sshd_ankd, "w") as f:
+                f.write(f"NAME=sshd\nCMD=/usr/sbin/sshd -D -p {ssh_port} -o PasswordAuthentication=yes -o PermitRootLogin=yes -e\nDIR=/\nPID_FILE=/run/sshd.pid\nSTOP_SIGNAL=TERM\nRESTART_POLICY=always\nRESTART_DELAY=3\n")
+        # Create service-specific .ankd based on template
+        svc_map = {
+            "nginx": ("nginx", "nginx", "/var/www/html", "80"),
+            "apache": ("apache", "httpd -f -p 80 -h /var/www/localhost/htdocs", "/var/www/localhost/htdocs", "80"),
+            "php": ("php", "php -S 0.0.0.0:80 -t /var/www/php", "/var/www/php", "80"),
+            "node": ("node", "node server.js", "/var/www/app", "3000"),
+            "python": ("python", "python3 server.py", "/var/www/app", "5000"),
+        }
+        for key, (svc_name, cmd, svc_dir, port) in svc_map.items():
+            if template_id.startswith(key):
+                svc_ankd = os.path.join(services_dir, f"02-{svc_name}.ankd")
+                if not os.path.exists(svc_ankd):
+                    with open(svc_ankd, "w") as f:
+                        f.write(f"NAME={svc_name}\nCMD={cmd}\nDIR={svc_dir}\nPID_FILE=/run/{svc_name}.pid\nSTOP_SIGNAL=TERM\nRESTART_POLICY=always\nRESTART_DELAY=3\n")
+                # Inject daemon off for nginx
+                if key == "nginx":
+                    nginx_conf = os.path.join(rootfs, "etc/nginx/nginx.conf")
+                    if os.path.isfile(nginx_conf):
+                        with open(nginx_conf) as fh:
+                            content = fh.read()
+                        if not content.startswith("daemon off"):
+                            with open(nginx_conf, "w") as fh:
+                                fh.write("daemon off;\n" + content)
+                break
 
     def _sync_sshd(self, config):
         """Start/stop/reconfigure sshd in ankfs based on config."""

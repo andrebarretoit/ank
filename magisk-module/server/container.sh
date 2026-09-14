@@ -720,8 +720,30 @@ cmd_start() {
 
     local SSH_PORT=$(grep -o '"ssh_port":[^,]*' "$CONFIG" | cut -d: -f2 | tr -d ' ')
     local IP=$(grep -o '"ip_address":[^,]*' "$CONFIG" | cut -d'"' -f4)
+    local IMAGE=$(grep -o '"image":[^,]*' "$CONFIG" 2>/dev/null | cut -d'"' -f4)
+    local TEMPLATE_ID=$(grep -o '"template_id":[^,]*' "$CONFIG" 2>/dev/null | cut -d'"' -f4)
 
     echo "Starting container: $NAME (mode: $MODE, port: $SSH_PORT)"
+
+    # Ensure nginx runs in foreground (daemon off) — inject at start time
+    # for both new and existing containers
+    case "${TEMPLATE_ID:-$IMAGE}" in
+        nginx*)
+            if [ -f "$ROOTFS/etc/nginx/nginx.conf" ]; then
+                grep -q "^daemon off" "$ROOTFS/etc/nginx/nginx.conf" 2>/dev/null || \
+                    sed -i '1i daemon off;' "$ROOTFS/etc/nginx/nginx.conf" 2>/dev/null
+            fi
+            ;;
+    esac
+
+    # Ensure .ankd service files exist (regenerate for containers created with older code)
+    if [ -d "$ROOTFS/etc/ankd/services.d" ]; then
+        local ANKD_COUNT=$(ls "$ROOTFS/etc/ankd/services.d/"*.ankd 2>/dev/null | wc -l)
+        if [ "$ANKD_COUNT" -eq 0 ]; then
+            echo "  Regenerating .ankd service files..."
+            _generate_default_ank_files "$ROOTFS" "${TEMPLATE_ID:-$IMAGE}" "$SSH_PORT"
+        fi
+    fi
 
     # Find shell
     local SHELL=""
