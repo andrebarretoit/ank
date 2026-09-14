@@ -76,12 +76,25 @@ _ensure_ankbase() {
     # Install packages (stream output)
     echo "Installing openssh, bash, busybox, shadow, openssl, s6..."
     mount -t proc proc "$ANKBASE/proc" 2>/dev/null
-    chroot "$ANKBASE" /sbin/apk add --no-cache busybox bash shadow openssh openssl s6 2>&1
-    local RC=$?
+    local RC=1
+    local apk_output=""
+    for attempt in 1 2; do
+        echo "apk add attempt 2/$attempt..."
+        apk_output=$(chroot "$ANKBASE" /sbin/apk add --no-cache busybox bash shadow openssh openssl s6 2>&1)
+        RC=$?
+        if [ $RC -eq 0 ]; then
+            echo "OK: All packages installed"
+            break
+        fi
+        if [ $attempt -lt 2 ]; then
+            echo "WARN: apk add failed (rc=$RC), retrying in 15s..."
+            sleep 15
+        fi
+    done
     umount "$ANKBASE/proc" 2>/dev/null
 
     if [ $RC -ne 0 ]; then
-        echo "ERROR: apk install failed (rc=$RC)"
+        echo "ERROR: apk install failed after 2 attempts (rc=$RC)"
         echo "Cleaning up failed ank-alpinebase-${VERSION}..."
         rm -rf "$ANKBASE"
         return 1
@@ -353,10 +366,9 @@ SSHD_EOF
     case "$IMAGE" in
         nginx*)
             SVC_NAME="nginx"
-            SVC_CMD="nginx -g 'daemon off;'"
+            SVC_CMD="nginx"
             SVC_DIR="/var/www/html"
-            SVC_PORT="80"
-            # Inject daemon off into nginx.conf (avoids quoting issues with -g flag)
+            SVC_PORT="8080"
             if [ -f "$ROOTFS/etc/nginx/nginx.conf" ]; then
                 grep -q "^daemon off" "$ROOTFS/etc/nginx/nginx.conf" 2>/dev/null || \
                     sed -i '1i daemon off;' "$ROOTFS/etc/nginx/nginx.conf" 2>/dev/null
@@ -364,15 +376,15 @@ SSHD_EOF
             ;;
         apache*)
             SVC_NAME="apache"
-            SVC_CMD="httpd -f -p 80 -h /var/www/localhost/htdocs"
+            SVC_CMD="httpd -D FOREGROUND"
             SVC_DIR="/var/www/localhost/htdocs"
-            SVC_PORT="80"
+            SVC_PORT="9090"
             ;;
         php*)
             SVC_NAME="php"
-            SVC_CMD="php -S 0.0.0.0:80 -t /var/www/php"
+            SVC_CMD="php82 -S 0.0.0.0:8000 -t /var/www/php"
             SVC_DIR="/var/www/php"
-            SVC_PORT="80"
+            SVC_PORT="8000"
             ;;
         node*)
             SVC_NAME="node"
@@ -393,6 +405,7 @@ SSHD_EOF
 NAME=$SVC_NAME
 CMD=$SVC_CMD
 DIR=$SVC_DIR
+PORT=$SVC_PORT
 PID_FILE=/run/${SVC_NAME}.pid
 STOP_SIGNAL=TERM
 RESTART_POLICY=always
@@ -471,16 +484,30 @@ cmd_create() {
                 [ -e "$BASE_DIR/dev/urandom" ] || mknod "$BASE_DIR/dev/urandom" c 1 9 2>/dev/null
                 chmod 666 "$BASE_DIR/dev/urandom" 2>/dev/null
                 mount -t proc proc "$BASE_DIR/proc" 2>/dev/null
-                chroot "$BASE_DIR" /sbin/apk add --no-cache $PKGS 2>/dev/null
-                local apk_rc=$?
+                local apk_rc=1
+                local apk_output=""
+                for attempt in 1 2; do
+                    echo "apk add attempt 2/$attempt..."
+                    apk_output=$(chroot "$BASE_DIR" /sbin/apk add --no-cache $PKGS 2>&1)
+                    apk_rc=$?
+                    if [ $apk_rc -eq 0 ]; then
+                        echo "OK: All packages installed"
+                        break
+                    fi
+                    if [ $attempt -lt 2 ]; then
+                        echo "WARN: apk add failed (rc=$apk_rc), retrying in 15s..."
+                        sleep 15
+                    fi
+                done
                 umount "$BASE_DIR/proc" 2>/dev/null
                 umount "$BASE_DIR/dev" 2>/dev/null
                 if [ $apk_rc -eq 0 ]; then
                     echo "Image '$IMAGE' built successfully"
-                    # Setup default content + service marker for template
                     _setup_template_service "$BASE_DIR" "$IMAGE"
                 else
-                    echo "WARN: Some packages may have failed for '$IMAGE'"
+                    echo "FAIL: apk add failed after 2 attempts"
+                    echo "PACKAGE_FAILURE:pkgs=$PKGS"
+                    echo "PACKAGE_FAILURE_OUTPUT:$apk_output"
                 fi
             else
                 echo "WARN: Failed to copy ank-alpinebase for '$IMAGE', using base"
@@ -725,13 +752,18 @@ cmd_start() {
 
     echo "Starting container: $NAME (mode: $MODE, port: $SSH_PORT)"
 
-    # Ensure nginx runs in foreground (daemon off) — inject at start time
-    # for both new and existing containers
+    # Ensure services are properly configured at start time
     case "${TEMPLATE_ID:-$IMAGE}" in
         nginx*)
             if [ -f "$ROOTFS/etc/nginx/nginx.conf" ]; then
                 grep -q "^daemon off" "$ROOTFS/etc/nginx/nginx.conf" 2>/dev/null || \
                     sed -i '1i daemon off;' "$ROOTFS/etc/nginx/nginx.conf" 2>/dev/null
+            fi
+            ;;
+        apache*)
+            if [ -f "$ROOTFS/etc/apache2/httpd.conf" ]; then
+                grep -q "^Listen 9090" "$ROOTFS/etc/apache2/httpd.conf" 2>/dev/null || \
+                    sed -i 's/^Listen 80/Listen 9090/' "$ROOTFS/etc/apache2/httpd.conf" 2>/dev/null
             fi
             ;;
     esac
@@ -946,12 +978,13 @@ cmd_start() {
         # In shared_host/shared_network/lite modes, sshd listens directly on SSH_PORT
     fi
 
-    # Setup service port forwarding (nginx=80, apache/php=80, node=3000, python=5000)
+    # Setup service port forwarding
     local SVC_PORT=""
     local IMAGE=$(grep -o '"image":"[^"]*"' "$CONFIG" | cut -d'"' -f4)
     case "$IMAGE" in
-        nginx*) SVC_PORT="80" ;;
-        apache*|php*) SVC_PORT="80" ;;
+        nginx*) SVC_PORT="8080" ;;
+        apache*) SVC_PORT="9090" ;;
+        php*) SVC_PORT="8000" ;;
         node*) SVC_PORT="3000" ;;
         python*) SVC_PORT="5000" ;;
     esac
@@ -1021,13 +1054,17 @@ cmd_stop() {
     local KILL_COUNT=0
 
     # ============================================================
-    # PHASE 0: Kill ankd daemon FIRST to stop restart loop
+    # PHASE 0: Kill ankd daemon + container init to stop restart loop
+    #          and all child processes in one shot via process group
     # ============================================================
     echo "  Stopping ankd daemon..."
     if [ -n "$PID" ] && [ "$PID" != "null" ]; then
+        kill -9 -- "-$PID" 2>/dev/null
         kill -9 "$PID" 2>/dev/null
-        echo "    ankd daemon killed"
+        echo "    ankd daemon killed (PGID $PID)"
     fi
+    # Brief wait for restart loop to notice daemon death
+    sleep 1
 
     # ============================================================
     # PHASE 1: Kill all services by PGID, read straight from the pgid
@@ -1070,11 +1107,14 @@ cmd_stop() {
         local p=$(basename "$pid_dir" 2>/dev/null)
         [ -z "$p" ] && continue
         [ "$p" = "1" ] && continue
+        [ ! -d "$pid_dir" ] && continue
         local root=$(readlink "$pid_dir/root" 2>/dev/null)
         local exe=$(readlink "$pid_dir/exe" 2>/dev/null)
+        local cwd=$(readlink "$pid_dir/cwd" 2>/dev/null)
         local belongs=0
         case "$root" in ${ROOTFS}|${ROOTFS}/) belongs=1 ;; esac
         case "$exe" in ${ROOTFS}/*) belongs=1 ;; esac
+        case "$cwd" in ${ROOTFS}/*) belongs=1 ;; esac
         [ "$belongs" -eq 1 ] && {
             kill -9 "$p" 2>/dev/null && SWEEP_COUNT=$((SWEEP_COUNT+1))
         }
@@ -1087,17 +1127,43 @@ cmd_stop() {
             local p=$(basename "$pid_dir" 2>/dev/null)
             [ -z "$p" ] && continue
             [ "$p" = "1" ] && continue
+            [ ! -d "$pid_dir" ] && continue
             local their_mnt=$(readlink "$pid_dir/ns/mnt" 2>/dev/null)
             [ "$their_mnt" = "$MY_MNT" ] && continue
             local exe=$(readlink "$pid_dir/exe" 2>/dev/null)
             case "$exe" in
-                */sshd|*/nginx|*/busybox*)
+                */sshd|*/httpd|*/nginx|*/php*|*/node|*/python*)
                     kill -9 "$p" 2>/dev/null && SWEEP_COUNT=$((SWEEP_COUNT+1))
                     ;;
             esac
         done
     fi
     [ "$SWEEP_COUNT" -gt 0 ] && echo "    Cleaned $SWEEP_COUNT remaining process(es)"
+
+    # ============================================================
+    # PHASE 2.5: Final kill — pkill by exe name inside container rootfs
+    # This catches any orphaned processes that survived the PGID kill
+    # and the /proc sweep (e.g. re-attached sshd sessions).
+    # ============================================================
+    if [ -d "$ROOTFS" ]; then
+        for svc_exe in sshd httpd nginx php-fpm node python3 python; do
+            local exe_path="$ROOTFS/usr/sbin/$svc_exe"
+            [ -f "$exe_path" ] || exe_path="$ROOTFS/usr/bin/$svc_exe"
+            [ -f "$exe_path" ] || exe_path="$ROOTFS/bin/$svc_exe"
+            if [ -f "$exe_path" ]; then
+                for pid_dir in /proc/[0-9]*; do
+                    local p=$(basename "$pid_dir" 2>/dev/null)
+                    [ -z "$p" ] && continue
+                    [ "$p" = "1" ] && continue
+                    [ ! -d "$pid_dir" ] && continue
+                    local exe=$(readlink "$pid_dir/exe" 2>/dev/null)
+                    case "$exe" in
+                        */$svc_exe) kill -9 "$p" 2>/dev/null ;;
+                    esac
+                done
+            fi
+        done
+    fi
 
     # Brief wait for zombie reaping
     [ "$SWEEP_COUNT" -gt 0 ] && sleep 1
@@ -1309,8 +1375,9 @@ _remove_container_rules() {
     # Service port forwarding
     local SVC_PORT=""
     case "$IMAGE" in
-        nginx*) SVC_PORT="80" ;;
-        apache*|php*) SVC_PORT="80" ;;
+        nginx*) SVC_PORT="8080" ;;
+        apache*) SVC_PORT="9090" ;;
+        php*) SVC_PORT="8000" ;;
         node*) SVC_PORT="3000" ;;
         python*) SVC_PORT="5000" ;;
     esac
@@ -1406,20 +1473,147 @@ cmd_inspect() {
 }
 
 # ============================================================
+# Service management (ANKD services)
+# ============================================================
+cmd_svc_list() {
+    local NAME="$1"
+    local ROOTFS="$CONTAINERS_DIR/$NAME/merged"
+    local SVCS_DIR="$ROOTFS/etc/ankd/services.d"
+    local PIDS_DIR="$ROOTFS/etc/ankd/pids"
+
+    if [ ! -d "$SVCS_DIR" ]; then
+        echo "[]"
+        return
+    fi
+
+    local output="["
+    local first=true
+    for f in "$SVCS_DIR"/*.ankd; do
+        [ -f "$f" ] || continue
+        local fname=$(basename "$f")
+        local uuid=$(echo "$fname" | sed 's/^[0-9]*-//;s/\.ankd$//')
+        local name_val=$(grep "^NAME=" "$f" | cut -d= -f2)
+        local cmd_val=$(grep "^CMD=" "$f" | cut -d= -f2-)
+        local dir_val=$(grep "^DIR=" "$f" | cut -d= -f2)
+        local port_val=$(grep "^PORT=" "$f" | cut -d= -f2)
+        local policy=$(grep "^RESTART_POLICY=" "$f" | cut -d= -f2)
+        [ -z "$policy" ] && policy="always"
+
+        local pgid=""
+        [ -d "$PIDS_DIR" ] && pgid=$(cat "$PIDS_DIR/${uuid}.pgid" 2>/dev/null)
+        local running="false"
+        [ -n "$pgid" ] && kill -0 "$pgid" 2>/dev/null && running="true"
+
+        [ "$first" = true ] && first=false || output="$output,"
+        output="$output{\"uuid\":\"$uuid\",\"name\":\"$name_val\",\"cmd\":\"$(echo "$cmd_val" | sed 's/"/\\"/g')\",\"dir\":\"$dir_val\",\"port\":\"$port_val\",\"running\":$running,\"pgid\":\"$pgid\",\"autostart\":\"$policy\"}"
+    done
+    output="$output]"
+    echo "$output"
+}
+
+cmd_svc_start() {
+    local NAME="$1"
+    local SVC_UUID="$2"
+    local ROOTFS="$CONTAINERS_DIR/$NAME/merged"
+    local ANKD_FILE="$ROOTFS/etc/ankd/services.d/"*-"${SVC_UUID}.ankd"
+    local GENERATED="/usr/ankd/generated"
+
+    ANKD_FILE=$(ls $ANKD_FILE 2>/dev/null | head -1)
+    if [ ! -f "$ANKD_FILE" ]; then
+        echo "ERROR: Service '$SVC_UUID' not found"
+        exit 1
+    fi
+
+    local name_val=$(grep "^NAME=" "$ANKD_FILE" | cut -d= -f2)
+    local cmd_val=$(grep "^CMD=" "$ANKD_FILE" | cut -d= -f2-)
+    local dir_val=$(grep "^DIR=" "$ANKD_FILE" | cut -d= -f2)
+    [ -z "$dir_val" ] && dir_val="/"
+
+    local SCRIPT="$ROOTFS/usr/ankd/core/ankd.sh"
+    if [ ! -x "$SCRIPT" ]; then
+        echo "ERROR: ankd not installed"
+        exit 1
+    fi
+
+    # Use setsid to start in new session (pid==pgid==sid)
+    cd "$ROOTFS/$dir_val" 2>/dev/null || cd "$ROOTFS"
+    local out=$(chroot "$ROOTFS" /bin/sh -c "cd '$dir_val' 2>/dev/null || cd /; export PATH=/bin:/sbin:/usr/bin:/usr/sbin; exec setsid $cmd_val" </dev/null >/dev/null 2>&1 & echo $!)
+    sleep 1
+    # Get the actual PID of the setsid child
+    local pgid=$(pgrep -f "ank-svc-$SVC_UUID" 2>/dev/null || echo "")
+    if [ -z "$pgid" ]; then
+        # Fallback: find by command
+        pgid=$(chroot "$ROOTFS" /bin/sh -c "pgrep -f '$cmd_val'" 2>/dev/null | head -1)
+    fi
+    echo "Service '$name_val' started"
+}
+
+cmd_svc_stop() {
+    local NAME="$1"
+    local SVC_UUID="$2"
+    local ROOTFS="$CONTAINERS_DIR/$NAME/merged"
+    local PIDS_DIR="$ROOTFS/etc/ankd/pids"
+    local pgid_file="$PIDS_DIR/${SVC_UUID}.pgid"
+
+    if [ ! -f "$pgid_file" ]; then
+        echo "Service '$SVC_UUID' is not running"
+        return 0
+    fi
+
+    local pgid=$(cat "$pgid_file" 2>/dev/null)
+    if [ -n "$pgid" ]; then
+        kill -9 -- "-$pgid" 2>/dev/null
+        kill -9 "$pgid" 2>/dev/null
+    fi
+    rm -f "$pgid_file" 2>/dev/null
+    echo "Service stopped"
+}
+
+cmd_svc_restart() {
+    cmd_svc_stop "$1" "$2"
+    sleep 1
+    cmd_svc_start "$1" "$2"
+}
+
+cmd_svc_logs() {
+    local NAME="$1"
+    local SVC_UUID="$2"
+    local LINES="${3:-50}"
+    local LOG_DIR="$CONTAINERS_DIR/$NAME/merged/var/log/ankd"
+    local ANKD_FILE="$CONTAINERS_DIR/$NAME/merged/etc/ankd/services.d/"*-"${SVC_UUID}.ankd"
+
+    ANKD_FILE=$(ls $ANKD_FILE 2>/dev/null | head -1)
+    local name_val=""
+    [ -f "$ANKD_FILE" ] && name_val=$(grep "^NAME=" "$ANKD_FILE" | cut -d= -f2)
+
+    local logfile="$LOG_DIR/${name_val:-$SVC_UUID}.log"
+    if [ -f "$logfile" ]; then
+        tail -n "$LINES" "$logfile"
+    else
+        echo "No logs found for service '$SVC_UUID'"
+    fi
+}
+
+# ============================================================
 # Main
 # ============================================================
 CMD="$1"
 NAME="$2"
 
 case "$CMD" in
-    create)  cmd_create "$NAME" "$3" "$4" "$5" "$6" "$7" ;;
-    start)   cmd_start "$NAME" ;;
-    stop)    cmd_stop "$NAME" ;;
-    delete)  cmd_delete "$NAME" ;;
-    list)    cmd_list ;;
-    inspect) cmd_inspect "$NAME" ;;
+    create)     cmd_create "$NAME" "$3" "$4" "$5" "$6" "$7" ;;
+    start)      cmd_start "$NAME" ;;
+    stop)       cmd_stop "$NAME" ;;
+    delete)     cmd_delete "$NAME" ;;
+    list)       cmd_list ;;
+    inspect)    cmd_inspect "$NAME" ;;
+    svc-list)   cmd_svc_list "$NAME" ;;
+    svc-start)  cmd_svc_start "$NAME" "$3" ;;
+    svc-stop)   cmd_svc_stop "$NAME" "$3" ;;
+    svc-restart) cmd_svc_restart "$NAME" "$3" ;;
+    svc-logs)   cmd_svc_logs "$NAME" "$3" "$4" ;;
     *)
-        echo "Usage: $0 {create|start|stop|delete|list|inspect} <name> [image] [password] [ssh_port]"
+        echo "Usage: $0 {create|start|stop|delete|list|inspect|svc-list|svc-start|svc-stop|svc-restart|svc-logs} <name> [args]"
         exit 1
         ;;
 esac

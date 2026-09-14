@@ -27,14 +27,17 @@ async function api(method, path, body = null) {
     return data;
 }
 
-function toast(msg, type = 'info') {
+function toast(msg, type = 'info', duration = 4000) {
     const c = document.getElementById('toast-container');
     const el = document.createElement('div');
     const icons = { success: 'bi-check-circle-fill', error: 'bi-exclamation-circle-fill', info: 'bi-info-circle-fill', warning: 'bi-exclamation-triangle-fill' };
     el.className = `toast toast-${type}`;
-    el.innerHTML = `<i class="bi ${icons[type] || icons.info}"></i> ${msg}`;
+    el.style.display = 'flex';
+    el.style.alignItems = 'center';
+    el.innerHTML = `<i class="bi ${icons[type] || icons.info}"></i> <span>${msg}</span>`;
     c.appendChild(el);
-    setTimeout(() => { el.style.opacity = '0'; el.style.transform = 'translateX(100%)'; setTimeout(() => el.remove(), 300); }, 4000);
+    setTimeout(() => { el.style.opacity = '0'; el.style.transform = 'translateX(100%)'; setTimeout(() => el.remove(), 300); }, duration);
+    return el;
 }
 
 function confirmAction(title, message) {
@@ -140,6 +143,56 @@ function customModal(title, fields) {
         modal.querySelectorAll('.modal-close').forEach(b => b.addEventListener('click', () => { cleanup(); resolve(null); }));
         modal.querySelector('.modal-overlay').addEventListener('click', () => { cleanup(); resolve(null); });
     });
+}
+
+function showApkFailureModal(containerName, failure) {
+    const pkgs = Array.isArray(failure.packages) ? failure.packages.join(' ') : (failure.packages || '');
+    const sshPort = failure.ssh_port || 22;
+    const overlay = document.createElement('div');
+    overlay.id = 'apk-failure-overlay';
+    overlay.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.7);z-index:10000;display:flex;align-items:center;justify-content:center;';
+    overlay.innerHTML = `
+        <div style="background:var(--bg-primary);border:1px solid var(--border);border-radius:12px;width:90%;max-width:520px;padding:24px;">
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px;">
+                <i class="bi bi-exclamation-triangle" style="font-size:24px;color:var(--warning,#f59e0b);"></i>
+                <h3 style="margin:0;font-size:16px;">Package Install Failed</h3>
+            </div>
+            <p style="margin:0 0 12px;font-size:13px;color:var(--text-secondary);">
+                Failed to install packages after 2 attempts in container <strong>${containerName}</strong>:
+            </p>
+            <div style="background:var(--bg-tertiary);border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:16px;">
+                <code style="font-size:12px;color:var(--warning);">${pkgs}</code>
+            </div>
+            <p style="margin:0 0 8px;font-size:13px;color:var(--text-secondary);">
+                You can install manually via SSH:
+            </p>
+            <div style="display:flex;align-items:center;gap:8px;background:var(--bg-tertiary);border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:16px;">
+                <code id="apk-failure-ssh" style="font-size:12px;flex:1;user-select:all;">ssh root@${window.location.hostname} -p ${sshPort}</code>
+                <button class="btn btn-xs btn-ghost" onclick="navigator.clipboard.writeText(document.getElementById('apk-failure-ssh').textContent);toast('Copied!','success')"><i class="bi bi-clipboard"></i></button>
+            </div>
+            <p style="margin:0 0 16px;font-size:12px;color:var(--text-muted);">
+                Then run: <code>apk add --allow-untrusted ${pkgs}</code>
+            </p>
+            <div style="display:flex;gap:8px;justify-content:flex-end;">
+                <button class="btn btn-danger btn-sm" id="apk-fail-cancel"><i class="bi bi-trash3"></i> Cancel & Remove</button>
+                <button class="btn btn-primary btn-sm" id="apk-fail-continue"><i class="bi bi-check-lg"></i> Continue Build</button>
+            </div>
+        </div>`;
+    document.body.appendChild(overlay);
+    document.getElementById('apk-fail-continue').addEventListener('click', () => {
+        overlay.remove();
+        toast(`Container "${containerName}" deployed without packages. Install via SSH.`, 'warning');
+        loadAll();
+    });
+    document.getElementById('apk-fail-cancel').addEventListener('click', async () => {
+        overlay.remove();
+        try {
+            await api('DELETE', `/containers/${containerName}`);
+            toast(`Container "${containerName}" deleted`, 'success');
+            loadAll();
+        } catch (e) { toast(`Failed to delete: ${e.message}`, 'error'); }
+    });
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
 }
 
 function logout() {
@@ -362,6 +415,7 @@ function renderContainers(containers, nodeId) {
         const statusClass = isBuilding ? 'status-building' : isFailed ? 'status-failed' : `status-${c.status}`;
         const statusText = isBuilding ? 'Building...' : isFailed ? 'Failed' : c.status === 'starting' ? 'Starting...' : c.status === 'stopping' ? 'Stopping...' : c.status;
         const disabled = isBuilding || isFailed || c.status === 'starting' || c.status === 'stopping';
+        const isRunning = c.status === 'running' || c.status === 'starting';
         const startAction = isRemote ? `remoteContainerAction('${nodeId}','${esc(name)}','start')` : `startContainer('${esc(name)}')`;
         const stopAction = isRemote ? `remoteContainerAction('${nodeId}','${esc(name)}','stop')` : `stopContainer('${esc(name)}')`;
         const restartAction = isRemote ? `remoteContainerAction('${nodeId}','${esc(name)}','restart')` : `restartContainer('${esc(name)}')`;
@@ -385,7 +439,7 @@ function renderContainers(containers, nodeId) {
                     : `<button class="btn btn-success btn-sm" ${disabled ? 'disabled' : ''} onclick="event.stopPropagation(); ${startAction}"><i class="bi bi-play-fill"></i></button>`
                 }
                 <button class="btn btn-primary btn-sm" ${disabled ? 'disabled' : ''} onclick="event.stopPropagation(); ${restartAction}"><i class="bi bi-arrow-repeat"></i></button>
-                <button class="btn btn-danger btn-sm" ${disabled ? 'disabled' : ''} onclick="event.stopPropagation(); ${deleteAction}"><i class="bi bi-trash3"></i></button>
+                <button class="btn btn-danger btn-sm" ${(isRunning || isBuilding) ? 'disabled' : ''} onclick="event.stopPropagation(); ${deleteAction}"><i class="bi bi-trash3"></i></button>
             </div>
         </div>`;
     }).join('');
@@ -618,19 +672,64 @@ function clearContainerLoading(name) {
 }
 
 async function pollContainerStatus(name, attempt) {
-    if (attempt > 30) { loadAll(); return; }
+    if (attempt > 30) {
+        loadContainers();
+        return;
+    }
     try {
         const c = await api('GET', `/containers/${name}`);
         if (c.status === 'building' || c.status === 'starting' || c.status === 'stopping') {
+            updateContainerBadge(name, c.status);
             setTimeout(() => pollContainerStatus(name, attempt + 1), 2000);
         } else {
-            loadAll();
+            if (c.package_failure) {
+                showApkFailureModal(name, c.package_failure);
+            }
+            updateContainerBadge(name, c.status);
+            updateDetailButtons(name, c.status);
+            loadContainers();
             const detailModal = document.getElementById('detail-modal');
             if (detailModal && detailModal.style.display !== 'none' && document.getElementById('detail-name')?.textContent === name) {
                 showContainerDetail(name);
             }
         }
-    } catch (e) { loadAll(); }
+    } catch (e) { loadContainers(); }
+}
+
+function updateContainerBadge(name, status) {
+    const card = document.querySelector(`.container-card[data-name="${name}"]`);
+    if (!card) return;
+    const badge = card.querySelector('.status-badge');
+    if (!badge) return;
+    const isBuilding = status === 'building';
+    const isFailed = status === 'failed';
+    const statusClass = isBuilding ? 'status-building' : isFailed ? 'status-failed' : `status-${status}`;
+    const statusText = isBuilding ? 'Building...' : isFailed ? 'Failed' : status === 'starting' ? 'Starting...' : status === 'stopping' ? 'Stopping...' : status;
+    badge.className = `status-badge ${statusClass}`;
+    badge.innerHTML = `${isBuilding ? '<i class="bi bi-arrow-repeat spin"></i> ' : ''}${statusText}`;
+    const isRunning = status === 'running' || status === 'starting';
+    card.querySelectorAll('.container-actions button').forEach(btn => {
+        if (btn.classList.contains('btn-danger')) {
+            btn.disabled = isRunning || isBuilding;
+        } else if (btn.classList.contains('btn-warning')) {
+            btn.disabled = !isRunning;
+        } else if (btn.classList.contains('btn-success')) {
+            btn.disabled = isRunning || isBuilding;
+        }
+    });
+}
+
+function updateDetailButtons(name, status) {
+    if (!currentContainer || currentContainer.name !== name) return;
+    const isRunning = status === 'running' || status === 'starting';
+    const isBuilding = status === 'building';
+    const isFailed = status === 'failed';
+    const stopped = status === 'stopped' || status === 'stopping';
+    const isTransient = isBuilding || isFailed || status === 'starting' || status === 'stopping';
+    document.getElementById('detail-start').disabled = isRunning || isBuilding || isFailed;
+    document.getElementById('detail-stop').disabled = stopped || isBuilding || isFailed;
+    document.getElementById('detail-restart').disabled = isTransient;
+    document.getElementById('detail-delete').disabled = isRunning || isBuilding;
 }
 
 async function startContainer(name) {
@@ -705,7 +804,7 @@ async function showContainerDetail(name) {
         document.getElementById('detail-start').disabled = running || isBuilding || isFailed;
         document.getElementById('detail-stop').disabled = stopped || isBuilding || isFailed;
         document.getElementById('detail-restart').disabled = isTransient;
-        document.getElementById('detail-delete').disabled = isBuilding;
+        document.getElementById('detail-delete').disabled = running || isBuilding;
         document.getElementById('detail-start').onclick = () => startContainer(name);
         document.getElementById('detail-stop').onclick = () => stopContainer(name);
         document.getElementById('detail-restart').onclick = () => restartContainer(name);
@@ -812,13 +911,10 @@ async function showContainerDetail(name) {
 
 function renderPortMappings(ports) {
     const list = document.getElementById('port-mappings-list');
-    if (!ports.length) { list.innerHTML = ''; return; }
+    if (!ports.length) { list.innerHTML = '<div style="color:var(--text-muted);font-size:12px;">No port configured</div>'; return; }
     list.innerHTML = ports.map((p, i) => `
         <div class="port-row">
-            <div style="flex:1"><label style="font-size:11px;color:var(--text-muted);margin-bottom:2px;display:block">Host Port</label><input type="number" placeholder="8080" value="${p.host_port || ''}" data-idx="${i}" data-field="host_port"></div>
-            <span style="color:var(--text-muted);align-self:flex-end;padding-bottom:10px">→</span>
-            <div style="flex:1"><label style="font-size:11px;color:var(--text-muted);margin-bottom:2px;display:block">Container Port</label><input type="number" placeholder="80" value="${p.container_port || ''}" data-idx="${i}" data-field="container_port"></div>
-            <div style="width:70px"><label style="font-size:11px;color:var(--text-muted);margin-bottom:2px;display:block">Proto</label><select data-idx="${i}" data-field="protocol"><option value="tcp" ${p.protocol==='tcp'?'selected':''}>TCP</option><option value="udp" ${p.protocol==='udp'?'selected':''}>UDP</option></select></div>
+            <div style="flex:1"><label style="font-size:11px;color:var(--text-muted);margin-bottom:2px;display:block">Port</label><input type="number" placeholder="8080" value="${p.host_port || ''}" data-idx="${i}" data-field="host_port"></div>
             <button type="button" class="btn btn-ghost btn-sm remove-port" data-idx="${i}" style="align-self:flex-end;margin-bottom:6px"><i class="bi bi-x-lg"></i></button>
         </div>
     `).join('');
@@ -843,10 +939,9 @@ document.getElementById('detail-settings-form')?.addEventListener('submit', asyn
     const ports = [];
     portRows.forEach(row => {
         const hp = row.querySelector('[data-field="host_port"]');
-        const cp = row.querySelector('[data-field="container_port"]');
-        const pr = row.querySelector('[data-field="protocol"]');
-        if (hp && cp && (hp.value || cp.value)) {
-            ports.push({ host_port: parseInt(hp.value)||0, container_port: parseInt(cp.value)||0, protocol: pr.value });
+        if (hp && hp.value) {
+            const port = parseInt(hp.value) || 0;
+            ports.push({ host_port: port, container_port: port, protocol: 'tcp' });
         }
     });
     await btnLoading(btn, async () => {
@@ -875,10 +970,10 @@ document.getElementById('detail-network-form')?.addEventListener('submit', async
     const ports = [];
     rows.forEach(row => {
         const hp = row.querySelector('[data-field="host_port"]');
-        const cp = row.querySelector('[data-field="container_port"]');
         const pr = row.querySelector('[data-field="protocol"]');
-        if (hp && cp && (hp.value || cp.value)) {
-            ports.push({ host_port: parseInt(hp.value)||0, container_port: parseInt(cp.value)||0, protocol: pr.value });
+        if (hp && hp.value) {
+            const port = parseInt(hp.value) || 0;
+            ports.push({ host_port: port, container_port: port, protocol: pr ? pr.value : 'tcp' });
         }
     });
     try {
@@ -887,6 +982,19 @@ document.getElementById('detail-network-form')?.addEventListener('submit', async
             policies: { inter_container_p2p: document.getElementById('detail-p2p').checked, allow_host_access: document.getElementById('detail-host').checked, allow_internet: document.getElementById('detail-internet').checked }
         });
         toast(`Network settings saved for "${name}"`, 'success');
+        if (ports.length > 0 && currentContainer.status === 'running') {
+            const toastEl = toast(`Port changed. Restart container to apply.`, 'warning', 8000);
+            const restartBtn = document.createElement('button');
+            restartBtn.className = 'btn btn-xs btn-warning';
+            restartBtn.style.cssText = 'margin-left:8px;font-size:11px;';
+            restartBtn.innerHTML = '<i class="bi bi-arrow-repeat"></i> Restart Now';
+            restartBtn.onclick = async () => {
+                restartBtn.disabled = true;
+                restartBtn.innerHTML = '<i class="bi bi-arrow-repeat spin"></i> Restarting...';
+                try { await restartContainer(name); } catch (e) {}
+            };
+            if (toastEl) toastEl.appendChild(restartBtn);
+        }
         showContainerDetail(name);
     } catch (e) { toast(`Failed: ${e.message}`, 'error'); }
 });
@@ -1030,6 +1138,7 @@ document.getElementById('create-form').addEventListener('submit', async (e) => {
             } else {
                 toast(`Deploying template "${templateId}" as "${name}"...`, 'info');
                 await api('POST', '/images/deploy', { template: templateId, name, root_password: rootPass });
+                pollContainerStatus(name, 0);
             }
             hideModal('create-modal');
             document.getElementById('create-form').reset();
@@ -1121,7 +1230,7 @@ async function deployTemplate(id, name, baseReady) {
     try {
         toast(`Deploying ${name} as "${containerName}"...`, 'info');
         await api('POST', '/images/deploy', { template: id, name: containerName, root_password: rootPass });
-        toast(`${name} deployed as "${containerName}"`, 'success');
+        pollContainerStatus(containerName, 0);
         loadAll();
     } catch (e) { toast(`Failed: ${e.message}`, 'error'); }
 }
@@ -1339,11 +1448,66 @@ document.getElementById('restart-server-btn')?.addEventListener('click', async (
     const ok = await confirmAction('Restart Server', 'This will stop all containers and restart the ANK server. Continue?');
     if (!ok) return;
     try {
-        toast('Restarting server...', 'warning');
         await api('POST', '/system/restart-server');
-        document.body.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100vh;background:#0f172a;color:#e2e8f0;font-family:sans-serif;text-align:center"><div><h1 style="font-size:32px;margin-bottom:16px">Server Restarting...</h1><p style="color:#94a3b8">The ANK server is restarting. This page will reload shortly.</p></div></div>';
-        setTimeout(() => location.reload(), 5000);
-    } catch (e) { toast(`Failed: ${e.message}`, 'error'); }
+    } catch (e) { /* server dies before responding, that's expected */ }
+
+    // Show progress overlay
+    const overlay = document.createElement('div');
+    overlay.id = 'restart-overlay';
+    overlay.style.cssText = 'position:fixed;inset:0;z-index:99999;background:#0f172a;color:#e2e8f0;display:flex;align-items:center;justify-content:center;font-family:system-ui,sans-serif';
+    const steps = [
+        'Stopping running containers...',
+        'Restarting ANK server...',
+        'Waiting for server to come back...',
+        'Done! Redirecting to login...'
+    ];
+    let currentStep = 0;
+    overlay.innerHTML = `<div style="max-width:420px;width:90%;text-align:center">
+        <h2 style="font-size:24px;margin:0 0 24px">Restarting Server</h2>
+        <div id="restart-steps" style="text-align:left"></div>
+        <div style="margin-top:24px;height:4px;background:#1e293b;border-radius:2px;overflow:hidden">
+            <div id="restart-bar" style="height:100%;width:0%;background:linear-gradient(90deg,#009639,#22c55e);transition:width 0.5s ease"></div>
+        </div>
+    </div>`;
+    document.body.appendChild(overlay);
+
+    const stepsEl = overlay.querySelector('#restart-steps');
+    const bar = overlay.querySelector('#restart-bar');
+
+    function showStep(i) {
+        if (i >= steps.length) return;
+        currentStep = i;
+        stepsEl.innerHTML = steps.map((s, idx) => {
+            const color = idx < i ? '#22c55e' : idx === i ? '#fbbf24' : '#475569';
+            const icon = idx < i ? '&#10003;' : idx === i ? '<span class="restart-spin">&#8987;</span>' : '&#9675;';
+            return `<div style="display:flex;align-items:center;gap:10px;padding:6px 0;color:${color};font-size:14px"><span style="width:20px;text-align:center">${icon}</span>${s}</div>`;
+        }).join('');
+        bar.style.width = `${((i + 1) / steps.length) * 100}%`;
+    }
+    showStep(0);
+
+    // Step 1: Wait a bit for containers to stop
+    await new Promise(r => setTimeout(r, 3000));
+    showStep(1);
+
+    // Step 2: Wait for server to die then come back
+    await new Promise(r => setTimeout(r, 2000));
+    showStep(2);
+
+    // Step 3: Poll until server responds
+    let tries = 0;
+    const maxTries = 60;
+    while (tries < maxTries) {
+        await new Promise(r => setTimeout(r, 2000));
+        tries++;
+        try {
+            const resp = await fetch('/api/health', { method: 'GET', signal: AbortSignal.timeout(3000) });
+            if (resp.ok) break;
+        } catch (_) {}
+    }
+    showStep(3);
+    await new Promise(r => setTimeout(r, 1000));
+    window.location.href = '/login';
 });
 
 document.getElementById('uninstall-btn')?.addEventListener('click', async () => {
@@ -1661,7 +1825,11 @@ document.getElementById('ankfile-build-btn')?.addEventListener('click', async ()
     const name = document.getElementById('ankfile-name')?.value?.trim() || 'ank-build';
     if (!content) { toast('Ankfile is empty', 'error'); return; }
     if (!content.includes('FROM')) { toast('Ankfile must have a FROM instruction', 'error'); return; }
-    try { toast(`Building from Ankfile as "${name}"...`, 'info'); await api('POST', '/images/ankfile', { content, name }); toast(`Ankfile built as "${name}"`, 'success'); loadAll(); } catch (e) { toast(`Failed: ${e.message}`, 'error'); }
+    try {
+        toast(`Building from Ankfile as "${name}"...`, 'info');
+        await api('POST', '/images/ankfile', { content, name });
+        pollContainerStatus(name, 0);
+    } catch (e) { toast(`Failed: ${e.message}`, 'error'); }
 });
 
 document.getElementById('ankfile-example-btn')?.addEventListener('click', () => {
@@ -2288,20 +2456,17 @@ async function taskManagerServiceAction(service, action) {
 async function taskManagerViewLog(service) {
     if (!currentContainer) return;
     try {
-        const data = await api('GET', `/containers/${currentContainer.name}/logs`);
-        // Filter log lines for this service
-        const lines = (data || '').split('\n').filter(l => l.includes(`[${service}]`) || l.includes(service));
-        const last20 = lines.slice(-30).join('\n') || 'No log entries for this service';
-        // Show in a modal overlay
+        const data = await api('GET', `/containers/${currentContainer.name}/services/${service}/logs?lines=50`);
+        const logs = data.logs || 'No logs for this service';
         const overlay = document.createElement('div');
         overlay.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.7);z-index:10000;display:flex;align-items:center;justify-content:center;';
         overlay.innerHTML = `
             <div style="background:var(--bg-primary);border:1px solid var(--border);border-radius:12px;width:90%;max-width:700px;max-height:80vh;display:flex;flex-direction:column;">
                 <div style="display:flex;justify-content:space-between;align-items:center;padding:12px 16px;border-bottom:1px solid var(--border);">
-                    <h4 style="margin:0;font-size:14px;"><i class="bi bi-journal-text"></i> ${service} — Log</h4>
+                    <h4 style="margin:0;font-size:14px;"><i class="bi bi-journal-text"></i> ${service} — Logs</h4>
                     <button class="btn btn-xs btn-ghost" onclick="this.closest('div[style*=fixed]').remove()"><i class="bi bi-x-lg"></i></button>
                 </div>
-                <pre style="margin:0;padding:16px;overflow:auto;flex:1;font-size:12px;line-height:1.5;color:var(--text-primary);background:transparent;">${last20.replace(/</g, '&lt;')}</pre>
+                <pre style="margin:0;padding:16px;overflow:auto;flex:1;font-size:12px;line-height:1.5;color:var(--text-primary);background:transparent;">${logs.replace(/</g, '&lt;')}</pre>
             </div>`;
         document.body.appendChild(overlay);
         overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });

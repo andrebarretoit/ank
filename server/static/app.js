@@ -415,6 +415,7 @@ function renderContainers(containers, nodeId) {
         const statusClass = isBuilding ? 'status-building' : isFailed ? 'status-failed' : `status-${c.status}`;
         const statusText = isBuilding ? 'Building...' : isFailed ? 'Failed' : c.status === 'starting' ? 'Starting...' : c.status === 'stopping' ? 'Stopping...' : c.status;
         const disabled = isBuilding || isFailed || c.status === 'starting' || c.status === 'stopping';
+        const isRunning = c.status === 'running' || c.status === 'starting';
         const startAction = isRemote ? `remoteContainerAction('${nodeId}','${esc(name)}','start')` : `startContainer('${esc(name)}')`;
         const stopAction = isRemote ? `remoteContainerAction('${nodeId}','${esc(name)}','stop')` : `stopContainer('${esc(name)}')`;
         const restartAction = isRemote ? `remoteContainerAction('${nodeId}','${esc(name)}','restart')` : `restartContainer('${esc(name)}')`;

@@ -328,7 +328,7 @@ class StepInstall(QWidget):
             self.status.setStyleSheet(f"color: {COLORS['success']}; font-size: 13px; font-weight: bold;")
             self.app.install_complete = True
             self._countdown = 5
-            self.countdown_label.setText(f"Reiniciando em {self._countdown}s...")
+            self.countdown_label.setText(f"Prosseguindo em {self._countdown}s...")
             self._countdown_timer.start(1000)
         else:
             self.progress.setValue(0)
@@ -345,7 +345,7 @@ class StepInstall(QWidget):
             self.countdown_label.setText("")
             self.app.show_step(self.current_step + 1)
         else:
-            self.countdown_label.setText(f"Reiniciando em {self._countdown}s...")
+            self.countdown_label.setText(f"Prosseguindo em {self._countdown}s...")
 
     @property
     def current_step(self):
