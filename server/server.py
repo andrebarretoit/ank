@@ -409,7 +409,8 @@ ANK_PHP_HTML = ANK_PAGE_HTML % ('#777BB4', '#a855f7', '#777BB4', 'PHP Running', 
 ANK_NODE_HTML = ANK_PAGE_HTML % ('#339933', '#22c55e', '#339933', 'Node.js Running', 'Edit server.js via the<br>ANK Web Panel file explorer.', ANK_BRANDING)
 ANK_PYTHON_HTML = ANK_PAGE_HTML % ('#3776AB', '#ffd43b', '#3776AB', 'Python Running', 'Edit server.py via the<br>ANK Web Panel file explorer.', ANK_BRANDING)
 
-ANK_NGINX_CONF = """events { worker_connections 1024; }
+ANK_NGINX_CONF = """daemon off;
+events { worker_connections 1024; }
 http {
     include /etc/nginx/mime.types;
     default_type application/octet-stream;
@@ -459,7 +460,7 @@ HTTPServer(('0.0.0.0', 8000), Handler).serve_forever()"""
 
 S6_SERVICES = {
     "nginx": {
-        "run": "#!/bin/sh\nexec nginx -g 'daemon off;'",
+        "run": "#!/bin/sh\nexec nginx",
         "finish": "#!/bin/sh\ntrue"
     },
     "apache": {
@@ -2409,6 +2410,7 @@ small{color:#334155}
             "base": "apache-3.20",
             "packages": ["apache2", "curl"],
             "port": 9090,
+            "internal_port": 80,
             "category": "server",
             "serves_static": True,
             "static_path": "/var/www/localhost/htdocs"
@@ -2544,7 +2546,13 @@ small{color:#334155}
                             capture_output=True, text=True, timeout=timeout
                         )
                     except subprocess.TimeoutExpired as e:
-                        partial_out = (e.stdout or "") + (e.stderr or "")
+                        out = e.stdout
+                        err = e.stderr
+                        if isinstance(out, bytes):
+                            out = out.decode("utf-8", errors="replace")
+                        if isinstance(err, bytes):
+                            err = err.decode("utf-8", errors="replace")
+                        partial_out = (out or "") + (err or "")
                         class _Result:
                             pass
                         r = _Result()
@@ -2578,11 +2586,12 @@ small{color:#334155}
                     if template.get("port"):
                         desired_port = template["port"]
                         actual_port = self._find_free_port(desired_port)
+                        internal_port = template.get("internal_port", desired_port)
                         port_warnings = []
                         if actual_port != desired_port:
                             port_warnings.append(f"Port {desired_port} in use, using {actual_port} instead")
                             log(f"Port {desired_port} busy for {container_name}, using {actual_port}")
-                        config["port_mappings"] = [{"host_port": actual_port, "container_port": desired_port, "protocol": "tcp"}]
+                        config["port_mappings"] = [{"host_port": actual_port, "container_port": internal_port, "protocol": "tcp"}]
                         if port_warnings:
                             config["port_warning"] = "; ".join(port_warnings)
                     if template.get("serves_static"):
@@ -2777,7 +2786,13 @@ small{color:#334155}
                         )
                     except subprocess.TimeoutExpired as e:
                         # Return partial output so user can see what happened
-                        partial_out = (e.stdout or "") + (e.stderr or "")
+                        out = e.stdout
+                        err = e.stderr
+                        if isinstance(out, bytes):
+                            out = out.decode("utf-8", errors="replace")
+                        if isinstance(err, bytes):
+                            err = err.decode("utf-8", errors="replace")
+                        partial_out = (out or "") + (err or "")
                         class _Result:
                             pass
                         r = _Result()
@@ -2809,12 +2824,27 @@ small{color:#334155}
                     with open(log_path, "a") as lf:
                         lf.write(f"CMD: {cmd_line}\n")
 
+                    svc_dir = os.path.join(merged, "etc/ankd/services.d")
+                    os.makedirs(svc_dir, exist_ok=True)
+                    app_port = ports[0] if ports else ""
+                    svc_ankd = os.path.join(svc_dir, "02-app.ankd")
+                    if not os.path.exists(svc_ankd):
+                        with open(svc_ankd, "w") as f:
+                            f.write(f"NAME=app\nCMD={cmd_line}\nDIR={workdir}\nPID_FILE=/run/app.pid\nSTOP_SIGNAL=TERM\nRESTART_POLICY=always\nRESTART_DELAY=3\n")
+                        log(f"Generated .ankd: {svc_ankd}")
+                        with open(log_path, "a") as lf:
+                            lf.write(f"Generated .ankd: app -> {cmd_line} (dir: {workdir})\n")
+
                 config = load_container_config(container_name)
                 if config:
                     config["image"] = mapped_image
                     config["template"] = "ankfile"
                     config["template_name"] = f"Ankfile ({base_image})"
                     config["status"] = "stopped"
+                    if cmd_line:
+                        config["cmd"] = cmd_line
+                    if workdir and workdir != "/":
+                        config["workdir"] = workdir
                     if ports:
                         config["port_mappings"] = [{"host_port": port, "container_port": port, "protocol": "tcp"} for port in ports]
                         for p in ports:
@@ -3798,9 +3828,9 @@ small{color:#334155}
                 f.write(f"NAME=sshd\nCMD=/usr/sbin/sshd -D -p {ssh_port} -o PasswordAuthentication=yes -o PermitRootLogin=yes -e\nDIR=/\nPID_FILE=/run/sshd.pid\nSTOP_SIGNAL=TERM\nRESTART_POLICY=always\nRESTART_DELAY=3\n")
         # Create service-specific .ankd based on template
         svc_map = {
-            "nginx": ("nginx", "nginx -g 'daemon off;'", "/var/www/html", "80"),
-            "apache": ("apache", "httpd -f -p 80 -h /var/www/localhost/htdocs", "/var/www/localhost/htdocs", "80"),
-            "php": ("php", "php -S 0.0.0.0:80 -t /var/www/php", "/var/www/php", "80"),
+            "nginx": ("nginx", "nginx", "/var/www/html", "80"),
+            "apache": ("apache", "httpd -D FOREGROUND", "/var/www/localhost/htdocs", "80"),
+            "php": ("php", "php82 -S 0.0.0.0:8000 -t /var/www/php", "/var/www/php", "8000"),
             "node": ("node", "node server.js", "/var/www/app", "3000"),
             "python": ("python", "python3 server.py", "/var/www/app", "5000"),
         }

@@ -353,10 +353,9 @@ SSHD_EOF
     case "$IMAGE" in
         nginx*)
             SVC_NAME="nginx"
-            SVC_CMD="nginx -g 'daemon off;'"
+            SVC_CMD="nginx"
             SVC_DIR="/var/www/html"
             SVC_PORT="80"
-            # Inject daemon off into nginx.conf (avoids quoting issues with -g flag)
             if [ -f "$ROOTFS/etc/nginx/nginx.conf" ]; then
                 grep -q "^daemon off" "$ROOTFS/etc/nginx/nginx.conf" 2>/dev/null || \
                     sed -i '1i daemon off;' "$ROOTFS/etc/nginx/nginx.conf" 2>/dev/null
@@ -364,15 +363,15 @@ SSHD_EOF
             ;;
         apache*)
             SVC_NAME="apache"
-            SVC_CMD="httpd -f -p 80 -h /var/www/localhost/htdocs"
+            SVC_CMD="httpd -D FOREGROUND"
             SVC_DIR="/var/www/localhost/htdocs"
             SVC_PORT="80"
             ;;
         php*)
             SVC_NAME="php"
-            SVC_CMD="php -S 0.0.0.0:80 -t /var/www/php"
+            SVC_CMD="php82 -S 0.0.0.0:8000 -t /var/www/php"
             SVC_DIR="/var/www/php"
-            SVC_PORT="80"
+            SVC_PORT="8000"
             ;;
         node*)
             SVC_NAME="node"
