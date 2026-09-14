@@ -635,15 +635,15 @@ async function pollContainerStatus(name, attempt) {
 
 async function startContainer(name) {
     setContainerLoading(name, 'start');
-    try { await api('POST', `/containers/${name}/start`); toast(`Container "${name}" started`, 'success'); clearContainerLoading(name); } catch (e) { toast(`Failed: ${e.message}`, 'error'); clearContainerLoading(name); }
+    try { await api('POST', `/containers/${name}/start`); toast(`Starting "${name}"...`, 'info'); pollContainerStatus(name, 0); } catch (e) { toast(`Failed: ${e.message}`, 'error'); clearContainerLoading(name); }
 }
 async function stopContainer(name) {
     setContainerLoading(name, 'stop');
-    try { await api('POST', `/containers/${name}/stop`); toast(`Stopping "${name}"...`, 'info'); } catch (e) { toast(`Failed: ${e.message}`, 'error'); clearContainerLoading(name); }
+    try { await api('POST', `/containers/${name}/stop`); toast(`Stopping "${name}"...`, 'info'); pollContainerStatus(name, 0); } catch (e) { toast(`Failed: ${e.message}`, 'error'); clearContainerLoading(name); }
 }
 async function restartContainer(name) {
     setContainerLoading(name, 'restart');
-    try { await api('POST', `/containers/${name}/restart`); toast(`Container "${name}" restarted`, 'success'); clearContainerLoading(name); } catch (e) { toast(`Failed: ${e.message}`, 'error'); clearContainerLoading(name); }
+    try { await api('POST', `/containers/${name}/restart`); toast(`Restarting "${name}"...`, 'info'); pollContainerStatus(name, 0); } catch (e) { toast(`Failed: ${e.message}`, 'error'); clearContainerLoading(name); }
 }
 async function deleteContainer(name) {
     const ok = await confirmAction('Delete Container', `Delete "${name}"? This cannot be undone.`);
@@ -706,9 +706,9 @@ async function showContainerDetail(name) {
         document.getElementById('detail-stop').disabled = stopped || isBuilding || isFailed;
         document.getElementById('detail-restart').disabled = isTransient;
         document.getElementById('detail-delete').disabled = isBuilding;
-        document.getElementById('detail-start').onclick = async () => { await startContainer(name); showContainerDetail(name); };
-        document.getElementById('detail-stop').onclick = async () => { await stopContainer(name); showContainerDetail(name); };
-        document.getElementById('detail-restart').onclick = async () => { await restartContainer(name); showContainerDetail(name); };
+        document.getElementById('detail-start').onclick = () => startContainer(name);
+        document.getElementById('detail-stop').onclick = () => stopContainer(name);
+        document.getElementById('detail-restart').onclick = () => restartContainer(name);
         document.getElementById('detail-delete').onclick = () => deleteContainer(name);
         document.getElementById('detail-autostart').checked = c.autostart || false;
         document.getElementById('detail-mem-limit').value = c.resources?.memory_limit || '256M';
@@ -1311,23 +1311,19 @@ document.getElementById('panel-settings-form').addEventListener('submit', async 
     } catch (e) { toast(`Failed: ${e.message}`, 'error'); }
 });
 
-async function saveSSHSettings() {
+async function saveRemoteSSHSettings() {
+    const enableRemote = document.getElementById('setting-remote-mgmt')?.checked ?? false;
+    const managerIp = document.getElementById('setting-manager-ip')?.value?.trim() || '';
     const sshEnabled = document.getElementById('setting-ssh-enabled')?.checked ?? true;
     const sshPort = document.getElementById('setting-ssh-port')?.value || '2200';
     try {
-        await api('POST', '/config', { ssh_enabled: sshEnabled, ssh_port: parseInt(sshPort) });
-        toast('SSH settings saved', 'success');
+        await api('POST', '/config', { enable_remote_management: enableRemote, manager_ip: managerIp, ssh_enabled: sshEnabled, ssh_port: parseInt(sshPort) });
+        toast('Settings saved', 'success');
     } catch (e) { toast(`Failed: ${e.message}`, 'error'); }
 }
 
-async function saveRemoteSettings() {
-    const enableRemote = document.getElementById('setting-remote-mgmt')?.checked ?? false;
-    const managerIp = document.getElementById('setting-manager-ip')?.value?.trim() || '';
-    try {
-        await api('POST', '/config', { enable_remote_management: enableRemote, manager_ip: managerIp });
-        toast('Remote settings saved', 'success');
-    } catch (e) { toast(`Failed: ${e.message}`, 'error'); }
-}
+async function saveSSHSettings() { return saveRemoteSSHSettings(); }
+async function saveRemoteSettings() { return saveRemoteSSHSettings(); }
 
 document.getElementById('restart-device-btn')?.addEventListener('click', async () => {
     const ok = await confirmAction('Restart Device', 'This will reboot the Android device. Keep USB connected. Continue?');
@@ -1385,8 +1381,8 @@ async function loadSettings() {
         if (sshEnabledEl) sshEnabledEl.checked = cfg.ssh_enabled !== false;
         const sshPortEl = document.getElementById('setting-ssh-port');
         if (sshPortEl) sshPortEl.value = cfg.ssh_port || 2200;
-        const sshUserEl = document.getElementById('setting-ssh-user');
-        if (sshUserEl) sshUserEl.value = cfg.username || '';
+        const sshPortDisplay = document.getElementById('setting-ssh-port-display');
+        if (sshPortDisplay) sshPortDisplay.textContent = cfg.ssh_port || 2200;
         const mipGroup = document.getElementById('manager-ip-group');
         if (mipGroup) mipGroup.style.display = remoteMgmtEl?.checked ? 'block' : 'none';
         if (remoteMgmtEl) remoteMgmtEl.addEventListener('change', () => {

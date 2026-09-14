@@ -338,6 +338,12 @@ def check_container_running(name):
             return True
         except OSError:
             pass
+        # Fallback: check /proc/<pid> exists (more reliable on Android/SELinux)
+        try:
+            if os.path.exists(f"/proc/{pid}"):
+                return True
+        except Exception:
+            pass
     return False
 
 def get_mode():
@@ -1856,21 +1862,27 @@ small{color:#334155}
             return
         def do_restart():
             try:
-                config["status"] = "stopping"
-                save_container_config(name, config)
-                run_script("container.sh", "stop", name)
-                import time; time.sleep(2)
-                output, code = run_script("container.sh", "start", name)
                 cfg = load_container_config(name)
                 if cfg:
+                    cfg["status"] = "stopping"
+                    save_container_config(name, cfg)
+                run_script("container.sh", "stop", name, timeout=90)
+                import time; time.sleep(1)
+                cfg2 = load_container_config(name)
+                if cfg2:
+                    cfg2["status"] = "starting"
+                    save_container_config(name, cfg2)
+                output, code = run_script("container.sh", "start", name, timeout=120)
+                cfg3 = load_container_config(name)
+                if cfg3:
                     if code != 0:
                         log(f"ERROR: restart {name}: {output}")
-                        cfg["status"] = "stopped"
-                        cfg["pid"] = None
+                        cfg3["status"] = "stopped"
+                        cfg3["pid"] = None
                     else:
                         log(f"Container {name} restarted")
-                        cfg["status"] = "running"
-                    save_container_config(name, cfg)
+                        cfg3["status"] = "running"
+                    save_container_config(name, cfg3)
             except Exception as e:
                 log(f"ERROR: restart thread {name}: {e}")
                 cfg = load_container_config(name)
@@ -3786,7 +3798,7 @@ small{color:#334155}
                 f.write(f"NAME=sshd\nCMD=/usr/sbin/sshd -D -p {ssh_port} -o PasswordAuthentication=yes -o PermitRootLogin=yes -e\nDIR=/\nPID_FILE=/run/sshd.pid\nSTOP_SIGNAL=TERM\nRESTART_POLICY=always\nRESTART_DELAY=3\n")
         # Create service-specific .ankd based on template
         svc_map = {
-            "nginx": ("nginx", "nginx", "/var/www/html", "80"),
+            "nginx": ("nginx", "nginx -g 'daemon off;'", "/var/www/html", "80"),
             "apache": ("apache", "httpd -f -p 80 -h /var/www/localhost/htdocs", "/var/www/localhost/htdocs", "80"),
             "php": ("php", "php -S 0.0.0.0:80 -t /var/www/php", "/var/www/php", "80"),
             "node": ("node", "node server.js", "/var/www/app", "3000"),

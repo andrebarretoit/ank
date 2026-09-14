@@ -353,7 +353,7 @@ SSHD_EOF
     case "$IMAGE" in
         nginx*)
             SVC_NAME="nginx"
-            SVC_CMD="nginx"
+            SVC_CMD="nginx -g 'daemon off;'"
             SVC_DIR="/var/www/html"
             SVC_PORT="80"
             # Inject daemon off into nginx.conf (avoids quoting issues with -g flag)
@@ -836,6 +836,13 @@ cmd_start() {
         fi
     fi
 
+    # Cleanup stale PID files and temp files from previous run
+    rm -f "$ROOTFS/run/nginx.pid" "$ROOTFS/run/nginx.lock" 2>/dev/null
+    rm -f "$ROOTFS/run/sshd.pid" "$ROOTFS/run/sshd.pid.lock" 2>/dev/null
+    rm -f "$ROOTFS/tmp/"*.sock 2>/dev/null
+    # Ensure /run exists for PID files
+    mkdir -p "$ROOTFS/run" 2>/dev/null
+
     # Check if ankd service manager is installed
     if [ -x "$ROOTFS/usr/ankd/core/ankd.sh" ]; then
         # Update ankd.sh from host (in case of upgrades)
@@ -1072,7 +1079,28 @@ cmd_stop() {
             kill -9 "$p" 2>/dev/null && SWEEP_COUNT=$((SWEEP_COUNT+1))
         }
     done
+    # Second pass: catch processes via mount namespace (handles SELinux readlink blocks)
+    local MY_MNT=""
+    [ -d "/proc/1/ns/mnt" ] && MY_MNT=$(readlink /proc/1/ns/mnt 2>/dev/null)
+    if [ -n "$MY_MNT" ]; then
+        for pid_dir in /proc/[0-9]*; do
+            local p=$(basename "$pid_dir" 2>/dev/null)
+            [ -z "$p" ] && continue
+            [ "$p" = "1" ] && continue
+            local their_mnt=$(readlink "$pid_dir/ns/mnt" 2>/dev/null)
+            [ "$their_mnt" = "$MY_MNT" ] && continue
+            local exe=$(readlink "$pid_dir/exe" 2>/dev/null)
+            case "$exe" in
+                */sshd|*/nginx|*/busybox*)
+                    kill -9 "$p" 2>/dev/null && SWEEP_COUNT=$((SWEEP_COUNT+1))
+                    ;;
+            esac
+        done
+    fi
     [ "$SWEEP_COUNT" -gt 0 ] && echo "    Cleaned $SWEEP_COUNT remaining process(es)"
+
+    # Brief wait for zombie reaping
+    [ "$SWEEP_COUNT" -gt 0 ] && sleep 1
 
     # ============================================================
     # PHASE 3: Unmount ALL chroot mounts
