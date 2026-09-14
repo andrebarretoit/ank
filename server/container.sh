@@ -353,7 +353,7 @@ SSHD_EOF
     case "$IMAGE" in
         nginx*)
             SVC_NAME="nginx"
-            SVC_CMD="nginx"
+            SVC_CMD="nginx -g 'daemon off;'"
             SVC_DIR="/var/www/html"
             SVC_PORT="80"
             ;;
@@ -1005,7 +1005,7 @@ cmd_stop() {
     # its PGID: one "kill -9 -PGID" takes down the master and every forked
     # child (nginx workers included) in one shot.
     # ============================================================
-    echo "  Phase 1: Stopping services by process group..."
+    echo "  Stopping services..."
 
     local ANKD_PIDS_DIR="$ROOTFS/etc/ankd/pids"
     if [ -d "$ANKD_PIDS_DIR" ]; then
@@ -1030,7 +1030,7 @@ cmd_stop() {
     # unreliable/slow before. Runs once here at teardown, not in any
     # polling loop, so the cost is a non-issue.
     # ============================================================
-    echo "  Phase 2: Sweeping remaining processes..."
+    echo "  Sweeping remaining processes..."
     local SWEEP_COUNT=0
     for pid_dir in /proc/[0-9]*; do
         local p=$(basename "$pid_dir" 2>/dev/null)
@@ -1050,21 +1050,21 @@ cmd_stop() {
     # ============================================================
     # PHASE 3: Unmount ALL chroot mounts
     # ============================================================
-    echo "  Phase 3: Unmounting filesystems..."
+    echo "  Unmounting filesystems..."
     _unmount_container "$NAME"
     echo "    Filesystems unmounted"
 
     # ============================================================
     # PHASE 4: Remove iptables rules
     # ============================================================
-    echo "  Phase 4: Removing network rules..."
+    echo "  Removing network rules..."
     _remove_container_rules "$NAME"
     echo "    Network rules removed"
 
     # ============================================================
     # PHASE 5: Destroy network namespace
     # ============================================================
-    echo "  Phase 5: Destroying network namespace..."
+    echo "  Destroying network namespace..."
     local MODE=$(get_mode)
     if [ "$MODE" = "isolated" ]; then
         sh "$SCRIPTS_DIR/network.sh" destroy "$NAME" 2>/dev/null
@@ -1076,13 +1076,13 @@ cmd_stop() {
     # ============================================================
     # PHASE 6: Remove cgroup
     # ============================================================
-    echo "  Phase 6: Cleaning cgroup..."
+    echo "  Cleaning cgroup..."
     rmdir "/sys/fs/cgroup/ank/$NAME" 2>/dev/null
 
     # ============================================================
     # PHASE 7: Cleanup
     # ============================================================
-    echo "  Phase 7: Final cleanup..."
+    echo "  Final cleanup..."
     rm -f "$CONTAINER_DIR/ank.procs"
 
     # Update config
@@ -1164,7 +1164,7 @@ _kill_container_procs() {
         for p in $ALL_PIDS; do
             kill -9 "$p" 2>/dev/null && KILL_COUNT=$((KILL_COUNT+1))
         done
-        echo "  Phase 1: killed PID tree from $PID ($KILL_COUNT processes)"
+        echo "  Killed PID tree from $PID ($KILL_COUNT processes)"
     fi
 
     # Phase 2: Kill by cgroup
