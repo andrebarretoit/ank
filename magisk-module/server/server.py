@@ -331,14 +331,26 @@ def get_container_stats(name):
 
 def check_container_running(name):
     config = load_container_config(name)
-    pid = config.get("pid") if config else None
+    if not config:
+        return False
+    ssh_port = config.get("ssh_port")
+    if ssh_port:
+        try:
+            import socket
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.settimeout(1)
+            s.connect(("127.0.0.1", int(ssh_port)))
+            s.close()
+            return True
+        except Exception:
+            pass
+    pid = config.get("pid")
     if pid:
         try:
             os.kill(pid, 0)
             return True
         except OSError:
             pass
-        # Fallback: check /proc/<pid> exists (more reliable on Android/SELinux)
         try:
             if os.path.exists(f"/proc/{pid}"):
                 return True
@@ -380,7 +392,7 @@ ANK_PAGE_HTML = """<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>ANK - Android Konteiner</title>
+<title>%s</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif;background:#0f172a;color:#e2e8f0;min-height:100vh;display:flex;align-items:center;justify-content:center}
@@ -403,24 +415,24 @@ body{font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif;bac
 </body>
 </html>"""
 
-ANK_NGINX_HTML = ANK_PAGE_HTML % ('#3b82f6', '#06b6d4', '#3b82f6', 'Nginx Running', 'Upload your HTML content via the<br>ANK Web Panel file explorer.', ANK_BRANDING)
-ANK_APACHE_HTML = ANK_PAGE_HTML % ('#d22128', '#f59e0b', '#d22128', 'Apache Running', 'Upload your HTML content via the<br>ANK Web Panel file explorer.', ANK_BRANDING)
-ANK_PHP_HTML = ANK_PAGE_HTML % ('#777BB4', '#a855f7', '#777BB4', 'PHP Running', 'Edit index.php via the<br>ANK Web Panel file explorer.', ANK_BRANDING)
-ANK_NODE_HTML = ANK_PAGE_HTML % ('#339933', '#22c55e', '#339933', 'Node.js Running', 'Edit server.js via the<br>ANK Web Panel file explorer.', ANK_BRANDING)
-ANK_PYTHON_HTML = ANK_PAGE_HTML % ('#3776AB', '#ffd43b', '#3776AB', 'Python Running', 'Edit server.py via the<br>ANK Web Panel file explorer.', ANK_BRANDING)
+ANK_NGINX_HTML = ANK_PAGE_HTML % ('ANK - Nginx', '#3b82f6', '#06b6d4', '#3b82f6', 'Nginx Running', 'Upload your HTML content via the<br>ANK Web Panel file explorer.', ANK_BRANDING)
+ANK_APACHE_HTML = ANK_PAGE_HTML % ('ANK - Apache', '#d22128', '#f59e0b', '#d22128', 'Apache Running', 'Upload your HTML content via the<br>ANK Web Panel file explorer.', ANK_BRANDING)
+ANK_PHP_HTML = ANK_PAGE_HTML % ('ANK - PHP', '#777BB4', '#a855f7', '#777BB4', 'PHP Running', 'Edit index.php via the<br>ANK Web Panel file explorer.', ANK_BRANDING)
+ANK_NODE_HTML = ANK_PAGE_HTML % ('ANK - Node.js', '#339933', '#22c55e', '#339933', 'Node.js Running', 'Edit server.js via the<br>ANK Web Panel file explorer.', ANK_BRANDING)
+ANK_PYTHON_HTML = ANK_PAGE_HTML % ('ANK - Python', '#3776AB', '#ffd43b', '#3776AB', 'Python Running', 'Edit server.py via the<br>ANK Web Panel file explorer.', ANK_BRANDING)
 
-ANK_NGINX_CONF = """daemon off;
-events {{ worker_connections 1024; }}
-http {{
+ANK_NGINX_CONF = r"""daemon off;
+events { worker_connections 1024; }
+http {
     include /etc/nginx/mime.types;
     default_type application/octet-stream;
-    server {{
+    server {
         listen {port};
         root /var/www/html;
         index index.html;
-        location / {{ try_files $uri $uri/ =404; }}
-    }}
-}}"""
+        location / { try_files $uri $uri/ =404; }
+    }
+}"""
 
 ANK_PHP_INDEX = """<?php
 $html = '<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>ANK - PHP</title>';
@@ -432,15 +444,15 @@ $html .= '<div class="footer">by <a href="https://github.com/andrebarretoit">and
 echo $html;
 ?>"""
 
-ANK_NODE_SERVER = """const http = require('http');
+ANK_NODE_SERVER = r"""const http = require('http');
 const srv = http.createServer((req, res) => {
     res.writeHead(200, {'Content-Type': 'text/html'});
-    res.end('<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>ANK - Node.js</title><style>*{{margin:0;padding:0;box-sizing:border-box}}body{{font-family:-apple-system,sans-serif;background:#0f172a;color:#e2e8f0;min-height:100vh;display:flex;align-items:center;justify-content:center}}.card{{background:#1e293b;border-radius:16px;padding:48px;max-width:480px;width:90%;text-align:center;box-shadow:0 25px 50px rgba(0,0,0,.4)}}.logo{{font-size:48px;font-weight:800;background:linear-gradient(135deg,#339933,#22c55e);-webkit-background-clip:text;-webkit-text-fill-color:transparent;margin-bottom:8px}}.sub{{color:#94a3b8;font-size:14px;margin-bottom:24px}}.badge{{display:inline-block;background:rgba(34,197,94,.15);color:#22c55e;padding:6px 16px;border-radius:20px;font-size:13px;font-weight:600}}.footer{{margin-top:32px;color:#475569;font-size:12px}}.footer a{{color:#339933;text-decoration:none}}</style></head><body><div class="card"><div class="logo">ANK</div><div class="sub">Android Konteiner</div><div class="badge">Node.js ' + process.version + ' Running</div><p style="margin-top:24px;color:#94a3b8">Edit server.js via the<br>ANK Web Panel file explorer.</p><div class="footer">by <a href="https://github.com/andrebarretoit">andrebarretoit</a></div></div></body></html>');
+    res.end('<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>ANK - Node.js</title><style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:-apple-system,sans-serif;background:#0f172a;color:#e2e8f0;min-height:100vh;display:flex;align-items:center;justify-content:center}.card{background:#1e293b;border-radius:16px;padding:48px;max-width:480px;width:90%;text-align:center;box-shadow:0 25px 50px rgba(0,0,0,.4)}.logo{font-size:48px;font-weight:800;background:linear-gradient(135deg,#339933,#22c55e);-webkit-background-clip:text;-webkit-text-fill-color:transparent;margin-bottom:8px}.sub{color:#94a3b8;font-size:14px;margin-bottom:24px}.badge{display:inline-block;background:rgba(34,197,94,.15);color:#22c55e;padding:6px 16px;border-radius:20px;font-size:13px;font-weight:600}.footer{margin-top:32px;color:#475569;font-size:12px}.footer a{color:#339933;text-decoration:none}</style></head><body><div class="card"><div class="logo">ANK</div><div class="sub">Android Konteiner</div><div class="badge">Node.js ' + process.version + ' Running</div><p style="margin-top:24px;color:#94a3b8">Edit server.js via the<br>ANK Web Panel file explorer.</p><div class="footer">by <a href="https://github.com/andrebarretoit">andrebarretoit</a></div></div></body></html>');
 });
 const PORT = process.env.ANK_PORT || {port};
 srv.listen(PORT, () => console.log('ANK Node.js listening on :' + PORT));"""
 
-ANK_PYTHON_SERVER = """from http.server import HTTPServer, BaseHTTPRequestHandler
+ANK_PYTHON_SERVER = r"""from http.server import HTTPServer, BaseHTTPRequestHandler
 import os
 
 class Handler(BaseHTTPRequestHandler):
@@ -448,7 +460,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header('Content-Type', 'text/html')
         self.end_headers()
-        html = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>ANK - Python</title><style>*{{margin:0;padding:0;box-sizing:border-box}}body{{font-family:-apple-system,sans-serif;background:#0f172a;color:#e2e8f0;min-height:100vh;display:flex;align-items:center;justify-content:center}}.card{{background:#1e293b;border-radius:16px;padding:48px;max-width:480px;width:90%;text-align:center;box-shadow:0 25px 50px rgba(0,0,0,.4)}}.logo{{font-size:48px;font-weight:800;background:linear-gradient(135deg,#3776AB,#ffd43b);-webkit-background-clip:text;-webkit-text-fill-color:transparent;margin-bottom:8px}}.sub{{color:#94a3b8;font-size:14px;margin-bottom:24px}}.badge{{display:inline-block;background:rgba(34,197,94,.15);color:#22c55e;padding:6px 16px;border-radius:20px;font-size:13px;font-weight:600}}.footer{{margin-top:32px;color:#475569;font-size:12px}}.footer a{{color:#3776AB;text-decoration:none}}</style></head><body><div class="card"><div class="logo">ANK</div><div class="sub">Android Konteiner</div><div class="badge">Python ''' + '.'.join(map(str, __import__('sys').version_info[:3])) + ' Running</div><p style="margin-top:24px;color:#94a3b8">Edit server.py via the<br>ANK Web Panel file explorer.</p><div class="footer">by <a href="https://github.com/andrebarretoit">andrebarretoit</a></div></div></body></html>'''
+        html = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>ANK - Python</title><style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:-apple-system,sans-serif;background:#0f172a;color:#e2e8f0;min-height:100vh;display:flex;align-items:center;justify-content:center}.card{background:#1e293b;border-radius:16px;padding:48px;max-width:480px;width:90%;text-align:center;box-shadow:0 25px 50px rgba(0,0,0,.4)}.logo{font-size:48px;font-weight:800;background:linear-gradient(135deg,#3776AB,#ffd43b);-webkit-background-clip:text;-webkit-text-fill-color:transparent;margin-bottom:8px}.sub{color:#94a3b8;font-size:14px;margin-bottom:24px}.badge{display:inline-block;background:rgba(34,197,94,.15);color:#22c55e;padding:6px 16px;border-radius:20px;font-size:13px;font-weight:600}.footer{margin-top:32px;color:#475569;font-size:12px}.footer a{color:#3776AB;text-decoration:none}</style></head><body><div class="card"><div class="logo">ANK</div><div class="sub">Android Konteiner</div><div class="badge">Python ''' + '.'.join(map(str, __import__('sys').version_info[:3])) + ' Running</div><p style="margin-top:24px;color:#94a3b8">Edit server.py via the<br>ANK Web Panel file explorer.</p><div class="footer">by <a href="https://github.com/andrebarretoit">andrebarretoit</a></div></div></body></html>'''
         self.wfile.write(html.encode())
 
     def log_message(self, fmt, *args):
@@ -2746,7 +2758,7 @@ small{color:#334155}
                     static_dir = template["static_path"]
                     _chroot(f'mkdir -p {static_dir} /run/nginx')
                     _write_file(os.path.join(merged, static_dir.lstrip('/'), 'index.html'), ANK_NGINX_HTML)
-                    _write_file(os.path.join(merged, 'etc/nginx/nginx.conf'), ANK_NGINX_CONF.format(port=actual_port))
+                    _write_file(os.path.join(merged, 'etc/nginx/nginx.conf'), ANK_NGINX_CONF.replace('{port}', str(actual_port)))
                     _write_ank_config(merged, 'nginx', actual_port, static_dir, "true" if _s6_enabled else "false")
 
                 elif template_id == "apache":
@@ -2765,14 +2777,14 @@ small{color:#334155}
                 elif template_id == "node":
                     node_dir = "/var/www/app"
                     _chroot(f'mkdir -p {node_dir}')
-                    _write_file(os.path.join(merged, node_dir.lstrip('/'), 'server.js'), ANK_NODE_SERVER.format(port=actual_port))
+                    _write_file(os.path.join(merged, node_dir.lstrip('/'), 'server.js'), ANK_NODE_SERVER.replace('{port}', str(actual_port)))
                     _write_file(os.path.join(merged, node_dir.lstrip('/'), 'package.json'), '{"name":"ank-node-app","version":"1.0.0","main":"server.js"}')
                     _write_ank_config(merged, 'node', actual_port, node_dir, "true" if _s6_enabled else "false")
 
                 elif template_id == "python":
                     py_dir = "/var/www/app"
                     _chroot(f'mkdir -p {py_dir}')
-                    _write_file(os.path.join(merged, py_dir.lstrip('/'), 'server.py'), ANK_PYTHON_SERVER.format(port=actual_port))
+                    _write_file(os.path.join(merged, py_dir.lstrip('/'), 'server.py'), ANK_PYTHON_SERVER.replace('{port}', str(actual_port)))
                     _write_ank_config(merged, 'python', actual_port, py_dir, "true" if _s6_enabled else "false")
 
                 cfg = load_container_config(container_name)

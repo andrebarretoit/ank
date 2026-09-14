@@ -833,6 +833,8 @@ _ankd_daemon() {
     echo "  Container ready."
     echo "  ========================"
 
+    _ankd_boot "INFO" "SSH running at port $ANKD_SSHD_PORT"
+
     # Show service ports
     local _svc_ports=""
     for svc_file in "$ANKD_SERVICES"/*.ankd; do
