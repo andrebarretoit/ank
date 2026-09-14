@@ -713,6 +713,9 @@ case "$1" in
     daemon-reload) cmd_daemon_reload ;;
     tail)       cmd_tail "$2" ;;
     help|--help|-h) cmd_help ;;
+    "")
+        cmd_status
+        ;;
     *)
         echo "ankctl: unknown command '$1'"
         echo "Try 'ankctl help' for usage."
