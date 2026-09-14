@@ -332,9 +332,21 @@ def get_container_stats(name):
 def check_container_running(name):
     marker = os.path.join(CONTAINERS_DIR, name, "merged", "tmp", "ankd-running")
     try:
-        return os.path.exists(marker)
+        if os.path.exists(marker):
+            return True
     except Exception:
+        pass
+    config = load_container_config(name)
+    if not config:
         return False
+    pid = config.get("pid")
+    if pid:
+        try:
+            os.kill(int(pid), 0)
+            return True
+        except (OSError, ProcessLookupError, ValueError):
+            pass
+    return False
 
 def get_mode():
     try:

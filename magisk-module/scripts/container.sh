@@ -1011,6 +1011,10 @@ cmd_start() {
     sed -i "s/\"status\": \"[^\"]*\"/\"status\": \"running\"/" "$CONFIG"
     sed -i "s/\"pid\": [^,]*/\"pid\": $PID/" "$CONFIG"
 
+    # Create running marker for host-side status detection
+    mkdir -p "$ROOTFS/tmp" 2>/dev/null
+    echo "running" > "$ROOTFS/tmp/ankd-running" 2>/dev/null
+
     # Scan and record all container processes in ank.procs
     sleep 1
     _scan_container_procs "$NAME"
@@ -1209,6 +1213,9 @@ cmd_stop() {
     # Update config
     sed -i "s/\"status\": \"[^\"]*\"/\"status\": \"stopped\"/" "$CONFIG"
     sed -i "s/\"pid\": [^,]*/\"pid\": null/" "$CONFIG"
+
+    # Remove running marker
+    rm -f "$ROOTFS/tmp/ankd-running" 2>/dev/null
 
     echo ""
     echo "Container '$NAME' stopped"
