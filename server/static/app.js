@@ -1182,15 +1182,60 @@ document.getElementById('create-form').addEventListener('submit', async (e) => {
 document.getElementById('pull-btn').addEventListener('click', async () => {
     const version = await inputModal('Pull Image', 'Alpine version to download:', '3.20');
     if (!version) return;
-    await btnLoading(document.getElementById('pull-btn'), async () => {
-        try {
-            toast(`Pulling alpine-${version}...`, 'info');
-            await api('POST', '/images/pull', { version });
-            toast(`Image alpine-${version} downloaded`, 'success');
-            loadAll();
-        } catch (e) { toast(`Failed: ${e.message}`, 'error'); }
-    });
+    showPullModal(version);
 });
+
+function showPullModal(version) {
+    const overlay = document.createElement('div');
+    overlay.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.7);z-index:10000;display:flex;align-items:center;justify-content:center;';
+    overlay.innerHTML = `
+        <div style="background:#1e293b;border-radius:12px;padding:24px;max-width:560px;width:90%;color:#e2e8f0;font-family:system-ui,sans-serif;">
+            <h3 style="margin:0 0 8px;font-size:16px;"><i class="bi bi-cloud-download"></i> Pulling alpine-${esc(version)}</h3>
+            <div id="pull-status" style="color:#94a3b8;font-size:13px;margin-bottom:12px;">Starting download...</div>
+            <div style="background:#0f172a;border-radius:8px;padding:12px;max-height:300px;overflow-y:auto;font-family:monospace;font-size:12px;color:#94a3b8;white-space:pre-wrap;line-height:1.6;" id="pull-log"></div>
+            <div style="margin-top:16px;text-align:right;">
+                <button id="pull-close-btn" class="btn btn-secondary" style="display:none;">Close</button>
+            </div>
+        </div>`;
+    document.body.appendChild(overlay);
+    const logEl = overlay.querySelector('#pull-log');
+    const statusEl = overlay.querySelector('#pull-status');
+    const closeBtn = overlay.querySelector('#pull-close-btn');
+    closeBtn.addEventListener('click', () => overlay.remove());
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+
+    let lastLineCount = 0;
+    const pollPull = setInterval(async () => {
+        try {
+            const st = await api('GET', `/images/pull/status?version=${encodeURIComponent(version)}`);
+            if (st.output && st.output.length > lastLineCount) {
+                const newLines = st.output.slice(lastLineCount).join('\n');
+                logEl.textContent += newLines + '\n';
+                logEl.scrollTop = logEl.scrollHeight;
+                lastLineCount = st.output.length;
+            }
+            if (st.state === 'pulling') {
+                statusEl.innerHTML = '<i class="bi bi-arrow-repeat spin"></i> Downloading rootfs...';
+            } else if (st.state === 'building') {
+                statusEl.innerHTML = '<i class="bi bi-arrow-repeat spin"></i> Building base image (installing packages)...';
+            } else if (st.state === 'done') {
+                statusEl.innerHTML = '<span style="color:#22c55e;">✓ Done!</span>';
+                closeBtn.style.display = 'inline-block';
+                clearInterval(pollPull);
+                loadAll();
+            } else if (st.state === 'error') {
+                statusEl.innerHTML = '<span style="color:#ef4444;">✗ Failed</span>';
+                if (st.error) logEl.textContent += '\nERROR: ' + st.error + '\n';
+                closeBtn.style.display = 'inline-block';
+                clearInterval(pollPull);
+            }
+        } catch (e) {
+            statusEl.innerHTML = '<span style="color:#ef4444;">✗ Connection lost</span>';
+            closeBtn.style.display = 'inline-block';
+            clearInterval(pollPull);
+        }
+    }, 2000);
+}
 
 async function loadTemplates() {
     try {

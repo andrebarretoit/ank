@@ -30,6 +30,7 @@ from datetime import datetime, timedelta
 _port_lock = threading.Lock()
 _build_lock = threading.Lock()
 _building = False
+_pull_status = {}  # version -> {"state": "pulling|building|done|error", "output": [...], "error": ""}
 
 # --- Container status debouncing -------------------------------------------
 # check_container_running() is a single best-effort snapshot; any one of its
@@ -1304,6 +1305,14 @@ small{color:#334155}
             self.api_list_images()
         elif path == "/api/images/templates":
             self.api_image_templates()
+        elif path == "/api/images/pull/status":
+            qs = parsed.query
+            version = "3.20"
+            if qs:
+                for part in qs.split("&"):
+                    if part.startswith("version="):
+                        version = part.split("=", 1)[1]
+            self.api_pull_image_status({"version": version})
         elif path == "/api/system/info":
             self.api_system_info()
         elif path == "/api/networks":
@@ -2531,50 +2540,73 @@ small{color:#334155}
 
     def api_pull_image(self, data):
         version = data.get("version", "3.20")
-        output, code = run_script("download-rootfs.sh", version)
-        if code != 0:
-            self.send_error(500, f"Failed to pull image: {output}")
+        if _pull_status.get(version, {}).get("state") in ("pulling", "building"):
+            self.send_error(409, f"Pull already in progress for alpine-{version}")
             return
-        # Generate ank-alpinebase-{version} from downloaded alpine
-        alpine_dir = os.path.join(IMAGES_DIR, f"alpine-{version}")
-        ankbase_dir = os.path.join(IMAGES_DIR, f"ank-alpinebase-{version}")
-        if os.path.isdir(alpine_dir) and not os.path.isdir(ankbase_dir):
+        _pull_status[version] = {"state": "pulling", "output": [], "error": ""}
+        def _do_pull():
             try:
-                import shutil
-                shutil.copytree(alpine_dir, ankbase_dir)
-                # Install basic packages into the new ank-alpinebase
-                merged = ankbase_dir
-                _merged_write = os.path.join(merged, "etc/resolv.conf")
-                os.makedirs(os.path.dirname(_merged_write), exist_ok=True)
-                with open(_merged_write, "w") as f:
-                    f.write("nameserver 8.8.8.8\nnameserver 8.8.4.4\n")
-                # Install openssh/bash/busybox/shadow/s6 via chroot
-                merged_dev = os.path.join(merged, "dev")
-                merged_proc = os.path.join(merged, "proc")
-                try:
-                    os.makedirs(merged_dev, exist_ok=True)
-                    os.makedirs(merged_proc, exist_ok=True)
-                    subprocess.run(["mount", "-t", "tmpfs", "-o", "size=16m", "tmpfs", merged_dev], timeout=5)
-                    subprocess.run(["mount", "-t", "proc", "proc", merged_proc], timeout=5)
-                    subprocess.run(["mknod", os.path.join(merged_dev, "null"), "c", "1", "3"], timeout=5)
-                    subprocess.run(["chmod", "666", os.path.join(merged_dev, "null")], timeout=5)
-                    subprocess.run(["mknod", os.path.join(merged_dev, "urandom"), "c", "1", "9"], timeout=5)
-                    subprocess.run(["chmod", "666", os.path.join(merged_dev, "urandom")], timeout=5)
-                    subprocess.run(["chroot", merged, "/sbin/apk", "add", "--no-cache",
-                                    "busybox", "bash", "shadow", "openssh", "openssl", "s6"],
-                                   capture_output=True, timeout=120)
-                except Exception:
-                    pass
-                finally:
-                    for m in [merged_proc, merged_dev]:
-                        try: subprocess.run(["umount", m], timeout=5)
-                        except Exception: pass
-                # Mark as ank-alpinebase
-                with open(os.path.join(merged, ".ank-base"), "w") as f:
-                    f.write(f"ank-alpinebase-{version}\n")
-            except Exception:
-                pass
-        self.send_json({"message": f"Image 'ank-alpinebase-{version}' ready"})
+                output, code = run_script("download-rootfs.sh", version)
+                for line in output.strip().split("\n"):
+                    _pull_status[version]["output"].append(line)
+                if code != 0:
+                    _pull_status[version]["state"] = "error"
+                    _pull_status[version]["error"] = output
+                    return
+                _pull_status[version]["state"] = "building"
+                alpine_dir = os.path.join(IMAGES_DIR, f"alpine-{version}")
+                ankbase_dir = os.path.join(IMAGES_DIR, f"ank-alpinebase-{version}")
+                if os.path.isdir(alpine_dir) and not os.path.isdir(ankbase_dir):
+                    _pull_status[version]["output"].append("Creating ank-alpinebase...")
+                    import shutil
+                    shutil.copytree(alpine_dir, ankbase_dir)
+                    merged = ankbase_dir
+                    _merged_write = os.path.join(merged, "etc/resolv.conf")
+                    os.makedirs(os.path.dirname(_merged_write), exist_ok=True)
+                    with open(_merged_write, "w") as f:
+                        f.write("nameserver 8.8.8.8\nnameserver 8.8.4.4\n")
+                    merged_dev = os.path.join(merged, "dev")
+                    merged_proc = os.path.join(merged, "proc")
+                    try:
+                        os.makedirs(merged_dev, exist_ok=True)
+                        os.makedirs(merged_proc, exist_ok=True)
+                        subprocess.run(["mount", "-t", "tmpfs", "-o", "size=16m", "tmpfs", merged_dev], timeout=5)
+                        subprocess.run(["mount", "-t", "proc", "proc", merged_proc], timeout=5)
+                        subprocess.run(["mknod", os.path.join(merged_dev, "null"), "c", "1", "3"], timeout=5)
+                        subprocess.run(["chmod", "666", os.path.join(merged_dev, "null")], timeout=5)
+                        subprocess.run(["mknod", os.path.join(merged_dev, "urandom"), "c", "1", "9"], timeout=5)
+                        subprocess.run(["chmod", "666", os.path.join(merged_dev, "urandom")], timeout=5)
+                        _pull_status[version]["output"].append("Installing packages (busybox, bash, openssh, s6)...")
+                        result = subprocess.run(["chroot", merged, "/sbin/apk", "add", "--no-cache",
+                                        "busybox", "bash", "shadow", "openssh", "openssl", "s6"],
+                                       capture_output=True, text=True, timeout=120)
+                        if result.stdout:
+                            for line in result.stdout.strip().split("\n"):
+                                _pull_status[version]["output"].append(line)
+                        if result.returncode != 0 and result.stderr:
+                            _pull_status[version]["output"].append(f"WARN: {result.stderr.strip()}")
+                    except Exception as e:
+                        _pull_status[version]["output"].append(f"WARN: {e}")
+                    finally:
+                        for m in [merged_proc, merged_dev]:
+                            try: subprocess.run(["umount", m], timeout=5)
+                            except Exception: pass
+                    with open(os.path.join(merged, ".ank-base"), "w") as f:
+                        f.write(f"ank-alpinebase-{version}\n")
+                    _pull_status[version]["output"].append("Base image ready")
+                _pull_status[version]["state"] = "done"
+                _pull_status[version]["output"].append(f"Image ank-alpinebase-{version} ready")
+            except Exception as e:
+                _pull_status[version]["state"] = "error"
+                _pull_status[version]["error"] = str(e)
+        import threading
+        threading.Thread(target=_do_pull, daemon=True).start()
+        self.send_json({"message": f"Pulling alpine-{version}...", "version": version})
+
+    def api_pull_image_status(self, data):
+        version = data.get("version", "3.20")
+        status = _pull_status.get(version, {"state": "idle", "output": [], "error": ""})
+        self.send_json(status)
 
     # ============================================================
     # Image Templates
