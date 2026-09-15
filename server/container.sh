@@ -861,6 +861,25 @@ cmd_start() {
         fi
     fi
 
+    # Kill any stale process holding our SSH port
+    if [ "$SSHD_PORT" != "22" ]; then
+        local hex_port=$(printf '%04X' $SSHD_PORT)
+        local inode=$(awk -v port="$hex_port" '$2 ~ ":"port"$" {split($2,a,":"); print $10}' /proc/net/tcp 2>/dev/null | head -1)
+        if [ -n "$inode" ] && [ "$inode" != "0" ]; then
+            for fd_dir in /proc/[0-9]*/fd; do
+                local p=$(dirname "$fd_dir" | xargs basename)
+                if ls -la "$fd_dir" 2>/dev/null | grep -q "socket:\[$inode\]"; then
+                    if [ "$p" != "$PID" ] 2>/dev/null; then
+                        echo "  Killing stale process $p on port $SSHD_PORT (inode=$inode)"
+                        kill -9 "$p" 2>/dev/null
+                        sleep 1
+                    fi
+                    break
+                fi
+            done
+        fi
+    fi
+
     # Cleanup stale PID files and temp files from previous run
     rm -f "$ROOTFS/run/nginx.pid" "$ROOTFS/run/nginx.lock" 2>/dev/null
     rm -f "$ROOTFS/run/sshd.pid" "$ROOTFS/run/sshd.pid.lock" 2>/dev/null
@@ -956,6 +975,22 @@ cmd_start() {
         sed -i "s/\"status\": \"[^\"]*\"/\"status\": \"stopped\"/" "$CONFIG"
         sed -i "s/\"pid\": [^,]*/\"pid\": null/" "$CONFIG"
         exit 1
+    fi
+
+    # Verify PID is the actual chroot process, not a nohup wrapper
+    # Scan /proc for the real process whose root is the container rootfs
+    local REAL_PID=""
+    for p_dir in /proc/[0-9]*/; do
+        local p_pid=$(basename "$p_dir")
+        local p_root=$(readlink "/proc/$p_pid/root" 2>/dev/null)
+        if [ "$p_root" = "$ROOTFS" ]; then
+            REAL_PID="$p_pid"
+            break
+        fi
+    done
+    if [ -n "$REAL_PID" ] && [ "$REAL_PID" != "$PID" ]; then
+        echo "  Real container PID: $REAL_PID (was wrapper PID: $PID)"
+        PID="$REAL_PID"
     fi
 
     # Move to cgroup. The cgroup dir is only created once by `cmd_create`,

@@ -427,24 +427,27 @@ def _sshd_port_open(name):
 
 def check_container_running(name):
     """Check if a container is alive. Priority:
-    1. PID alive (process exists) — most reliable, can't lie
-    2. Health file says UP
-    3. TCP port open
+    1. PID alive (process exists) — most reliable
+    2. TCP port open (sshd listening) — definitive backup
+    3. Health file says UP
     Any positive signal = running. Only False when PID dead AND
-    (health says DOWN OR TCP closed)."""
+    TCP closed AND health says DOWN."""
     pid = _pid_alive(name)
     if pid:
-        return True
-    health = _health_file_status(name)
-    if health:
         return True
     tcp = _sshd_port_open(name)
     if tcp:
         return True
-    # PID dead + no other signal saying alive = stopped
+    health = _health_file_status(name)
+    if health:
+        return True
+    # PID dead + TCP closed + no health = stopped
     if pid is False:
         return False
-    # Ambiguous: PID unknown, no other signals. Default to running.
+    # PID unknown but TCP closed = likely stopped
+    if tcp is False and health is not True:
+        return False
+    # Ambiguous: default to running
     return True
 
 
@@ -941,7 +944,7 @@ def _ws_shell_session(handler, cols=80, rows=24):
 class AnkHandler(BaseHTTPRequestHandler):
 
     def _find_free_port(self, start=2200):
-        """Find a free port starting from 'start', checking existing containers. Thread-safe."""
+        """Find a free port starting from 'start', checking configs AND actual TCP ports. Thread-safe."""
         with _port_lock:
             used = set()
             for cfg_file in glob.glob(os.path.join(CONTAINERS_DIR, "*/config.json")):
