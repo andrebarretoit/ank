@@ -5300,40 +5300,111 @@ small{color:#334155}
     def api_system_dashboard(self):
         nm = self._get_node_manager()
         sm = self._get_stack_manager()
-        dashboard = {
-            "total_containers": 0,
-            "running_containers": 0,
-            "stopped_containers": 0,
-            "total_stacks": 0,
-            "nodes": []
-        }
+
+        # Local stats
+        local_containers = 0
+        local_running = 0
+        local_stopped = 0
         try:
             containers = self._list_containers_dict()
-            dashboard["total_containers"] = len(containers)
-            dashboard["running_containers"] = sum(1 for c in containers if c.get("status") == "running")
-            dashboard["stopped_containers"] = sum(1 for c in containers if c.get("status") != "running")
+            local_containers = len(containers)
+            local_running = sum(1 for c in containers if c.get("status") == "running")
+            local_stopped = local_containers - local_running
         except Exception:
             pass
+
+        local_stacks = 0
         try:
             stacks = sm.list_stacks() if sm else []
-            dashboard["total_stacks"] = len(stacks)
+            local_stacks = len(stacks)
         except Exception:
             pass
+
+        # Node data + aggregated cluster stats
+        is_manager = False
+        cluster_cpu = 0.0
+        cluster_ram_used = 0
+        cluster_ram_total = 0
+        cluster_disk_used = 0
+        cluster_disk_total = 0
+        cluster_containers = local_containers
+        cluster_containers_running = local_running
+        cluster_stacks = local_stacks
+        nodes_list = []
+
         try:
             nodes = nm.list_nodes() if nm else []
+            if nodes:
+                is_manager = True
             for n in nodes:
-                dashboard["nodes"].append({
+                is_online = n.get("status") == "online"
+                nodes_list.append({
                     "id": n.get("id", ""),
                     "hostname": n.get("hostname", ""),
+                    "alias": n.get("alias", ""),
                     "status": n.get("status", "unknown"),
                     "containers": n.get("containers", 0),
-                    "cpu": n.get("cpu", "-"),
-                    "ram": n.get("ram", "-"),
-                    "disk": n.get("disk", "-"),
-                    "uptime": n.get("uptime", "-")
+                    "containers_running": n.get("containers_running", 0),
+                    "cpu_percent": n.get("cpu_percent", 0) if is_online else 0,
+                    "mem_used_gb": n.get("mem_used_gb", 0) if is_online else 0,
+                    "mem_total_gb": n.get("mem_total_gb", 0) if is_online else 0,
+                    "disk_used_gb": n.get("disk_used_gb", 0) if is_online else 0,
+                    "disk_total_gb": n.get("disk_total_gb", 0) if is_online else 0,
+                    "stacks_count": n.get("stacks_count", 0) if is_online else 0,
                 })
+                if is_online:
+                    cluster_cpu += n.get("cpu_percent", 0) or 0
+                    cluster_ram_used += n.get("mem_used_gb", 0) or 0
+                    cluster_ram_total += n.get("mem_total_gb", 0) or 0
+                    cluster_disk_used += n.get("disk_used_gb", 0) or 0
+                    cluster_disk_total += n.get("disk_total_gb", 0) or 0
+                    cluster_containers += n.get("containers", 0) or 0
+                    cluster_containers_running += n.get("containers_running", 0) or 0
+                    cluster_stacks += n.get("stacks_count", 0) or 0
         except Exception:
             pass
+
+        # Local device resource usage
+        local_cpu = _cpu_usage_cache
+        local_ram_used = 0
+        local_ram_total = 0
+        try:
+            with open("/proc/meminfo", "r") as f:
+                for line in f:
+                    parts = line.split()
+                    if parts[0] == "MemTotal:":
+                        local_ram_total = int(parts[1]) // 1024  # MB
+                    elif parts[0] == "MemAvailable:":
+                        local_ram_used = local_ram_total - (int(parts[1]) // 1024)
+        except Exception:
+            pass
+        disk_info = _get_disk_usage()
+
+        dashboard = {
+            "is_manager": is_manager,
+            "local": {
+                "containers_total": local_containers,
+                "containers_running": local_running,
+                "containers_stopped": local_stopped,
+                "stacks": local_stacks,
+                "cpu_percent": local_cpu,
+                "ram_used_mb": local_ram_used,
+                "ram_total_mb": local_ram_total,
+                "disk_used_gb": disk_info.get("used", 0),
+                "disk_total_gb": disk_info.get("total", 0),
+            },
+            "cluster": {
+                "containers_total": cluster_containers,
+                "containers_running": cluster_containers_running,
+                "stacks": cluster_stacks,
+                "cpu_percent": round(cluster_cpu, 1),
+                "ram_used_gb": round(cluster_ram_used, 2),
+                "ram_total_gb": round(cluster_ram_total, 2),
+                "disk_used_gb": round(cluster_disk_used, 2),
+                "disk_total_gb": round(cluster_disk_total, 2),
+            } if is_manager else None,
+            "nodes": nodes_list,
+        }
         self.send_json(dashboard)
 
     def _list_containers_dict(self):

@@ -540,20 +540,51 @@ function renderDashboardContainers(containers) {
 async function renderDashboardNodes() {
     const section = document.getElementById('dash-nodes-section');
     const grid = document.getElementById('dash-nodes-grid');
-    if (!section || !grid) return;
+    const clusterSection = document.getElementById('dash-cluster-section');
+    const nodesNavItem = document.querySelector('.nav-item[data-tab="nodes"]');
     try {
         const dashboard = await api('GET', '/system/dashboard');
+        const isManager = dashboard.is_manager;
         const nodes = dashboard.nodes || [];
-        if (!nodes.length) { section.style.display = 'none'; return; }
-        section.style.display = 'block';
+        const cluster = dashboard.cluster;
+
+        // Show/hide Nodes nav tab (manager only)
+        if (nodesNavItem) nodesNavItem.style.display = isManager ? '' : 'none';
+
+        // Show/hide nodes section (manager only)
+        if (section) section.style.display = (isManager && nodes.length) ? 'block' : 'none';
+
+        // Show/hide cluster section + populate
+        if (clusterSection) {
+            if (isManager && cluster) {
+                clusterSection.style.display = 'block';
+                const el = (id) => document.getElementById(id);
+                el('cluster-cpu').textContent = `${cluster.cpu_percent || 0}%`;
+                el('cluster-containers').textContent = `${cluster.containers_running || 0}/${cluster.containers_total || 0}`;
+                if (cluster.ram_total_gb > 0) {
+                    el('cluster-memory').textContent = `${cluster.ram_used_gb.toFixed(1)} / ${cluster.ram_total_gb.toFixed(1)} GB`;
+                } else {
+                    el('cluster-memory').textContent = '-';
+                }
+                if (cluster.disk_total_gb > 0) {
+                    el('cluster-disk').textContent = `${cluster.disk_used_gb.toFixed(1)} / ${cluster.disk_total_gb.toFixed(1)} GB`;
+                } else {
+                    el('cluster-disk').textContent = '-';
+                }
+            } else {
+                clusterSection.style.display = 'none';
+            }
+        }
+
+        if (!grid || !nodes.length) return;
         grid.innerHTML = nodes.map(n => {
             const statusColor = n.status === 'online' ? 'var(--success)' : n.status === 'pending' ? 'var(--warning)' : 'var(--danger)';
             const statusLabel = n.status === 'online' ? 'Online' : n.status === 'pending' ? 'Pending' : 'Offline';
             const isOnline = n.status === 'online';
             const cpu = isOnline ? `${Math.round(n.cpu_percent || 0)}%` : '-';
-            const mem = isOnline ? `${(n.mem_used_gb || 0).toFixed ? n.mem_used_gb.toFixed(1) : n.mem_used_gb}/${n.mem_total_gb || 0} GB` : '-';
+            const mem = isOnline ? `${(n.mem_used_gb || 0).toFixed(1)}/${(n.mem_total_gb || 0).toFixed(1)} GB` : '-';
             const disk = isOnline ? `${Math.round(n.disk_used_gb || 0)}/${Math.round(n.disk_total_gb || 0)} GB` : '-';
-            const containers = isOnline ? `${n.containers_running || 0}/${n.containers_total || 0}` : '-';
+            const containers = isOnline ? `${n.containers_running || 0}/${n.containers || 0}` : '-';
             return `<div style="background:var(--bg-secondary);border:1px solid var(--border);border-radius:10px;padding:12px;cursor:pointer" onclick="document.querySelector('.nav-item[data-tab=\\'nodes\\']')?.click()">
                 <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
                     <span style="width:8px;height:8px;border-radius:50%;background:${statusColor};flex-shrink:0"></span>
@@ -564,7 +595,11 @@ async function renderDashboardNodes() {
                 <div style="color:var(--text-muted);font-size:11px">Containers ${containers} &middot; Stacks ${isOnline ? (n.stacks_count || 0) : '-'}</div>
             </div>`;
         }).join('');
-    } catch (e) { section.style.display = 'none'; }
+    } catch (e) {
+        if (section) section.style.display = 'none';
+        if (clusterSection) clusterSection.style.display = 'none';
+        if (nodesNavItem) nodesNavItem.style.display = 'none';
+    }
 }
 
 let coreTerminal = null;
@@ -2302,20 +2337,24 @@ async function loadNodeDetail(nodeId) {
 let selectedNode = 'local';
 
 function updateNodeSelectors(nodes) {
+    const onlineNodes = (nodes || []).filter(n => n.status === 'online');
+    const hasNodes = onlineNodes.length > 0;
     const unifiedSelectors = ['container-node-selector', 'image-node-selector', 'stack-node-selector'];
     unifiedSelectors.forEach(id => {
         const sel = document.getElementById(id);
         if (!sel) return;
         const val = sel.value;
         sel.innerHTML = '<option value="all">All Nodes</option><option value="local">Local</option>';
-        (nodes || []).filter(n => n.status === 'online').forEach(n => {
+        onlineNodes.forEach(n => {
             const opt = document.createElement('option');
             opt.value = n.id;
             opt.textContent = n.alias || n.ip;
             sel.appendChild(opt);
         });
-        sel.value = val || 'local';
+        // Default to 'all' when manager has nodes
+        sel.value = val || (hasNodes ? 'all' : 'local');
     });
+    if (hasNodes) selectedNode = 'all';
     const shellSel = document.getElementById('shell-node-selector');
     if (shellSel) {
         const val = shellSel.value;
