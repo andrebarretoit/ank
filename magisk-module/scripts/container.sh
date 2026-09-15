@@ -132,6 +132,47 @@ SSHEOF
     # Remove server files if any
     rm -rf "$ANKBASE/opt/ank" 2>/dev/null
 
+    # ANK MOTD (dynamic)
+    mkdir -p "$ANKBASE/etc/profile.d" 2>/dev/null
+    cat > "$ANKBASE/etc/profile.d/ank-motd.sh" << 'MOTDEOF'
+ank_motd() {
+    read _ u1 n1 s1 _ < /proc/stat
+    sleep 1
+    read _ u2 n2 s2 _ < /proc/stat
+    total=$(( (u2+n2+s2) - (u1+n1+s1) ))
+    idle=$(( u2 - u1 ))
+    if [ "$total" -gt 0 ]; then
+        cpu=$(( (total - idle) * 100 / total ))
+    else
+        cpu=0
+    fi
+    mem_total=$(awk '/^MemTotal/{print $2}' /proc/meminfo)
+    mem_avail=$(awk '/^MemAvailable/{print $2}' /proc/meminfo)
+    if [ -n "$mem_total" ] && [ "$mem_total" -gt 0 ] 2>/dev/null; then
+        mem_used=$(( (mem_total - mem_avail) * 100 / mem_total ))
+    else
+        mem_used=0
+    fi
+    up=$(awk '{d=int($1/86400);h=int(($1%86400)/3600);m=int(($1%3600)/60);printf "%dd %dh %dm",d,h,m}' /proc/uptime)
+    cat << 'ART'
+
+          /$$$$$$  /$$   /$$ /$$   /$$
+         /$$__  $$| $$$ | $$| $$  /$$/
+        | $$  \ $$| $$$$| $$| $$ /$$/
+        | $$$$$$$$| $$ $$ $$| $$$$$/
+        | $$__  $$| $$  $$$$| $$  $$
+        | $$  | $$| $$\  $$$| $$\  $$
+        | $$  | $$| $$ \  $$| $$ \  $$
+        |__/  |__/|__/  \__/|__/  \__/
+
+         Android Konteiner | ANK CLI
+ART
+    printf "       CPU: %s%%  MEM: %s%%  UPTIME: %s\n" "$cpu" "$mem_used" "$up"
+}
+ank_motd
+unset ank_motd
+MOTDEOF
+
     # Verify
     if [ -e "$ANKBASE/usr/sbin/sshd" ] && [ -e "$ANKBASE/bin/bash" ]; then
         echo "ank-alpinebase-${VERSION} built successfully (openssh, bash, busybox, shadow)"
@@ -977,17 +1018,23 @@ cmd_start() {
         exit 1
     fi
 
-    # Verify PID is the actual chroot process, not a nohup wrapper
-    # Scan /proc for the real process whose root is the container rootfs
+    # Verify PID is the actual chroot process, not a transient one.
+    # Multiple processes can share this rootfs in shared_host mode (the
+    # wrapper shell, ankd.sh, and everything ankd spawns), so instead of
+    # trusting the first match of /proc/[0-9]* (shell orders lexicographically
+    # -- "10" comes before "9" -- picking an ephemeral process), collect all
+    # candidate PIDs and pick the numerically smallest: the oldest, therefore
+    # most stable, for this rootfs.
     local REAL_PID=""
+    local candidates=""
     for p_dir in /proc/[0-9]*/; do
         local p_pid=$(basename "$p_dir")
         local p_root=$(readlink "/proc/$p_pid/root" 2>/dev/null)
-        if [ "$p_root" = "$ROOTFS" ]; then
-            REAL_PID="$p_pid"
-            break
-        fi
+        [ "$p_root" = "$ROOTFS" ] && candidates="$candidates $p_pid"
     done
+    if [ -n "$candidates" ]; then
+        REAL_PID=$(printf '%s\n' $candidates | sort -n | head -1)
+    fi
     if [ -n "$REAL_PID" ] && [ "$REAL_PID" != "$PID" ]; then
         echo "  Real container PID: $REAL_PID (was wrapper PID: $PID)"
         PID="$REAL_PID"

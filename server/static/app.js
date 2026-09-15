@@ -103,15 +103,21 @@ function customModal(title, fields) {
         const origField = document.getElementById('input-field');
         origField.style.display = 'none';
         const customFields = fields.map(f => {
-            const input = document.createElement('input');
-            input.type = f.type || 'text';
-            input.id = f.id;
-            input.value = f.value || '';
-            input.placeholder = f.label;
-            input.style.cssText = 'width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);margin-bottom:8px;font-size:14px;';
-            input.className = 'custom-modal-field';
-            container.appendChild(input);
-            return input;
+            let el;
+            if (f.type === 'select') {
+                el = document.createElement('select');
+                el.innerHTML = f.options;
+            } else {
+                el = document.createElement('input');
+                el.type = f.type || 'text';
+                el.value = f.value || '';
+                el.placeholder = f.label;
+            }
+            el.id = f.id;
+            el.style.cssText = 'width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);margin-bottom:8px;font-size:14px;';
+            el.className = 'custom-modal-field';
+            container.appendChild(el);
+            return el;
         });
         modal.classList.remove('hidden');
         setTimeout(() => customFields[0].focus(), 50);
@@ -1273,18 +1279,35 @@ async function deployTemplate(id, name, baseReady) {
         const cfg = await api('GET', '/config');
         if (cfg && cfg.default_container_password) defaultPass = cfg.default_container_password;
     } catch(e) {}
-    const result = await customModal('Deploy ' + name, [
+    const fields = [
         { id: 'tpl-name', label: 'Container name:', type: 'text', value: name.toLowerCase().replace(/\s+/g, '-') },
         { id: 'tpl-pass', label: 'Root password:', type: 'password', value: defaultPass }
-    ]);
+    ];
+    let onlineNodes = [];
+    try {
+        const d = await api('GET', '/system/dashboard');
+        onlineNodes = (d.nodes || []).filter(n => n.status === 'online');
+    } catch(e) {}
+    if (onlineNodes.length > 0) {
+        let opts = '<option value="local">Local</option>';
+        onlineNodes.forEach(n => { opts += `<option value="${esc(n.id)}">${esc(n.alias || n.ip)}</option>`; });
+        fields.push({ id: 'tpl-target-node', label: 'Target node:', type: 'select', options: opts });
+    }
+    const result = await customModal('Deploy ' + name, fields);
     if (!result) return;
     const containerName = result['tpl-name'];
     const rootPass = result['tpl-pass'];
+    const nodeId = result['tpl-target-node'] || 'local';
     if (!containerName) { toast('Container name required', 'warning'); return; }
     if (!rootPass || rootPass.length < 4) { toast('Password must be at least 4 characters', 'warning'); return; }
     try {
-        toast(`Deploying ${name} as "${containerName}"...`, 'info');
-        await api('POST', '/images/deploy', { template: id, name: containerName, root_password: rootPass });
+        if (nodeId !== 'local') {
+            toast(`Deploying ${name} as "${containerName}" on ${nodeId.slice(0,8)}...`, 'info');
+            await api('POST', `/nodes/${encodeURIComponent(nodeId)}/containers`, { name: containerName, image: id, root_password: rootPass });
+        } else {
+            toast(`Deploying ${name} as "${containerName}"...`, 'info');
+            await api('POST', '/images/deploy', { template: id, name: containerName, root_password: rootPass });
+        }
         pollContainerStatus(containerName, 0);
         loadAll();
     } catch (e) { toast(`Failed: ${e.message}`, 'error'); }

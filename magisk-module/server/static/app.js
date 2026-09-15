@@ -103,15 +103,21 @@ function customModal(title, fields) {
         const origField = document.getElementById('input-field');
         origField.style.display = 'none';
         const customFields = fields.map(f => {
-            const input = document.createElement('input');
-            input.type = f.type || 'text';
-            input.id = f.id;
-            input.value = f.value || '';
-            input.placeholder = f.label;
-            input.style.cssText = 'width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);margin-bottom:8px;font-size:14px;';
-            input.className = 'custom-modal-field';
-            container.appendChild(input);
-            return input;
+            let el;
+            if (f.type === 'select') {
+                el = document.createElement('select');
+                el.innerHTML = f.options;
+            } else {
+                el = document.createElement('input');
+                el.type = f.type || 'text';
+                el.value = f.value || '';
+                el.placeholder = f.label;
+            }
+            el.id = f.id;
+            el.style.cssText = 'width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);margin-bottom:8px;font-size:14px;';
+            el.className = 'custom-modal-field';
+            container.appendChild(el);
+            return el;
         });
         modal.classList.remove('hidden');
         setTimeout(() => customFields[0].focus(), 50);
@@ -269,7 +275,7 @@ document.querySelectorAll('.nav-item').forEach(item => {
         if (item.dataset.tab === 'backups') loadBackups();
         if (item.dataset.tab === 'nodes') { loadNodes(); loadPairingRequests(); }
         if (item.dataset.tab === 'logs') { logsOffset = 0; loadLogs(false); startLogsPoll(); }
-        if (item.dataset.tab === 'shell') initCoreTerminal();
+        if (item.dataset.tab === 'shell') initCoreTerminal(document.getElementById('shell-node-selector')?.value || 'local');
         if (item.dataset.tab !== 'logs') stopLogsPoll();
         if (window.innerWidth <= 640) closeDrawer();
     });
@@ -384,7 +390,7 @@ async function loadAll() {
             document.getElementById('stat-disk').textContent = '-';
         }
         renderContainers(containers, 'local');
-        renderImages(images);
+        renderImages(images, 'local');
         populateImageSelect(images);
         renderDashboardContainers(containers);
         renderDashboardNodes();
@@ -402,28 +408,32 @@ async function loadAll() {
 
 function renderContainers(containers, nodeId) {
     const list = document.getElementById('containers-list');
-    const isRemote = nodeId && nodeId !== 'local';
+    const isAll = nodeId === 'all';
+    const isRemoteFixed = nodeId && nodeId !== 'local' && nodeId !== 'all';
     if (!containers || containers.length === 0) {
-        const msg = isRemote ? 'No containers on this remote node.' : 'No containers yet. Click "New Container".';
+        const msg = isAll ? 'No containers found on any node.' : isRemoteFixed ? 'No containers on this remote node.' : 'No containers yet. Click "New Container".';
         list.innerHTML = `<div class="empty-state"><i class="bi bi-box-seam"></i><p>${msg}</p></div>`;
         return;
     }
     list.innerHTML = containers.map(c => {
         const name = c.name || '';
+        const itemNode = c.node || (isRemoteFixed ? nodeId : 'local');
+        const isRemote = itemNode !== 'local';
         const isBuilding = c.status === 'building';
         const isFailed = c.status === 'failed';
         const statusClass = isBuilding ? 'status-building' : isFailed ? 'status-failed' : `status-${c.status}`;
         const statusText = isBuilding ? 'Building...' : isFailed ? 'Failed' : c.status === 'starting' ? 'Starting...' : c.status === 'stopping' ? 'Stopping...' : c.status;
         const disabled = isBuilding || isFailed || c.status === 'starting' || c.status === 'stopping';
         const isRunning = c.status === 'running' || c.status === 'starting';
-        const startAction = isRemote ? `remoteContainerAction('${nodeId}','${esc(name)}','start')` : `startContainer('${esc(name)}')`;
-        const stopAction = isRemote ? `remoteContainerAction('${nodeId}','${esc(name)}','stop')` : `stopContainer('${esc(name)}')`;
-        const restartAction = isRemote ? `remoteContainerAction('${nodeId}','${esc(name)}','restart')` : `restartContainer('${esc(name)}')`;
-        const deleteAction = isRemote ? `remoteDeleteContainer('${nodeId}','${esc(name)}')` : `deleteContainer('${esc(name)}')`;
+        const startAction = isRemote ? `remoteContainerAction('${itemNode}','${esc(name)}','start')` : `startContainer('${esc(name)}')`;
+        const stopAction = isRemote ? `remoteContainerAction('${itemNode}','${esc(name)}','stop')` : `stopContainer('${esc(name)}')`;
+        const restartAction = isRemote ? `remoteContainerAction('${itemNode}','${esc(name)}','restart')` : `restartContainer('${esc(name)}')`;
+        const deleteAction = isRemote ? `remoteDeleteContainer('${itemNode}','${esc(name)}')` : `deleteContainer('${esc(name)}')`;
         const clickAction = isRemote ? `onclick="event.stopPropagation();"` : `onclick="event.stopPropagation(); showContainerDetail('${esc(name)}')"`;
-        const nodeTag = isRemote ? `<span class="status-badge" style="font-size:10px;background:var(--accent);color:#fff;margin-left:6px">${esc(nodeId.slice(0,8))}</span>` : '';
+        const nodeLabel = c.node_alias || (itemNode === 'local' ? 'local' : itemNode.slice(0, 8));
+        const nodeTag = `<span class="status-badge" style="font-size:10px;background:${isRemote ? 'var(--accent)' : 'var(--text-muted)'};color:#fff;margin-left:6px">${esc(nodeLabel)}</span>`;
         return `
-        <div class="container-card ${isBuilding ? 'building' : ''}" data-name="${esc(name)}" data-node="${nodeId || 'local'}" style="${isBuilding ? 'opacity:0.7' : ''}">
+        <div class="container-card ${isBuilding ? 'building' : ''}" data-name="${esc(name)}" data-node="${itemNode}" style="${isBuilding ? 'opacity:0.7' : ''}">
             <div class="container-info" ${clickAction} style="cursor:pointer">
                 <span class="container-name"><i class="bi bi-box-seam" style="margin-right:6px;color:var(--accent)"></i>${esc(name)}${nodeTag}</span>
                 <div class="container-meta">
@@ -443,40 +453,31 @@ function renderContainers(containers, nodeId) {
             </div>
         </div>`;
     }).join('');
-    if (!isRemote) {
-        list.querySelectorAll('.container-card').forEach(card => {
-            card.addEventListener('click', () => showContainerDetail(card.dataset.name));
-        });
-    }
+    list.querySelectorAll('.container-card[data-node="local"]').forEach(card => {
+        card.addEventListener('click', () => showContainerDetail(card.dataset.name));
+    });
 }
 
-function renderImages(images) {
+function renderImages(images, nodeId) {
     const el = document.getElementById('images-list');
     if (!images || images.length === 0) {
         el.innerHTML = '<div class="empty-state"><i class="bi bi-hdd-stack"></i><p>No images available</p></div>';
         return;
     }
-    el.innerHTML = images.map(img => `
+    el.innerHTML = images.map(img => {
+        const itemNode = img.node || nodeId || 'local';
+        const isRemote = itemNode !== 'local';
+        const nodeLabel = img.node_alias || (itemNode === 'local' ? 'local' : itemNode.slice(0, 8));
+        const nodeTag = (nodeId === 'all') ? `<span class="status-badge" style="font-size:10px;background:${isRemote ? 'var(--accent)' : 'var(--text-muted)'};color:#fff;margin-left:6px">${esc(nodeLabel)}</span>` : '';
+        return `
         <div class="image-card">
             <div class="image-icon"><i class="bi bi-hdd-stack"></i></div>
             <div class="image-info">
-                <span class="image-name">${esc(img.name)}</span>
+                <span class="image-name">${esc(img.name)}${nodeTag}</span>
                 <span class="image-size">${img.size_human || fmtBytes(img.size || 0)}</span>
             </div>
-            <button class="btn btn-sm btn-danger" onclick="event.stopPropagation(); deleteImage('${esc(img.name)}')" title="Delete image"><i class="bi bi-trash"></i></button>
-        </div>
-    `).join('');
-}
-
-async function deleteImage(name) {
-    if (!confirm('Delete image "' + name + '"? This cannot be undone.')) return;
-    try {
-        await api('POST', '/images/' + encodeURIComponent(name) + '/delete');
-        toast('Image deleted', 'success');
-        loadImages();
-    } catch (e) {
-        toast('Failed to delete image: ' + e.message, 'error');
-    }
+        </div>`;
+    }).join('');
 }
 
 function renderLocalImagesForTransfer(images) {
@@ -545,25 +546,66 @@ function renderDashboardContainers(containers) {
 async function renderDashboardNodes() {
     const section = document.getElementById('dash-nodes-section');
     const grid = document.getElementById('dash-nodes-grid');
-    if (!section || !grid) return;
+    const clusterSection = document.getElementById('dash-cluster-section');
+    const nodesNavItem = document.querySelector('.nav-item[data-tab="nodes"]');
     try {
-        const data = await api('GET', '/nodes');
-        const nodes = data.nodes || [];
-        if (!nodes.length) { section.style.display = 'none'; return; }
-        section.style.display = 'block';
+        const dashboard = await api('GET', '/system/dashboard');
+        const isManager = dashboard.is_manager;
+        const nodes = dashboard.nodes || [];
+        const cluster = dashboard.cluster;
+
+        // Show/hide Nodes nav tab (manager only)
+        if (nodesNavItem) nodesNavItem.style.display = isManager ? '' : 'none';
+
+        // Show/hide nodes section (manager only)
+        if (section) section.style.display = (isManager && nodes.length) ? 'block' : 'none';
+
+        // Show/hide cluster section + populate
+        if (clusterSection) {
+            if (isManager && cluster) {
+                clusterSection.style.display = 'block';
+                const el = (id) => document.getElementById(id);
+                el('cluster-cpu').textContent = `${cluster.cpu_percent || 0}%`;
+                el('cluster-containers').textContent = `${cluster.containers_running || 0}/${cluster.containers_total || 0}`;
+                if (cluster.ram_total_gb > 0) {
+                    el('cluster-memory').textContent = `${cluster.ram_used_gb.toFixed(1)} / ${cluster.ram_total_gb.toFixed(1)} GB`;
+                } else {
+                    el('cluster-memory').textContent = '-';
+                }
+                if (cluster.disk_total_gb > 0) {
+                    el('cluster-disk').textContent = `${cluster.disk_used_gb.toFixed(1)} / ${cluster.disk_total_gb.toFixed(1)} GB`;
+                } else {
+                    el('cluster-disk').textContent = '-';
+                }
+            } else {
+                clusterSection.style.display = 'none';
+            }
+        }
+
+        if (!grid || !nodes.length) return;
         grid.innerHTML = nodes.map(n => {
             const statusColor = n.status === 'online' ? 'var(--success)' : n.status === 'pending' ? 'var(--warning)' : 'var(--danger)';
             const statusLabel = n.status === 'online' ? 'Online' : n.status === 'pending' ? 'Pending' : 'Offline';
+            const isOnline = n.status === 'online';
+            const cpu = isOnline ? `${Math.round(n.cpu_percent || 0)}%` : '-';
+            const mem = isOnline ? `${(n.mem_used_gb || 0).toFixed(1)}/${(n.mem_total_gb || 0).toFixed(1)} GB` : '-';
+            const disk = isOnline ? `${Math.round(n.disk_used_gb || 0)}/${Math.round(n.disk_total_gb || 0)} GB` : '-';
+            const containers = isOnline ? `${n.containers_running || 0}/${n.containers || 0}` : '-';
             return `<div style="background:var(--bg-secondary);border:1px solid var(--border);border-radius:10px;padding:12px;cursor:pointer" onclick="document.querySelector('.nav-item[data-tab=\\'nodes\\']')?.click()">
                 <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
                     <span style="width:8px;height:8px;border-radius:50%;background:${statusColor};flex-shrink:0"></span>
-                    <strong style="color:var(--text-primary);font-size:13px">${esc(n.alias || n.ip)}</strong>
+                    <strong style="color:var(--text-primary);font-size:13px">${esc(n.alias || n.ip || n.id)}</strong>
                     <span style="color:var(--text-muted);font-size:11px">${statusLabel}</span>
                 </div>
-                <div style="color:var(--text-muted);font-size:11px">C: ${n.containers || 0} &middot; S: ${n.stacks || 0}</div>
+                <div style="color:var(--text-muted);font-size:11px">CPU ${cpu} &middot; RAM ${mem} &middot; Disk ${disk}</div>
+                <div style="color:var(--text-muted);font-size:11px">Containers ${containers} &middot; Stacks ${isOnline ? (n.stacks_count || 0) : '-'}</div>
             </div>`;
         }).join('');
-    } catch (e) { section.style.display = 'none'; }
+    } catch (e) {
+        if (section) section.style.display = 'none';
+        if (clusterSection) clusterSection.style.display = 'none';
+        if (nodesNavItem) nodesNavItem.style.display = 'none';
+    }
 }
 
 let coreTerminal = null;
@@ -580,7 +622,7 @@ async function detectWsProtocol() {
     } catch (e) {}
 }
 
-function initCoreTerminal() {
+function initCoreTerminal(nodeId) {
     const el = document.getElementById('core-terminal');
     if (!el) return;
     if (coreTerminal) { try { coreTerminal.dispose(); } catch(e){} coreTerminal = null; }
@@ -600,10 +642,10 @@ function initCoreTerminal() {
             scrollback: 5000
         });
         coreTerminal.open(el);
-        coreTerminal.writeln('\x1b[1;36m  ANK Core Shell\x1b[0m');
+        coreTerminal.writeln(`\x1b[1;36m  ANK Core Shell${nodeId && nodeId !== 'local' ? ' — ' + nodeId : ''}\x1b[0m`);
         coreTerminal.writeln('\x1b[90m  Connecting...\x1b[0m\r\n');
         coreTerminal.focus();
-        _connectCoreWs(el);
+        _connectCoreWs(el, nodeId);
         const resize = () => {
             const rect = el.getBoundingClientRect();
             const cols = Math.floor(rect.width / 8.4);
@@ -620,9 +662,11 @@ function initCoreTerminal() {
     }
 }
 
-async function _connectCoreWs(el) {
+async function _connectCoreWs(el, nodeId) {
     await detectWsProtocol();
-    const url = wsProtocol + '//' + location.host + '/ws/shell?cols=' + (coreTerminal ? coreTerminal.cols : 80) + '&rows=' + (coreTerminal ? coreTerminal.rows : 24) + '&token=' + encodeURIComponent(ankToken);
+    const isRemote = nodeId && nodeId !== 'local';
+    const basePath = isRemote ? `/ws/node-shell/${encodeURIComponent(nodeId)}` : '/ws/shell';
+    const url = wsProtocol + '//' + location.host + basePath + '?cols=' + (coreTerminal ? coreTerminal.cols : 80) + '&rows=' + (coreTerminal ? coreTerminal.rows : 24) + '&token=' + encodeURIComponent(ankToken);
     console.log('WS Connecting:', url);
     coreWs = new WebSocket(url);
     coreWs.onopen = () => {
@@ -830,6 +874,7 @@ async function showContainerDetail(name) {
         renderPortMappings(c.port_mappings || []);
         document.getElementById('detail-serves-static').checked = c.serves_static || false;
         document.getElementById('detail-static-path').value = c.static_path || '';
+        document.getElementById('detail-s6').checked = c.s6 || false;
         document.getElementById('detail-container-ip').value = c.ip_address || '-';
         document.getElementById('detail-container-subnet').value = (await api('GET', '/config')).network?.subnet || '-';
         const sshHint = document.getElementById('ssh-hint');
@@ -961,7 +1006,8 @@ document.getElementById('detail-settings-form')?.addEventListener('submit', asyn
                 autostart: document.getElementById('detail-autostart').checked,
                 resources: { memory_limit: document.getElementById('detail-mem-limit').value, cpu_limit_percent: parseInt(document.getElementById('detail-cpu-limit').value) },
                 serves_static: document.getElementById('detail-serves-static').checked,
-                static_path: document.getElementById('detail-static-path').value || ''
+                static_path: document.getElementById('detail-static-path').value || '',
+                s6: document.getElementById('detail-s6').checked
             };
             const newPass = document.getElementById('detail-root-password').value;
             if (newPass && newPass.length >= 4) updateData.root_password = newPass;
@@ -1127,7 +1173,11 @@ function closeContainerTerminal() {
     if (xtermTerminal) { try { xtermTerminal.dispose(); } catch(e){} xtermTerminal = null; }
 }
 
-document.getElementById('create-btn').addEventListener('click', () => showModal('create-modal'));
+document.getElementById('create-btn').addEventListener('click', () => {
+    const targetSel = document.getElementById('container-target-node');
+    if (targetSel) targetSel.value = (selectedNode && selectedNode !== 'all') ? selectedNode : 'local';
+    showModal('create-modal');
+});
 document.getElementById('create-form').addEventListener('submit', async (e) => {
     e.preventDefault();
     const submitBtn = e.target.querySelector('button[type="submit"]');
@@ -1136,7 +1186,7 @@ document.getElementById('create-form').addEventListener('submit', async (e) => {
     submitBtn.innerHTML = '<i class="bi bi-arrow-repeat spin"></i> Creating...';
     const name = document.getElementById('container-name').value;
     const imageVal = document.getElementById('container-image').value;
-    const nodeId = selectedNode || 'local';
+    const nodeId = document.getElementById('container-target-node')?.value || 'local';
     const isRemote = nodeId !== 'local';
     if (imageVal.startsWith('template:')) {
         const templateId = imageVal.replace('template:', '');
@@ -1189,96 +1239,18 @@ document.getElementById('create-form').addEventListener('submit', async (e) => {
     submitBtn.innerHTML = origHTML;
 });
 
-document.getElementById('pull-btn').addEventListener('click', () => {
-    showPullModal('3.20');
-});
-
-function showPullModal(defaultVersion) {
-    const overlay = document.createElement('div');
-    overlay.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.7);z-index:10000;display:flex;align-items:center;justify-content:center;';
-    overlay.innerHTML = `
-        <div style="background:#1e293b;border-radius:12px;padding:24px;max-width:560px;width:90%;color:#e2e8f0;font-family:system-ui,sans-serif;position:relative;">
-            <button id="pull-close-x" style="position:absolute;top:12px;right:12px;background:none;border:none;color:#94a3b8;font-size:20px;cursor:pointer;padding:4px 8px;border-radius:4px;line-height:1;" title="Close">&times;</button>
-            <h3 style="margin:0 0 12px;font-size:16px;"><i class="bi bi-cloud-download"></i> Pull Image</h3>
-            <div style="display:flex;gap:8px;margin-bottom:12px;">
-                <input id="pull-version" type="text" value="${esc(defaultVersion)}" placeholder="Alpine version" style="flex:1;padding:8px 12px;border-radius:6px;border:1px solid #334155;background:#0f172a;color:#e2e8f0;font-size:14px;">
-                <button id="pull-go-btn" class="btn btn-primary" style="min-width:80px;"><i class="bi bi-cloud-download"></i> Pull</button>
-            </div>
-            <div id="pull-status" style="color:#94a3b8;font-size:13px;margin-bottom:8px;"></div>
-            <div style="background:#0f172a;border-radius:8px;padding:12px;height:250px;overflow-y:auto;font-family:monospace;font-size:10px;color:#94a3b8;white-space:pre-wrap;line-height:1.6;" id="pull-log"></div>
-        </div>`;
-    document.body.appendChild(overlay);
-    const logEl = overlay.querySelector('#pull-log');
-    const statusEl = overlay.querySelector('#pull-status');
-    const goBtn = overlay.querySelector('#pull-go-btn');
-    const versionInput = overlay.querySelector('#pull-version');
-    const closeX = overlay.querySelector('#pull-close-x');
-    let pollInterval = null;
-
-    function closeModal() {
-        if (pollInterval) clearInterval(pollInterval);
-        overlay.remove();
-    }
-
-    closeX.addEventListener('click', closeModal);
-
-    goBtn.addEventListener('click', async () => {
-        const version = versionInput.value.trim();
-        if (!version) return;
-        goBtn.disabled = true;
-        goBtn.innerHTML = '<i class="bi bi-arrow-repeat spin"></i>';
-        versionInput.disabled = true;
+document.getElementById('pull-btn').addEventListener('click', async () => {
+    const version = await inputModal('Pull Image', 'Alpine version to download:', '3.20');
+    if (!version) return;
+    await btnLoading(document.getElementById('pull-btn'), async () => {
         try {
+            toast(`Pulling alpine-${version}...`, 'info');
             await api('POST', '/images/pull', { version });
-        } catch (e) {
-            logEl.textContent += 'ERROR: ' + e.message + '\n';
-            goBtn.disabled = false;
-            goBtn.innerHTML = '<i class="bi bi-cloud-download"></i> Pull';
-            versionInput.disabled = false;
-            return;
-        }
-        statusEl.textContent = 'Starting download...';
-        pollInterval = setInterval(async () => {
-            try {
-                const st = await api('GET', `/images/pull/status?version=${encodeURIComponent(version)}`);
-                if (st.output && st.output.length > 0) {
-                    logEl.textContent = st.output.join('\n') + '\n';
-                    logEl.scrollTop = logEl.scrollHeight;
-                }
-                if (st.state === 'pulling') {
-                    statusEl.innerHTML = '<i class="bi bi-arrow-repeat spin"></i> Downloading rootfs...';
-                } else if (st.state === 'building') {
-                    statusEl.innerHTML = '<i class="bi bi-arrow-repeat spin"></i> Building base image...';
-                } else if (st.state === 'done') {
-                    statusEl.innerHTML = '<span style="color:#22c55e;">✓ Done!</span>';
-                    clearInterval(pollInterval);
-                    goBtn.disabled = false;
-                    goBtn.innerHTML = '<i class="bi bi-cloud-download"></i> Pull';
-                    versionInput.disabled = false;
-                    loadAll();
-                } else if (st.state === 'error') {
-                    statusEl.innerHTML = '<span style="color:#ef4444;">✗ Failed</span>';
-                    clearInterval(pollInterval);
-                    goBtn.disabled = false;
-                    goBtn.innerHTML = '<i class="bi bi-cloud-download"></i> Pull';
-                    versionInput.disabled = false;
-                } else if (st.state === 'idle') {
-                    statusEl.textContent = 'Waiting...';
-                }
-            } catch (e) {
-                statusEl.innerHTML = '<span style="color:#ef4444;">✗ Connection lost</span>';
-                clearInterval(pollInterval);
-                goBtn.disabled = false;
-                goBtn.innerHTML = '<i class="bi bi-cloud-download"></i> Pull';
-                versionInput.disabled = false;
-            }
-        }, 2000);
+            toast(`Image alpine-${version} downloaded`, 'success');
+            loadAll();
+        } catch (e) { toast(`Failed: ${e.message}`, 'error'); }
     });
-
-    overlay.addEventListener('click', (e) => {
-        if (e.target === overlay) closeModal();
-    });
-}
+});
 
 async function loadTemplates() {
     try {
@@ -1307,18 +1279,35 @@ async function deployTemplate(id, name, baseReady) {
         const cfg = await api('GET', '/config');
         if (cfg && cfg.default_container_password) defaultPass = cfg.default_container_password;
     } catch(e) {}
-    const result = await customModal('Deploy ' + name, [
+    const fields = [
         { id: 'tpl-name', label: 'Container name:', type: 'text', value: name.toLowerCase().replace(/\s+/g, '-') },
         { id: 'tpl-pass', label: 'Root password:', type: 'password', value: defaultPass }
-    ]);
+    ];
+    let onlineNodes = [];
+    try {
+        const d = await api('GET', '/system/dashboard');
+        onlineNodes = (d.nodes || []).filter(n => n.status === 'online');
+    } catch(e) {}
+    if (onlineNodes.length > 0) {
+        let opts = '<option value="local">Local</option>';
+        onlineNodes.forEach(n => { opts += `<option value="${esc(n.id)}">${esc(n.alias || n.ip)}</option>`; });
+        fields.push({ id: 'tpl-target-node', label: 'Target node:', type: 'select', options: opts });
+    }
+    const result = await customModal('Deploy ' + name, fields);
     if (!result) return;
     const containerName = result['tpl-name'];
     const rootPass = result['tpl-pass'];
+    const nodeId = result['tpl-target-node'] || 'local';
     if (!containerName) { toast('Container name required', 'warning'); return; }
     if (!rootPass || rootPass.length < 4) { toast('Password must be at least 4 characters', 'warning'); return; }
     try {
-        toast(`Deploying ${name} as "${containerName}"...`, 'info');
-        await api('POST', '/images/deploy', { template: id, name: containerName, root_password: rootPass });
+        if (nodeId !== 'local') {
+            toast(`Deploying ${name} as "${containerName}" on ${nodeId.slice(0,8)}...`, 'info');
+            await api('POST', `/nodes/${encodeURIComponent(nodeId)}/containers`, { name: containerName, image: id, root_password: rootPass });
+        } else {
+            toast(`Deploying ${name} as "${containerName}"...`, 'info');
+            await api('POST', '/images/deploy', { template: id, name: containerName, root_password: rootPass });
+        }
         pollContainerStatus(containerName, 0);
         loadAll();
     } catch (e) { toast(`Failed: ${e.message}`, 'error'); }
@@ -1935,9 +1924,19 @@ document.getElementById('ankfile-example-btn')?.addEventListener('click', () => 
    ============================================================ */
 
 async function loadStacks() {
+    const node = selectedStackNode || 'local';
     try {
-        const data = await api('GET', '/stacks');
-        const stacks = data.stacks || [];
+        let stacks;
+        if (node === 'local') {
+            const data = await api('GET', '/stacks');
+            stacks = (data.stacks || []).map(s => ({ ...s, node: 'local', node_alias: 'Local' }));
+        } else if (node === 'all') {
+            const data = await api('GET', '/stacks/all');
+            stacks = data.stacks || [];
+        } else {
+            const remote = await api('GET', `/nodes/${encodeURIComponent(node)}/stacks`);
+            stacks = (Array.isArray(remote) ? remote : []).map(s => ({ ...s, node, node_alias: node }));
+        }
         const el = document.getElementById('stacks-list');
         if (!el) return;
         if (!stacks.length) { el.innerHTML = '<div class="empty-state"><i class="bi bi-stack"></i><p>No stacks yet</p></div>'; return; }
@@ -1947,6 +1946,17 @@ async function loadStacks() {
             const statusColor = running === total && total > 0 ? 'var(--success)' : running > 0 ? 'var(--warning)' : 'var(--danger)';
             const tpl = s.template === 'ankfile' ? '<i class="bi bi-filetype-json"></i> Ankfile' : esc(s.template || s.image || '');
             const lbPort = s.port || s.lb_port || '-';
+            const itemNode = s.node || (node === 'all' ? 'local' : node);
+            const isRemote = itemNode !== 'local';
+            const nodeLabel = s.node_alias || (itemNode === 'local' ? 'local' : itemNode);
+            const nodeTag = (node === 'all') ? `<span class="status-badge" style="font-size:10px;background:${isRemote ? 'var(--accent)' : 'var(--text-muted)'};color:#fff;margin-left:6px">${esc(nodeLabel)}</span>` : '';
+            const actions = isRemote
+                ? `<span style="color:var(--text-muted);font-size:11px">View only</span>`
+                : `<div style="display:flex;gap:6px">
+                        <button class="btn btn-sm btn-ghost" onclick="scaleStackUp('${esc(s.name)}')" title="Scale Up"><i class="bi bi-plus-lg"></i></button>
+                        <button class="btn btn-sm btn-ghost" onclick="scaleStackDown('${esc(s.name)}')" title="Scale Down"><i class="bi bi-dash-lg"></i></button>
+                        <button class="btn btn-sm btn-danger" onclick="deleteStack('${esc(s.name)}')" title="Delete"><i class="bi bi-trash"></i></button>
+                    </div>`;
             return `<div class="card-hover" style="background:var(--bg-secondary);border:1px solid var(--border);border-radius:12px;padding:16px;margin-bottom:12px">
                 <div style="display:flex;justify-content:space-between;align-items:center">
                     <div>
@@ -1954,14 +1964,11 @@ async function loadStacks() {
                             <span style="width:8px;height:8px;border-radius:50%;background:${statusColor};flex-shrink:0"></span>
                             <strong style="color:var(--text-primary)">${esc(s.name)}</strong>
                             <span style="color:var(--text-muted);font-size:12px">${tpl}</span>
+                            ${nodeTag}
                         </div>
                         <div style="color:var(--text-muted);font-size:12px">${running}/${total} running &middot; LB port ${lbPort}</div>
                     </div>
-                    <div style="display:flex;gap:6px">
-                        <button class="btn btn-sm btn-ghost" onclick="scaleStackUp('${esc(s.name)}')" title="Scale Up"><i class="bi bi-plus-lg"></i></button>
-                        <button class="btn btn-sm btn-ghost" onclick="scaleStackDown('${esc(s.name)}')" title="Scale Down"><i class="bi bi-dash-lg"></i></button>
-                        <button class="btn btn-sm btn-danger" onclick="deleteStack('${esc(s.name)}')" title="Delete"><i class="bi bi-trash"></i></button>
-                    </div>
+                    ${actions}
                 </div>
             </div>`;
         }).join('');
@@ -2135,6 +2142,11 @@ async function loadNodes() {
             const statusLabel = n.status === 'online' ? 'Online' : n.status === 'pending' ? 'Pending' : 'Offline';
             const roleTag = n.role === 'manager' ? '<span style="background:var(--accent);color:#fff;font-size:10px;padding:2px 6px;border-radius:4px;margin-left:6px">MANAGER</span>' : '<span style="background:var(--text-muted);color:#fff;font-size:10px;padding:2px 6px;border-radius:4px;margin-left:6px">MANAGED</span>';
             const managedBy = n.managed_by ? `<div style="color:var(--text-muted);font-size:11px;margin-top:2px">Managed by: ${esc(n.managed_by)}</div>` : '';
+            const isOnline = n.status === 'online';
+            const cpu = isOnline ? `${Math.round(n.cpu_percent || 0)}%` : '-';
+            const ram = isOnline ? `${n.mem_used_gb || 0}/${n.mem_total_gb || 0} GB` : '-';
+            const disk = isOnline ? `${Math.round(n.disk_used_gb || 0)}/${Math.round(n.disk_total_gb || 0)} GB` : '-';
+            const uptime = isOnline ? fmtUptime(n.uptime_seconds || 0) : '-';
             return `<div style="background:var(--bg-secondary);border:1px solid var(--border);border-radius:12px;padding:16px;margin-bottom:12px;cursor:pointer" onclick="openNodeDetail('${esc(n.id)}','${esc(n.alias || n.ip)}','${esc(n.status)}')">
                 <div style="display:flex;justify-content:space-between;align-items:center">
                     <div>
@@ -2144,8 +2156,8 @@ async function loadNodes() {
                             <span style="color:var(--text-muted);font-size:12px">${statusLabel}</span>
                             ${roleTag}
                         </div>
-                        <div style="color:var(--text-muted);font-size:12px">CPU: ${esc(n.cpu || '-')} &middot; RAM: ${esc(n.ram || '-')} &middot; Disk: ${esc(n.disk || '-')} &middot; Uptime: ${esc(n.uptime || '-')}</div>
-                        <div style="color:var(--text-muted);font-size:12px;margin-top:2px">Containers: ${n.containers || 0} &middot; Stacks: ${n.stacks || 0}</div>
+                        <div style="color:var(--text-muted);font-size:12px">CPU: ${cpu} &middot; RAM: ${ram} &middot; Disk: ${disk} &middot; Uptime: ${uptime}</div>
+                        <div style="color:var(--text-muted);font-size:12px;margin-top:2px">Containers: ${isOnline ? (n.containers_total || 0) : 0} &middot; Stacks: ${isOnline ? (n.stacks_count || 0) : 0}</div>
                         ${managedBy}
                     </div>
                     <div style="display:flex;gap:6px" onclick="event.stopPropagation()">
@@ -2348,20 +2360,48 @@ async function loadNodeDetail(nodeId) {
 let selectedNode = 'local';
 
 function updateNodeSelectors(nodes) {
-    const selectors = ['container-node-selector', 'image-node-selector', 'shell-node-selector'];
-    selectors.forEach(id => {
+    const onlineNodes = (nodes || []).filter(n => n.status === 'online');
+    const hasNodes = onlineNodes.length > 0;
+    const unifiedSelectors = ['container-node-selector', 'image-node-selector', 'stack-node-selector'];
+    unifiedSelectors.forEach(id => {
         const sel = document.getElementById(id);
         if (!sel) return;
         const val = sel.value;
-        sel.innerHTML = '<option value="local">Local</option>';
-        (nodes || []).filter(n => n.status === 'online').forEach(n => {
+        sel.innerHTML = '<option value="all">All Nodes</option><option value="local">Local</option>';
+        onlineNodes.forEach(n => {
             const opt = document.createElement('option');
             opt.value = n.id;
             opt.textContent = n.alias || n.ip;
             sel.appendChild(opt);
         });
-        sel.value = val;
+        // Default to 'all' when manager has nodes
+        sel.value = val || (hasNodes ? 'all' : 'local');
     });
+    if (hasNodes) selectedNode = 'all';
+    const shellSel = document.getElementById('shell-node-selector');
+    if (shellSel) {
+        const val = shellSel.value;
+        shellSel.innerHTML = '<option value="local">Local</option>';
+        (nodes || []).filter(n => n.status === 'online').forEach(n => {
+            const opt = document.createElement('option');
+            opt.value = n.id;
+            opt.textContent = n.alias || n.ip;
+            shellSel.appendChild(opt);
+        });
+        shellSel.value = val || 'local';
+    }
+    const createModalSel = document.getElementById('container-target-node');
+    if (createModalSel) {
+        const val = createModalSel.value;
+        createModalSel.innerHTML = '<option value="local">Local</option>';
+        (nodes || []).filter(n => n.status === 'online').forEach(n => {
+            const opt = document.createElement('option');
+            opt.value = n.id;
+            opt.textContent = n.alias || n.ip;
+            createModalSel.appendChild(opt);
+        });
+        createModalSel.value = val || 'local';
+    }
 }
 
 function onContainerNodeChange() {
@@ -2374,14 +2414,29 @@ function onImageNodeChange() {
     loadImages();
 }
 
+let selectedStackNode = 'local';
+function onStackNodeChange() {
+    selectedStackNode = document.getElementById('stack-node-selector')?.value || 'local';
+    loadStacks();
+}
+
 async function loadContainers() {
     if (selectedNode === 'local') {
         try {
             const containers = await api('GET', '/containers');
-            renderContainers(containers);
+            renderContainers(containers, 'local');
             renderDashboardContainers(containers);
             populateImageSelect(await api('GET', '/images'));
         } catch (e) {}
+        return;
+    }
+    if (selectedNode === 'all') {
+        try {
+            const containers = await api('GET', '/containers/all');
+            renderContainers(Array.isArray(containers) ? containers : [], 'all');
+        } catch (e) {
+            renderContainers([], 'all');
+        }
         return;
     }
     try {
@@ -2400,18 +2455,29 @@ async function loadImages() {
         if (sectionTitle) sectionTitle.textContent = 'Downloaded Images';
         try {
             const images = await api('GET', '/images');
-            renderImages(images);
+            renderImages(images, 'local');
             populateImageSelect(images);
         } catch (e) {}
+        return;
+    }
+    if (selectedNode === 'all') {
+        if (localCard) localCard.style.display = 'none';
+        if (sectionTitle) sectionTitle.textContent = 'Images (All Nodes)';
+        try {
+            const images = await api('GET', '/images/all');
+            renderImages(Array.isArray(images) ? images : [], 'all');
+        } catch (e) {
+            renderImages([], 'all');
+        }
         return;
     }
     if (sectionTitle) sectionTitle.textContent = 'Remote Images';
     if (localCard) localCard.style.display = 'block';
     try {
         const remoteImages = await api('GET', `/nodes/${encodeURIComponent(selectedNode)}/images`);
-        renderImages(Array.isArray(remoteImages) ? remoteImages : []);
+        renderImages(Array.isArray(remoteImages) ? remoteImages : [], selectedNode);
     } catch (e) {
-        renderImages([]);
+        renderImages([], selectedNode);
     }
     try {
         const localImages = await api('GET', '/images');
@@ -2421,11 +2487,7 @@ async function loadImages() {
 
 function onShellNodeChange() {
     const val = document.getElementById('shell-node-selector')?.value || 'local';
-    if (val === 'local') {
-        initCoreShell();
-    } else {
-        toast('Remote shell: connect via WebSocket proxy', 'info');
-    }
+    initCoreTerminal(val);
 }
 
 /* Node container actions (remote) */

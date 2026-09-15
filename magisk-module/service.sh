@@ -120,6 +120,145 @@ echo $! > "$SERVER_PID_FILE"
 log "Server started (PID: $(cat $SERVER_PID_FILE)) | Arch: $ARCH | Musl: $MUSL"
 log "Panel: http://localhost:8001"
 
+# Install openssh if not present (tarball may not include it)
+if [ ! -e "$ROOTFS/usr/sbin/sshd" ]; then
+    log "sshd not found in ankfs, installing openssh..."
+    mount -t proc proc "$ROOTFS/proc" 2>/dev/null
+    mkdir -p "$ROOTFS/dev" 2>/dev/null
+    if ! mountpoint -q "$ROOTFS/dev" 2>/dev/null; then
+        mount -t tmpfs -o size=16m tmpfs "$ROOTFS/dev" 2>/dev/null
+    fi
+    [ -e "$ROOTFS/dev/null" ] || mknod "$ROOTFS/dev/null" c 1 3 2>/dev/null
+    chmod 666 "$ROOTFS/dev/null" 2>/dev/null
+    [ -e "$ROOTFS/dev/urandom" ] || mknod "$ROOTFS/dev/urandom" c 1 9 2>/dev/null
+    chmod 666 "$ROOTFS/dev/urandom" 2>/dev/null
+    echo "nameserver 8.8.8.8" > "$ROOTFS/etc/resolv.conf" 2>/dev/null
+    echo "nameserver 8.8.4.4" >> "$ROOTFS/etc/resolv.conf" 2>/dev/null
+
+    chroot "$ROOTFS" /sbin/apk add --no-cache openssh bash shadow 2>&1 | while IFS= read -r line; do
+        log "  apk: $line"
+    done
+
+    # Configure sshd
+    mkdir -p "$ROOTFS/etc/ssh" "$ROOTFS/run/sshd" 2>/dev/null
+    cat > "$ROOTFS/etc/ssh/sshd_config" << 'SSHEOF'
+Port 2200
+PermitRootLogin yes
+PasswordAuthentication yes
+ChallengeResponseAuthentication no
+UsePAM no
+PidFile /run/sshd.pid
+Subsystem sftp /usr/libexec/sftp-server
+SSHEOF
+    chroot "$ROOTFS" /usr/bin/ssh-keygen -A 2>/dev/null || true
+
+    # Install ANK shell + MOTD
+    cp "$ROOTFS/opt/ank/server/ank-shell.sh" "$ROOTFS/ank-shell.sh" 2>/dev/null
+    chmod 755 "$ROOTFS/ank-shell.sh" 2>/dev/null
+    sed -i '1s|#!/system/bin/sh|#!/bin/sh|' "$ROOTFS/ank-shell.sh" 2>/dev/null
+    sed -i 's|^root:.*|root:/bin/sh|' "$ROOTFS/etc/passwd" 2>/dev/null
+
+    mkdir -p "$ROOTFS/etc/profile.d" 2>/dev/null
+    cat > "$ROOTFS/etc/profile.d/ank-motd.sh" << 'MOTDEOF'
+ank_motd() {
+    read _ u1 n1 s1 _ < /proc/stat
+    sleep 1
+    read _ u2 n2 s2 _ < /proc/stat
+    total=$(( (u2+n2+s2) - (u1+n1+s1) ))
+    idle=$(( u2 - u1 ))
+    if [ "$total" -gt 0 ]; then
+        cpu=$(( (total - idle) * 100 / total ))
+    else
+        cpu=0
+    fi
+    mem_total=$(awk '/^MemTotal/{print $2}' /proc/meminfo)
+    mem_avail=$(awk '/^MemAvailable/{print $2}' /proc/meminfo)
+    if [ -n "$mem_total" ] && [ "$mem_total" -gt 0 ] 2>/dev/null; then
+        mem_used=$(( (mem_total - mem_avail) * 100 / mem_total ))
+    else
+        mem_used=0
+    fi
+    up=$(awk '{d=int($1/86400);h=int(($1%86400)/3600);m=int(($1%3600)/60);printf "%dd %dh %dm",d,h,m}' /proc/uptime)
+    cat << 'ART'
+
+          /$$$$$$  /$$   /$$ /$$   /$$
+         /$$__  $$| $$$ | $$| $$  /$$/
+        | $$  \ $$| $$$$| $$| $$ /$$/
+        | $$$$$$$$| $$ $$ $$| $$$$$/
+        | $$__  $$| $$  $$$$| $$  $$
+        | $$  | $$| $$\  $$$| $$\  $$
+        | $$  | $$| $$ \  $$| $$ \  $$
+        |__/  |__/|__/  \__/|__/  \__/
+
+         Android Konteiner | ANK CLI
+ART
+    printf "       CPU: %s%%  MEM: %s%%  UPTIME: %s\n" "$cpu" "$mem_used" "$up"
+}
+ank_motd
+unset ank_motd
+MOTDEOF
+
+    umount "$ROOTFS/proc" 2>/dev/null
+    umount "$ROOTFS/dev" 2>/dev/null
+    log "openssh installed + ANK shell configured"
+fi
+
+# Ensure ANK shell + MOTD exist (for installs that already had openssh)
+if [ -e "$ROOTFS/usr/sbin/sshd" ]; then
+    # ANK shell
+    if [ ! -e "$ROOTFS/ank-shell.sh" ] || ! grep -q "ANK Shell" "$ROOTFS/ank-shell.sh" 2>/dev/null; then
+        cp "$ROOTFS/opt/ank/server/ank-shell.sh" "$ROOTFS/ank-shell.sh" 2>/dev/null
+        chmod 755 "$ROOTFS/ank-shell.sh" 2>/dev/null
+        sed -i '1s|#!/system/bin/sh|#!/bin/sh|' "$ROOTFS/ank-shell.sh" 2>/dev/null
+    fi
+    # Set root shell to ank-shell
+    if ! grep -q "ank-shell" "$ROOTFS/etc/passwd" 2>/dev/null; then
+        sed -i 's|^root:.*|root:/bin/sh|' "$ROOTFS/etc/passwd" 2>/dev/null
+    fi
+    # ANK MOTD (dynamic)
+    if ! grep -q "ank_motd" "$ROOTFS/etc/profile.d/ank-motd.sh" 2>/dev/null; then
+        mkdir -p "$ROOTFS/etc/profile.d" 2>/dev/null
+        cat > "$ROOTFS/etc/profile.d/ank-motd.sh" << 'MOTDEOF'
+ank_motd() {
+    read _ u1 n1 s1 _ < /proc/stat
+    sleep 1
+    read _ u2 n2 s2 _ < /proc/stat
+    total=$(( (u2+n2+s2) - (u1+n1+s1) ))
+    idle=$(( u2 - u1 ))
+    if [ "$total" -gt 0 ]; then
+        cpu=$(( (total - idle) * 100 / total ))
+    else
+        cpu=0
+    fi
+    mem_total=$(awk '/^MemTotal/{print $2}' /proc/meminfo)
+    mem_avail=$(awk '/^MemAvailable/{print $2}' /proc/meminfo)
+    if [ -n "$mem_total" ] && [ "$mem_total" -gt 0 ] 2>/dev/null; then
+        mem_used=$(( (mem_total - mem_avail) * 100 / mem_total ))
+    else
+        mem_used=0
+    fi
+    up=$(awk '{d=int($1/86400);h=int(($1%86400)/3600);m=int(($1%3600)/60);printf "%dd %dh %dm",d,h,m}' /proc/uptime)
+    cat << 'ART'
+
+          /$$$$$$  /$$   /$$ /$$   /$$
+         /$$__  $$| $$$ | $$| $$  /$$/
+        | $$  \ $$| $$$$| $$| $$ /$$/
+        | $$$$$$$$| $$ $$ $$| $$$$$/
+        | $$__  $$| $$  $$$$| $$  $$
+        | $$  | $$| $$\  $$$| $$\  $$
+        | $$  | $$| $$ \  $$| $$ \  $$
+        |__/  |__/|__/  \__/|__/  \__/
+
+         Android Konteiner | ANK CLI
+ART
+    printf "       CPU: %s%%  MEM: %s%%  UPTIME: %s\n" "$cpu" "$mem_used" "$up"
+}
+ank_motd
+unset ank_motd
+MOTDEOF
+    fi
+fi
+
 # Start sshd in ankfs (SSH access to ANK shell)
 SSH_ENABLED="1"
 SSH_PORT="2200"
