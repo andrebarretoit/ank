@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1">
-    <meta name="theme-color" content="#0b0d13">
+    <meta name="theme-color" content="#0a0e17">
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -13,29 +13,16 @@
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css">
     <link rel="stylesheet" href="style.css">
-    <script>
-    // Apply saved theme immediately (before paint) to avoid flash of wrong theme
-    (function() {
-        try {
-            var saved = localStorage.getItem('ank_theme');
-            var theme = saved || (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
-            document.documentElement.setAttribute('data-theme', theme);
-        } catch (e) {}
-    })();
-    </script>
 </head>
 <body>
     <!-- Login -->
     <div id="login-screen" class="screen">
         <div class="login-wrapper">
-            <div class="login-topbar">
-                <button type="button" class="icon-toggle" id="theme-toggle-login" title="Toggle theme"><i class="bi bi-sun"></i><i class="bi bi-moon-stars"></i></button>
-            </div>
             <div class="login-card">
                 <div class="login-logo">
-                    <div class="mark"><i class="bi bi-box-seam" style="font-size:28px;color:#fff"></i></div>
+                    <div class="mark"><i class="bi bi-box-seam" style="font-size:24px;color:#fff"></i></div>
                     <h1>ANK</h1>
-                    <p>Android Konteiner</p>
+                    <p>ANDROID KONTEINER</p>
                 </div>
                 <form id="login-form">
                     <div class="input-group">
@@ -58,11 +45,11 @@
         <div class="sidebar-backdrop" id="sidebar-backdrop"></div>
         <div class="mobile-topbar" id="mobile-topbar">
             <button type="button" class="icon-toggle" id="drawer-open-btn" title="Menu"><i class="bi bi-list"></i></button>
-            <div class="mt-brand"><div class="mark"><i class="bi bi-box-seam" style="font-size:16px;color:#fff"></i></div><span id="mt-sidebar-title">ANK</span></div>
-            <button type="button" class="icon-toggle" id="theme-toggle-mobile" title="Toggle theme"><i class="bi bi-sun"></i><i class="bi bi-moon-stars"></i></button>
+            <div class="mt-brand"><div class="mark"><i class="bi bi-box-seam" style="font-size:14px;color:#fff"></i></div><span id="mt-sidebar-title">ANK</span></div>
+            <span class="version-badge" id="mt-version-badge"><i class="bi bi-box-seam"></i></span>
         </div>
         <aside class="sidebar" id="sidebar">
-            <div class="sidebar-brand"><div class="mark"><i class="bi bi-box-seam" style="font-size:18px;color:#fff"></i></div><span id="sidebar-title">ANK</span></div>
+            <div class="sidebar-brand"><div class="mark"><i class="bi bi-box-seam" style="font-size:17px;color:#fff"></i></div><span id="sidebar-title">ANK</span></div>
             <nav class="sidebar-nav">
                 <a href="#" class="nav-item active" data-tab="dashboard"><i class="bi bi-speedometer2"></i><span>Dashboard</span></a>
                 <a href="#" class="nav-item" data-tab="containers"><i class="bi bi-grid-3x3-gap"></i><span>Containers</span></a>
@@ -76,13 +63,11 @@
                 <a href="#" class="nav-item" data-tab="settings"><i class="bi bi-gear"></i><span>Settings</span></a>
             </nav>
             <div class="sidebar-footer">
-                <div class="sidebar-toggles">
-                    <button type="button" class="icon-toggle" id="theme-toggle-desktop" title="Toggle theme"><i class="bi bi-sun"></i><i class="bi bi-moon-stars"></i></button>
-                </div>
                 <div class="system-info">
                     <span class="version-badge" id="version">v2.0.0</span>
                     <span class="mode-badge" id="mode-badge">compat</span>
                 </div>
+                <div class="system-info"><span class="mode-badge" style="color:var(--text-muted);border-color:var(--border);background:var(--bg-tertiary)"><i class="bi bi-android2"></i>&nbsp;Android 7+</span></div>
                 <button id="sidebar-expand" class="btn btn-ghost btn-sm sidebar-expand-btn"><i class="bi bi-chevron-double-right"></i></button>
                 <button id="logout-btn" class="btn btn-ghost btn-sm logout-btn"><i class="bi bi-box-arrow-left"></i> <span>Logout</span></button>
             </div>
@@ -182,7 +167,9 @@
                 <!-- Containers List -->
                 <div class="card" style="margin-top:16px;">
                     <div class="card-header"><h3><i class="bi bi-grid-3x3-gap"></i> Containers</h3></div>
-                    <div class="card-body" id="dashboard-containers"></div>
+                    <div class="card-body" id="dashboard-containers">
+                        <div class="skeleton-list"><div class="skeleton-row"></div><div class="skeleton-row"></div><div class="skeleton-row"></div></div>
+                    </div>
                 </div>
             </section>
 
@@ -195,7 +182,7 @@
                     </div>
                 </div>
                 <div id="containers-list" class="container-list">
-                    <div class="empty-state"><i class="bi bi-box-seam" style="font-size:48px;color:var(--text-muted)"></i><p>No containers yet</p></div>
+                    <div class="skeleton-list"><div class="skeleton-row"></div><div class="skeleton-row"></div><div class="skeleton-row"></div></div>
                 </div>
             </section>
 
@@ -221,7 +208,7 @@
                         <div class="form-group"><label>Container Name</label><input type="text" id="ankfile-name" placeholder="my-app" value="ank-build"></div>
                         <div class="form-group">
                             <label>Ankfile</label>
-                            <textarea id="ankfile-content" style="width:100%;height:160px;background:#0d1117;color:#c9d1d9;border:1px solid #30363d;border-radius:6px;padding:10px;font-family:'JetBrains Mono',monospace;font-size:12px;resize:vertical" placeholder="# Example Ankfile&#10;FROM alpine-3.20&#10;PASSWD ank123&#10;RUN apk add --allow-untrusted sqlite nginx&#10;EXPOSE 8080&#10;WORKDIR /app">FROM alpine-3.20
+                            <textarea id="ankfile-content" style="width:100%;height:160px;background:#060a12;color:var(--text-primary);border:1px solid var(--border);border-radius:8px;padding:12px;font-family:'JetBrains Mono',monospace;font-size:12px;resize:vertical" placeholder="# Example Ankfile&#10;FROM alpine-3.20&#10;PASSWD ank123&#10;RUN apk add --allow-untrusted sqlite nginx&#10;EXPOSE 8080&#10;WORKDIR /app">FROM alpine-3.20
 PASSWD ank123
 RUN apk add --allow-untrusted nginx
 RUN mkdir -p /var/www/html
@@ -299,7 +286,7 @@ EXPOSE 8080</textarea>
             <section id="tab-logs" class="tab">
                 <div class="page-header">
                     <h2><i class="bi bi-terminal"></i> Logs</h2>
-                    <div style="display:flex;gap:8px;">
+                    <div style="display:flex;gap:8px;flex-wrap:wrap">
                         <select id="log-node-selector" class="btn btn-ghost btn-sm" onchange="loadLogs(false)">
                             <option value="local">Local</option>
                         </select>
@@ -497,6 +484,8 @@ EXPOSE 8080</textarea>
         </div>
     </div>
 
+    <!-- APK Failure Modal placeholder (built dynamically, kept for reference of ids) -->
+
     <!-- Detail Modal -->
     <div id="detail-modal" class="modal hidden">
         <div class="modal-overlay"></div>
@@ -514,6 +503,7 @@ EXPOSE 8080</textarea>
                 <button class="modal-tab" data-mtab="terminal"><i class="bi bi-terminal"></i> Terminal</button>
                 <button class="modal-tab" data-mtab="files"><i class="bi bi-folder2-open"></i> Files</button>
                 <button class="modal-tab" data-mtab="network"><i class="bi bi-hdd-network"></i> Networks</button>
+                <button class="modal-tab" data-mtab="taskmanager"><i class="bi bi-cpu"></i> Services</button>
                 <button class="modal-tab" data-mtab="backup"><i class="bi bi-cloud-arrow-up"></i> Backup</button>
                 <button class="modal-tab" data-mtab="settings"><i class="bi bi-gear"></i> Settings</button>
             </div>
@@ -714,7 +704,7 @@ EXPOSE 8080</textarea>
                 <div class="form-group"><label>Stack Name</label><input type="text" id="stack-name" placeholder="my-stack" required></div>
                 <div class="form-group"><label>Image</label><select id="stack-image" onchange="toggleStackAnkfile()"><option value="nginx">nginx</option><option value="apache">apache</option><option value="php">php</option><option value="node">node</option><option value="python">python</option><option value="ankfile">Custom (Ankfile)</option></select></div>
                 <div id="stack-ankfile-section" style="display:none">
-                    <div class="form-group"><label>Ankfile</label><textarea id="stack-ankfile" rows="8" style="width:100%;background:var(--bg-primary);color:var(--text-primary);border:1px solid var(--border);border-radius:6px;padding:10px;font-family:'JetBrains Mono',monospace;font-size:12px;resize:vertical" placeholder="FROM alpine-3.20&#10;PASSWD ank123&#10;RUN apk add --allow-untrusted nginx&#10;EXPOSE 8080&#10;WORKDIR /app"></textarea></div>
+                    <div class="form-group"><label>Ankfile</label><textarea id="stack-ankfile" rows="8" style="width:100%;background:var(--bg-primary);color:var(--text-primary);border:1px solid var(--border);border-radius:8px;padding:10px;font-family:'JetBrains Mono',monospace;font-size:12px;resize:vertical" placeholder="FROM alpine-3.20&#10;PASSWD ank123&#10;RUN apk add --allow-untrusted nginx&#10;EXPOSE 8080&#10;WORKDIR /app"></textarea></div>
                 </div>
                 <div class="form-group"><label>Instances</label><input type="number" id="stack-instances" value="1" min="1" max="10"></div>
                 <div class="form-group"><label>LB Port (30000-39999)</label><input type="number" id="stack-lb-port" value="30000" min="30000" max="39999"></div>
