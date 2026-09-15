@@ -136,14 +136,35 @@ document.getElementById('mobile-more-btn')?.addEventListener('click', () => {
 });
 
 /* ═══════ LOGIN ═══════ */
+const loginUsername = document.getElementById('login-username');
+const loginPassGroup = document.getElementById('login-pass-group');
+const loginPassword = document.getElementById('login-password');
+
+loginUsername.addEventListener('input', () => {
+  if (loginUsername.value.length > 0) {
+    loginPassGroup.classList.remove('hidden');
+    loginPassword.focus();
+  }
+});
+loginUsername.addEventListener('keydown', e => {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    if (loginUsername.value.length > 0) {
+      loginPassGroup.classList.remove('hidden');
+      loginPassword.focus();
+    }
+  }
+});
+
 document.getElementById('login-form').addEventListener('submit', async e => {
   e.preventDefault();
-  const pass = document.getElementById('login-password').value;
-  const btn = document.getElementById('login-btn');
+  if (loginPassGroup.classList.contains('hidden')) return;
+  const user = loginUsername.value;
+  const pass = loginPassword.value;
   try {
     const res = await fetch(`${API}/auth/login`, {
       method: 'POST', headers: { 'Content-Type': 'application/json', 'X-ANK-Client': 'ank-panel' },
-      body: JSON.stringify({ password: pass })
+      body: JSON.stringify({ username: user, password: pass })
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Login failed');
@@ -152,7 +173,7 @@ document.getElementById('login-form').addEventListener('submit', async e => {
     isLoggedIn = true;
     showApp();
   } catch (e) {
-    toast(e.message || 'Invalid password', 'error');
+    toast(e.message || 'Invalid credentials', 'error');
   }
 });
 
