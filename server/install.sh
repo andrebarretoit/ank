@@ -464,9 +464,17 @@ echo "127.0.0.1 localhost" > "$ANKFS/etc/hosts"
 # --- STEP 3: openssh in ankfs ---
 log STEP "3/4 > openssh..."
 echo "[ANK-INSTALL] STEP 3/4: Configuring openssh..."
-if [ -f "$ANKFS/usr/bin/apk" ]; then
+# Setup DNS + mount proc for apk
+mkdir -p "$ANKFS/etc/apk" "$ANKFS/var/cache/apk" 2>/dev/null
+echo "nameserver 8.8.8.8" > "$ANKFS/etc/resolv.conf" 2>/dev/null
+echo "nameserver 8.8.4.4" >> "$ANKFS/etc/resolv.conf" 2>/dev/null
+echo "https://dl-cdn.alpinelinux.org/alpine/v3.20/main" > "$ANKFS/etc/apk/repositories" 2>/dev/null
+echo "https://dl-cdn.alpinelinux.org/alpine/v3.20/community" >> "$ANKFS/etc/apk/repositories" 2>/dev/null
+mount -t proc proc "$ANKFS/proc" 2>/dev/null
+# apk is at /sbin/apk on Alpine minirootfs
+if [ -f "$ANKFS/sbin/apk" ] || [ -f "$ANKFS/usr/bin/apk" ]; then
     echo "[ANK-INSTALL] Installing openssh in ankfs..."
-    chroot "$ANKFS" /usr/bin/apk add --no-cache openssh openssl 2>&1 || log WARN "openssh install failed (non-fatal)"
+    chroot "$ANKFS" /bin/sh -c "export PATH=/sbin:/usr/sbin:/bin:/usr/bin; apk add --no-cache openssh openssl bash shadow" 2>&1 || log WARN "openssh install failed (non-fatal)"
     if [ -d "$ANKFS/etc/ssh" ]; then
         sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin yes/' "$ANKFS/etc/ssh/sshd_config" 2>/dev/null
         sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication yes/' "$ANKFS/etc/ssh/sshd_config" 2>/dev/null
@@ -481,6 +489,16 @@ if [ -f "$ANKFS/usr/bin/apk" ]; then
         mkdir -p "$ANKFS/run/sshd"
         log OK "openssh configured"
     fi
+fi
+umount "$ANKFS/proc" 2>/dev/null
+
+# Install ANK shell + set root shell
+if [ -f "$ANKFS/usr/sbin/sshd" ]; then
+    cp "$SRC/server/ank-shell.sh" "$ANKFS/ank-shell.sh" 2>/dev/null
+    chmod 755 "$ANKFS/ank-shell.sh" 2>/dev/null
+    sed -i '1s|#!/system/bin/sh|#!/bin/sh|' "$ANKFS/ank-shell.sh" 2>/dev/null
+    sed -i 's|^root:.*|root:/bin/sh|' "$ANKFS/etc/passwd" 2>/dev/null
+    log OK "ank-shell installed as root shell"
 fi
 
 # Copy openssh binaries + libs to container base image

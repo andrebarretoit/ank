@@ -2377,7 +2377,11 @@ function updateNodeSelectors(nodes) {
         // Default to 'all' when manager has nodes
         sel.value = val || (hasNodes ? 'all' : 'local');
     });
-    if (hasNodes) selectedNode = 'all';
+    if (hasNodes && selectedNode === 'local') {
+        selectedNode = 'all';
+        loadContainers();
+        loadImages();
+    }
     const shellSel = document.getElementById('shell-node-selector');
     if (shellSel) {
         const val = shellSel.value;
