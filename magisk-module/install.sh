@@ -363,9 +363,9 @@ else
     log OK "Container base image saved"
 fi
 
-# --- STEP 2.5: Build ank-alpinebase-3.20 (pre-built container base with openssh/bash/busybox) ---
-log STEP "2.5/4 > Building ank-alpinebase-3.20..."
-echo "[ANK-INSTALL] STEP 2.5/4: Building ank-alpinebase-3.20..."
+# --- STEP 2.5: Build container base image ---
+log STEP "2.5/4 > Building container base image..."
+echo "[ANK-INSTALL] STEP 2.5/4: Building container base image (openssh, bash, shadow)..."
 ANKBASE="$ANK_DIR/images/ank-alpinebase-3.20"
 if [ ! -d "$ANKBASE/bin" ]; then
     IMG_DIR="$ANK_DIR/images/$BASE_IMAGE"
@@ -432,7 +432,7 @@ SSHEOF
             touch "$ANKBASE/root/.ssh/authorized_keys"
             chmod 600 "$ANKBASE/root/.ssh/authorized_keys"
             rm -rf "$ANKBASE/opt/ank" 2>/dev/null
-            log OK "ank-alpinebase-3.20 built (openssh, bash, busybox, shadow)"
+            log OK "Container base image built (openssh, bash, shadow)"
         fi
     fi
 else
@@ -461,9 +461,9 @@ echo "nameserver 8.8.8.8" > "$ANKFS/etc/resolv.conf"
 echo "nameserver 8.8.4.4" >> "$ANKFS/etc/resolv.conf"
 echo "127.0.0.1 localhost" > "$ANKFS/etc/hosts"
 
-# --- STEP 3: openssh in ankfs ---
-log STEP "3/4 > openssh..."
-echo "[ANK-INSTALL] STEP 3/4: Configuring openssh..."
+# --- STEP 3: ANK Core addons (openssh, bash, shadow) ---
+log STEP "3/4 > ANK Core addons..."
+echo "[ANK-INSTALL] STEP 3/4: Installing ANK Core addons..."
 # Setup DNS + mount proc for apk
 mkdir -p "$ANKFS/etc/apk" "$ANKFS/var/cache/apk" 2>/dev/null
 echo "nameserver 8.8.8.8" > "$ANKFS/etc/resolv.conf" 2>/dev/null
@@ -473,7 +473,7 @@ echo "https://dl-cdn.alpinelinux.org/alpine/v3.20/community" >> "$ANKFS/etc/apk/
 mount -t proc proc "$ANKFS/proc" 2>/dev/null
 # apk is at /sbin/apk on Alpine minirootfs
 if [ -f "$ANKFS/sbin/apk" ] || [ -f "$ANKFS/usr/bin/apk" ]; then
-    echo "[ANK-INSTALL] Installing openssh in ankfs..."
+    echo "[ANK-INSTALL] Installing openssh, bash, shadow in ankfs..."
     chroot "$ANKFS" /bin/sh -c "export PATH=/sbin:/usr/sbin:/bin:/usr/bin; apk add --no-cache openssh openssl bash shadow" 2>&1 || log WARN "openssh install failed (non-fatal)"
     if [ -d "$ANKFS/etc/ssh" ]; then
         sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin yes/' "$ANKFS/etc/ssh/sshd_config" 2>/dev/null
@@ -508,7 +508,7 @@ SSHEOF
             mv "$ANKFS/etc/ssh/sshd_config.tmp" "$ANKFS/etc/ssh/sshd_config"
         fi
         mkdir -p "$ANKFS/run/ankd"
-        log OK "openssh configured (port 2200)"
+        log OK "SSH configured (port 2200)"
     fi
 fi
 umount "$ANKFS/proc" 2>/dev/null
@@ -519,8 +519,9 @@ if [ -f "$ANKFS/usr/sbin/sshd" ]; then
     chmod 755 "$ANKFS/ank-shell.sh" 2>/dev/null
     sed -i '1s|#!/system/bin/sh|#!/bin/sh|' "$ANKFS/ank-shell.sh" 2>/dev/null
     sed -i 's|^root:.*|root:/bin/sh|' "$ANKFS/etc/passwd" 2>/dev/null
-    log OK "ank-shell installed as root shell"
+    log OK "ANK Shell installed"
 fi
+log OK "ANK Core addons installed"
 
 # Install ankcoreshell in ankfs
 if [ -f "$SRC/server/ankcoreshell.sh" ]; then
