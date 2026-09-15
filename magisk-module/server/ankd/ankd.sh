@@ -937,8 +937,21 @@ _ankd_daemon() {
                 _restart_counts=$(echo "$new_counts" | sed 's/^ *//')
             fi
         done
+
+        # Write health status for host-side detection
+        if [ -n "$ANK_HEALTH_FILE" ]; then
+            if [ -n "$_given_up" ]; then
+                echo "DOWN" > "$ANK_HEALTH_FILE" 2>/dev/null
+            else
+                echo "UP" > "$ANK_HEALTH_FILE" 2>/dev/null
+            fi
+        fi
+
         _ankd_sleep 3
     done
+
+    # Clean up health file on shutdown
+    [ -n "$ANK_HEALTH_FILE" ] && rm -f "$ANK_HEALTH_FILE" 2>/dev/null
 }
 
 # ============================================================

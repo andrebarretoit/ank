@@ -344,99 +344,55 @@ def get_container_stats(name):
         pass
     return {"memory_bytes": mem, "memory_limit": lim, "cpu_usage": cpu, "pids": pids}
 
-def _cgroup_has_live_pids(name):
-    """Primary liveness signal: is any PID still a member of the container's
-    cgroup ("/sys/fs/cgroup/ank/{name}/pids.current" > 0)?
-
-    This is the most robust of the three signals available to us:
-    - It's a plain read of a cgroupfs pseudo-file, which root always has
-      access to -- unlike /proc/*/cmdline (SELinux-blocked) or the marker
-      file (depends on overlayfs upperdir visibility).
-    - Every descendant process forked inside the container inherits cgroup
-      membership automatically (cgroup namespaces aren't used here), so it
-      keeps working even when the original tracked PID dies and ankd
-      respawns a service under a new PID -- the exact "PID issue" scenario
-      described for this bug.
-    Returns True/False, or None if the signal isn't available (cgroups
-    disabled for this mode, or the cgroup directory doesn't exist).
-    """
-    p = os.path.join("/sys/fs/cgroup/ank", name, "pids.current")
+def _health_file_status(name):
+    """Primary liveness signal: ankd writes 'UP' or 'DOWN' to a host-accessible
+    file outside the rootfs. This bypasses SELinux (which blocks reading files
+    inside the container's merged/ dir) and overlayfs visibility issues."""
+    health_path = os.path.join(CONTAINERS_DIR, name, "health")
     try:
-        with open(p) as f:
-            return int(f.read().strip()) > 0
+        with open(health_path, "r") as f:
+            status = f.read().strip()
+        return status == "UP"
+    except (OSError, IOError):
+        return None
+
+
+def _sshd_port_open(name):
+    """Secondary liveness signal: try to connect to the container's SSH port.
+    TCP connections from localhost are not blocked by SELinux."""
+    config = load_container_config(name)
+    if not config:
+        return None
+    port = config.get("ssh_port")
+    if not port:
+        return None
+    import socket
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(2)
+        result = s.connect_ex(("127.0.0.1", int(port)))
+        s.close()
+        return result == 0
     except (OSError, ValueError):
         return None
 
 
-def _marker_present(name):
-    """Secondary signal: host-written marker file under the container's
-    rootfs. Can go stale/invisible on overlayfs mount hiccups, so it's only
-    ever used to say "yes" -- never treated as authoritative for "no"."""
-    marker = os.path.join(CONTAINERS_DIR, name, "merged", "tmp", "ankd-running")
-    try:
-        return os.path.exists(marker)
-    except OSError:
-        return None
-
-
-def _pid_alive(pid):
-    """Tertiary signal: is the tracked PID alive? Checks /proc/<pid> first
-    (a plain stat, which survives SELinux restrictions that block reading
-    /proc/*/cmdline or /proc/*/status content), then falls back to
-    kill(pid, 0). A PermissionError from kill() still means the process
-    exists (we're just not allowed to signal it), so that counts as alive.
-    """
-    if not pid:
-        return None
-    try:
-        pid = int(pid)
-    except (TypeError, ValueError):
-        return None
-    try:
-        if os.path.isdir(f"/proc/{pid}"):
-            return True
-    except OSError:
-        pass
-    try:
-        os.kill(pid, 0)
-        return True
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    except OSError:
-        return None
-
-
 def check_container_running(name):
-    """Single best-effort snapshot combining all three signals. Any signal
-    that reports "alive" is trusted immediately (a container is running if
-    ANY evidence says so, since the signals fail independently for unrelated
-    environment reasons, not because the container died). Only reports False
-    when every signal that could actually be read said "no". If every signal
-    was unavailable, we can't tell -- assume still running rather than risk
-    a false "stopped" (requirement: never flip to stopped incorrectly).
-
-    NOTE: this is a single point-in-time check and can glitch. Callers that
-    decide whether to change a container's stored status (the /containers
-    poller, the terminal auth check) must go through should_mark_stopped()
-    instead, which debounces this across multiple polls.
-    """
-    config = load_container_config(name)
-    pid = config.get("pid") if config else None
-
-    cgroup_signal = _cgroup_has_live_pids(name)
-    if cgroup_signal:
+    """Check if a container is alive using two reliable signals:
+    1. Health file written by ankd (UP/DOWN) — most authoritative
+    2. TCP port check (sshd listening) — backup
+    Any signal saying "alive" = container is running. Only reports False
+    when both signals that could be read said "no"."""
+    health = _health_file_status(name)
+    if health:
         return True
-    marker_signal = _marker_present(name)
-    if marker_signal:
+    tcp = _sshd_port_open(name)
+    if tcp:
         return True
-    pid_signal = _pid_alive(pid)
-    if pid_signal:
-        return True
-
-    if any(signal_ is False for signal_ in (cgroup_signal, marker_signal, pid_signal)):
+    if health is False and tcp is False:
         return False
+    if health is None and tcp is None:
+        return True
     return True
 
 

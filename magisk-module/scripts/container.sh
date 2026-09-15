@@ -882,7 +882,8 @@ cmd_start() {
         [ -f "$ANKD_SRC" ] && cp "$ANKD_SRC" "$ROOTFS/usr/ankd/core/ankd.sh" 2>/dev/null
         echo "  Using ankd service manager"
         local INSTANCE_UUID=$(grep -o '"instance_uuid": *"[^"]*"' "$CONFIG" 2>/dev/null | cut -d'"' -f4)
-        CONTAINER_INIT="export PATH=/bin:/sbin:/usr/bin:/usr/sbin; ANKD_CONTAINER=$NAME ANKD_SSHD_PORT=$SSHD_PORT ANKD_INSTANCE_UUID=${INSTANCE_UUID:-$NAME} /usr/ankd/core/ankd.sh daemon"
+        local HEALTH_FILE="$CONTAINERS_DIR/$NAME/health"
+        CONTAINER_INIT="export PATH=/bin:/sbin:/usr/bin:/usr/sbin; ANKD_CONTAINER=$NAME ANKD_SSHD_PORT=$SSHD_PORT ANKD_INSTANCE_UUID=${INSTANCE_UUID:-$NAME} ANK_HEALTH_FILE=$HEALTH_FILE /usr/ankd/core/ankd.sh daemon"
     else
         # Fallback: legacy inline init
         echo "  WARN: ankd not installed, using legacy init"
@@ -1220,6 +1221,7 @@ cmd_stop() {
     # ============================================================
     echo "  Final cleanup..."
     rm -f "$CONTAINER_DIR/ank.procs"
+    rm -f "$CONTAINER_DIR/health"
 
     # Update config
     sed -i "s/\"status\": \"[^\"]*\"/\"status\": \"stopped\"/" "$CONFIG"
