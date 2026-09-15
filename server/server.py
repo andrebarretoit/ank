@@ -2531,46 +2531,14 @@ small{color:#334155}
                     _pull_status[version]["error"] = output
                     return
                 _pull_status[version]["state"] = "building"
-                alpine_dir = os.path.join(IMAGES_DIR, f"alpine-{version}")
-                ankbase_dir = os.path.join(IMAGES_DIR, f"ank-alpinebase-{version}")
-                if os.path.isdir(alpine_dir) and not os.path.isdir(ankbase_dir):
-                    _pull_status[version]["output"].append("Creating ank-alpinebase...")
-                    import shutil
-                    shutil.copytree(alpine_dir, ankbase_dir)
-                    merged = ankbase_dir
-                    _merged_write = os.path.join(merged, "etc/resolv.conf")
-                    os.makedirs(os.path.dirname(_merged_write), exist_ok=True)
-                    with open(_merged_write, "w") as f:
-                        f.write("nameserver 8.8.8.8\nnameserver 8.8.4.4\n")
-                    merged_dev = os.path.join(merged, "dev")
-                    merged_proc = os.path.join(merged, "proc")
-                    try:
-                        os.makedirs(merged_dev, exist_ok=True)
-                        os.makedirs(merged_proc, exist_ok=True)
-                        subprocess.run(["mount", "-t", "tmpfs", "-o", "size=16m", "tmpfs", merged_dev], timeout=5)
-                        subprocess.run(["mount", "-t", "proc", "proc", merged_proc], timeout=5)
-                        subprocess.run(["mknod", os.path.join(merged_dev, "null"), "c", "1", "3"], timeout=5)
-                        subprocess.run(["chmod", "666", os.path.join(merged_dev, "null")], timeout=5)
-                        subprocess.run(["mknod", os.path.join(merged_dev, "urandom"), "c", "1", "9"], timeout=5)
-                        subprocess.run(["chmod", "666", os.path.join(merged_dev, "urandom")], timeout=5)
-                        _pull_status[version]["output"].append("Installing packages (busybox, bash, openssh)...")
-                        result = subprocess.run(["chroot", merged, "/sbin/apk", "add", "--no-cache",
-                                        "busybox", "bash", "shadow", "openssh", "openssl"],
-                                       capture_output=True, text=True, timeout=120)
-                        if result.stdout:
-                            for line in result.stdout.strip().split("\n"):
-                                _pull_status[version]["output"].append(line)
-                        if result.returncode != 0 and result.stderr:
-                            _pull_status[version]["output"].append(f"WARN: {result.stderr.strip()}")
-                    except Exception as e:
-                        _pull_status[version]["output"].append(f"WARN: {e}")
-                    finally:
-                        for m in [merged_proc, merged_dev]:
-                            try: subprocess.run(["umount", m], timeout=5)
-                            except Exception: pass
-                    with open(os.path.join(merged, ".ank-base"), "w") as f:
-                        f.write(f"ank-alpinebase-{version}\n")
-                    _pull_status[version]["output"].append("Base image ready")
+                _pull_status[version]["output"].append("Building ank-alpinebase (installing openssh, bash, openssl)...")
+                output2, code2 = run_script("container.sh", "build-base", version, timeout=300)
+                for line in output2.strip().split("\n"):
+                    _pull_status[version]["output"].append(line)
+                if code2 != 0:
+                    _pull_status[version]["state"] = "error"
+                    _pull_status[version]["error"] = output2
+                    return
                 _pull_status[version]["state"] = "done"
                 _pull_status[version]["output"].append(f"Image ank-alpinebase-{version} ready")
             except Exception as e:

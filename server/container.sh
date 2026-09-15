@@ -1620,13 +1620,14 @@ case "$CMD" in
     delete)     cmd_delete "$NAME" ;;
     list)       cmd_list ;;
     inspect)    cmd_inspect "$NAME" ;;
+    build-base) _ensure_ankbase "$NAME" ;;
     svc-list)   cmd_svc_list "$NAME" ;;
     svc-start)  cmd_svc_start "$NAME" "$3" ;;
     svc-stop)   cmd_svc_stop "$NAME" "$3" ;;
     svc-restart) cmd_svc_restart "$NAME" "$3" ;;
     svc-logs)   cmd_svc_logs "$NAME" "$3" "$4" ;;
     *)
-        echo "Usage: $0 {create|start|stop|delete|list|inspect|svc-list|svc-start|svc-stop|svc-restart|svc-logs} <name> [args]"
+        echo "Usage: $0 {create|start|stop|delete|list|inspect|build-base|svc-list|svc-start|svc-stop|svc-restart|svc-logs} <name> [args]"
         exit 1
         ;;
 esac
