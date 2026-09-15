@@ -392,17 +392,15 @@ async function loadAll() {
         renderContainers(containers, 'local');
         renderImages(images, 'local');
         populateImageSelect(images);
-        renderDashboardContainers(containers);
+        renderDashboardContainers();
         renderDashboardNodes();
         loadTemplates();
         loadStacks();
         loadBackups();
         loadNodes();
         loadPairingRequests();
-        if (selectedNode !== 'local') {
-            loadContainers();
-            loadImages();
-        }
+        loadContainers();
+        loadImages();
     } catch (e) { console.error('Load failed:', e); }
 }
 
@@ -429,7 +427,7 @@ function renderContainers(containers, nodeId) {
         const stopAction = isRemote ? `remoteContainerAction('${itemNode}','${esc(name)}','stop')` : `stopContainer('${esc(name)}')`;
         const restartAction = isRemote ? `remoteContainerAction('${itemNode}','${esc(name)}','restart')` : `restartContainer('${esc(name)}')`;
         const deleteAction = isRemote ? `remoteDeleteContainer('${itemNode}','${esc(name)}')` : `deleteContainer('${esc(name)}')`;
-        const clickAction = isRemote ? `onclick="event.stopPropagation(); showRemoteContainerDetail('${itemNode}','${esc(name)}')"` : `onclick="event.stopPropagation(); showContainerDetail('${esc(name)}')"`;
+        const clickAction = `onclick="event.stopPropagation(); showContainerDetail('${esc(name)}','${itemNode}')"`;
         const nodeLabel = c.node_alias || (itemNode === 'local' ? 'local' : itemNode.slice(0, 8));
         const nodeTag = `<span class="status-badge" style="font-size:10px;background:${isRemote ? 'var(--accent)' : 'var(--text-muted)'};color:#fff;margin-left:6px">${esc(nodeLabel)}</span>`;
         return `
@@ -453,9 +451,6 @@ function renderContainers(containers, nodeId) {
             </div>
         </div>`;
     }).join('');
-    list.querySelectorAll('.container-card[data-node="local"]').forEach(card => {
-        card.addEventListener('click', () => showContainerDetail(card.dataset.name));
-    });
 }
 
 function renderImages(images, nodeId) {
@@ -514,9 +509,13 @@ function populateImageSelect(images) {
     sel.innerHTML = baseOptions + templateOptions;
 }
 
-function renderDashboardContainers(containers) {
+async function renderDashboardContainers() {
     const el = document.getElementById('dashboard-containers');
     if (!el) return;
+    let containers = [];
+    try {
+        containers = await api('GET', '/containers/all');
+    } catch (e) {}
     if (!containers || containers.length === 0) {
         el.innerHTML = '<div class="empty-state"><p style="font-size:13px;color:var(--text-muted)">No containers created yet</p></div>';
         return;
@@ -527,16 +526,22 @@ function renderDashboardContainers(containers) {
         const statusClass = isBuilding ? 'status-building' : isFailed ? 'status-failed' : `status-${c.status}`;
         const statusText = isBuilding ? 'Building...' : isFailed ? 'Failed' : c.status === 'starting' ? 'Starting...' : c.status === 'stopping' ? 'Stopping...' : c.status;
         const disabled = isBuilding || isFailed || c.status === 'starting' || c.status === 'stopping';
+        const node = c.node || 'local';
+        const nodeLabel = c.node_alias || (node === 'local' ? '' : node.slice(0,8));
+        const nodeTag = nodeLabel ? `<span class="status-badge" style="font-size:9px;background:var(--accent);color:#fff;margin-left:4px">${esc(nodeLabel)}</span>` : '';
+        const isRemote = node !== 'local';
+        const startAction = isRemote ? `remoteContainerAction('${node}','${esc(c.name)}','start')` : `startContainer('${esc(c.name)}')`;
+        const stopAction = isRemote ? `remoteContainerAction('${node}','${esc(c.name)}','stop')` : `stopContainer('${esc(c.name)}')`;
         return `
-        <div class="dash-conn-item ${isBuilding ? 'building' : ''}" onclick="showContainerDetail('${c.name}')" style="${isBuilding ? 'opacity:0.7' : ''}">
+        <div class="dash-conn-item ${isBuilding ? 'building' : ''}" onclick="showContainerDetail('${esc(c.name)}','${node}')" style="${isBuilding ? 'opacity:0.7' : ''}">
             <i class="bi bi-box-seam" style="color:var(--accent);font-size:16px"></i>
-            <span class="dash-conn-name">${esc(c.name)}</span>
+            <span class="dash-conn-name">${esc(c.name)}${nodeTag}</span>
             <span class="dash-conn-ip">${esc(c.ip_address || '-')}</span>
             <span class="status-badge ${statusClass}">${isBuilding ? '<i class="bi bi-arrow-repeat spin"></i> ' : ''}${statusText}</span>
             <div class="dash-conn-actions">
                 ${c.status === 'running' || c.status === 'starting'
-                    ? `<button class="btn btn-warning btn-sm" ${disabled ? 'disabled' : ''} onclick="event.stopPropagation(); stopContainer('${c.name}')"><i class="bi bi-stop-fill"></i></button>`
-                    : `<button class="btn btn-success btn-sm" ${disabled ? 'disabled' : ''} onclick="event.stopPropagation(); startContainer('${c.name}')"><i class="bi bi-play-fill"></i></button>`
+                    ? `<button class="btn btn-warning btn-sm" ${disabled ? 'disabled' : ''} onclick="event.stopPropagation(); ${stopAction}"><i class="bi bi-stop-fill"></i></button>`
+                    : `<button class="btn btn-success btn-sm" ${disabled ? 'disabled' : ''} onclick="event.stopPropagation(); ${startAction}"><i class="bi bi-play-fill"></i></button>`
                 }
             </div>
         </div>`;
@@ -562,7 +567,7 @@ async function renderDashboardNodes() {
 
         // Show/hide cluster section + populate
         if (clusterSection) {
-            if (isManager && cluster) {
+            if (isManager && nodes.length && cluster) {
                 clusterSection.style.display = 'block';
                 const el = (id) => document.getElementById(id);
                 const cores = cluster.cpu_cores || 0;
@@ -590,6 +595,10 @@ async function renderDashboardNodes() {
                     el('cluster-disk-label').textContent = 'Disk';
                 }
                 el('cluster-containers').textContent = `${cluster.containers_running || 0}/${cluster.containers_total || 0}`;
+                // Update top stats with cluster totals (all nodes)
+                document.getElementById('stat-total').textContent = cluster.containers_total || 0;
+                document.getElementById('stat-running').textContent = cluster.containers_running || 0;
+                document.getElementById('stat-stopped').textContent = (cluster.containers_total || 0) - (cluster.containers_running || 0);
             } else {
                 clusterSection.style.display = 'none';
             }
@@ -830,54 +839,74 @@ async function deleteContainer(name) {
 let currentContainer = null;
 let detailLogTimer = null;
 
-async function showContainerDetail(name) {
-    // Clean up previous log timer
+async function showContainerDetail(name, nodeId) {
     if (detailLogTimer) { clearInterval(detailLogTimer); detailLogTimer = null; }
     try {
-        const [c, logs] = await Promise.all([api('GET', `/containers/${name}`), api('GET', `/containers/${name}/logs`)]);
+        let c, logs;
+        const isRemote = nodeId && nodeId !== 'local';
+        if (isRemote) {
+            c = await api('GET', `/nodes/${encodeURIComponent(nodeId)}/containers/${encodeURIComponent(name)}`);
+            logs = { logs: c.log || '' };
+        } else {
+            [c, logs] = await Promise.all([api('GET', `/containers/${name}`), api('GET', `/containers/${name}/logs`)]);
+        }
         currentContainer = c;
+        currentContainer._nodeId = nodeId || 'local';
         const isBuilding = c.status === 'building';
         const isFailed = c.status === 'failed';
         const isTransient = isBuilding || isFailed || c.status === 'starting' || c.status === 'stopping';
 
         document.getElementById('detail-name').textContent = c.name;
-
         const statusClass = isBuilding ? 'status-building' : isFailed ? 'status-failed' : `status-${c.status}`;
         const statusText = isBuilding ? 'Building...' : isFailed ? 'Failed' : c.status === 'starting' ? 'Starting...' : c.status === 'stopping' ? 'Stopping...' : c.status;
         document.getElementById('detail-status').textContent = statusText;
         document.getElementById('detail-status').className = `status-badge ${statusClass}`;
 
-        // Show port warning if present
-        const portWarningEl = document.getElementById('detail-port-warning');
-        if (portWarningEl) {
-            if (c.port_warning) {
-                portWarningEl.textContent = c.port_warning;
-                portWarningEl.style.display = '';
-            } else {
-                portWarningEl.style.display = 'none';
-            }
-        }
-
         document.getElementById('detail-ip').textContent = c.ip_address || '-';
         document.getElementById('detail-image').textContent = c.template_name || c.image || '-';
+        const nodeStat = document.getElementById('detail-node-stat');
+        if (isRemote) {
+            nodeStat.style.display = '';
+            document.getElementById('detail-node').textContent = c.node_alias || nodeId.slice(0,8);
+        } else {
+            nodeStat.style.display = 'none';
+        }
         document.getElementById('detail-mode').textContent = c.mode || '-';
         document.getElementById('detail-pid').textContent = c.pid || '-';
         document.getElementById('detail-memory').textContent = c.resources?.memory_limit || '-';
         document.getElementById('detail-cpu').textContent = c.resources?.cpu_limit_percent ? c.resources.cpu_limit_percent + '%' : '-';
 
         const logText = typeof logs.logs === 'string' ? logs.logs : (Array.isArray(logs.logs) ? logs.logs.join('\n') : '');
-        document.getElementById('detail-log-output').textContent = logText || (isBuilding ? 'Container is being built... Packages are being installed.' : 'No logs available');
+        document.getElementById('detail-log-output').textContent = logText || (isBuilding ? 'Container is being built...' : 'No logs available');
 
-        const running = c.status === 'running' || c.status === 'starting';
-        const stopped = c.status === 'stopped' || c.status === 'stopping';
-        document.getElementById('detail-start').disabled = running || isBuilding || isFailed;
-        document.getElementById('detail-stop').disabled = stopped || isBuilding || isFailed;
-        document.getElementById('detail-restart').disabled = isTransient;
-        document.getElementById('detail-delete').disabled = running || isBuilding;
-        document.getElementById('detail-start').onclick = () => startContainer(name);
-        document.getElementById('detail-stop').onclick = () => stopContainer(name);
-        document.getElementById('detail-restart').onclick = () => restartContainer(name);
-        document.getElementById('detail-delete').onclick = () => deleteContainer(name);
+        const actionsEl = document.getElementById('detail-actions');
+        if (isRemote) {
+            actionsEl.innerHTML = `
+                ${c.status === 'running' || c.status === 'starting'
+                    ? `<button class="btn btn-warning btn-sm" onclick="remoteContainerAction('${nodeId}','${esc(name)}','stop')"><i class="bi bi-stop-fill"></i> Stop</button>`
+                    : `<button class="btn btn-success btn-sm" onclick="remoteContainerAction('${nodeId}','${esc(name)}','start')"><i class="bi bi-play-fill"></i> Start</button>`}
+                <button class="btn btn-primary btn-sm" onclick="remoteContainerAction('${nodeId}','${esc(name)}','restart')"><i class="bi bi-arrow-repeat"></i> Restart</button>
+                <button class="btn btn-danger btn-sm" onclick="remoteDeleteContainer('${nodeId}','${esc(name)}')"><i class="bi bi-trash3"></i> Delete</button>
+            `;
+        } else {
+            actionsEl.innerHTML = `
+                <button id="detail-start" class="btn btn-success btn-sm"><i class="bi bi-play-fill"></i> Start</button>
+                <button id="detail-stop" class="btn btn-warning btn-sm"><i class="bi bi-stop-fill"></i> Stop</button>
+                <button id="detail-restart" class="btn btn-primary btn-sm"><i class="bi bi-arrow-repeat"></i> Restart</button>
+                <button id="detail-delete" class="btn btn-danger btn-sm"><i class="bi bi-trash3"></i> Delete</button>
+            `;
+            const running = c.status === 'running' || c.status === 'starting';
+            const stopped = c.status === 'stopped' || c.status === 'stopping';
+            document.getElementById('detail-start').disabled = running || isBuilding || isFailed;
+            document.getElementById('detail-stop').disabled = stopped || isBuilding || isFailed;
+            document.getElementById('detail-restart').disabled = isTransient;
+            document.getElementById('detail-delete').disabled = running || isBuilding;
+            document.getElementById('detail-start').onclick = () => startContainer(name);
+            document.getElementById('detail-stop').onclick = () => stopContainer(name);
+            document.getElementById('detail-restart').onclick = () => restartContainer(name);
+            document.getElementById('detail-delete').onclick = () => deleteContainer(name);
+        }
+
         document.getElementById('detail-autostart').checked = c.autostart || false;
         document.getElementById('detail-mem-limit').value = c.resources?.memory_limit || '256M';
         document.getElementById('detail-cpu-limit').value = c.resources?.cpu_limit_percent || 50;
@@ -946,14 +975,12 @@ async function showContainerDetail(name) {
                     const updated = await api('GET', `/containers/${name}`);
                     if (updated.status !== 'building' && updated.status !== 'starting') {
                         clearInterval(pollBuilding);
-                        loadAll();
-                        showContainerDetail(name);
+                        showContainerDetail(name, nodeId);
                     }
                 } catch (e) { clearInterval(pollBuilding); }
             }, 3000);
         }
 
-        // Poll logs in real-time while modal is open
         const startDetailLogPoll = () => {
             if (detailLogTimer) return;
             detailLogTimer = setInterval(async () => {
@@ -961,7 +988,13 @@ async function showContainerDetail(name) {
                     if (!document.getElementById('detail-modal') || document.getElementById('detail-modal').classList.contains('hidden')) {
                         clearInterval(detailLogTimer); detailLogTimer = null; return;
                     }
-                    const logs = await api('GET', `/containers/${name}/logs`);
+                    let logs;
+                    if (isRemote) {
+                        const updated = await api('GET', `/nodes/${encodeURIComponent(nodeId)}/containers/${encodeURIComponent(name)}`);
+                        logs = { logs: updated.log || '' };
+                    } else {
+                        logs = await api('GET', `/containers/${name}/logs`);
+                    }
                     const logText = typeof logs.logs === 'string' ? logs.logs : (Array.isArray(logs.logs) ? logs.logs.join('\n') : '');
                     const el = document.getElementById('detail-log-output');
                     if (el) el.textContent = logText || 'No logs available';
@@ -2372,43 +2405,12 @@ async function loadNodeDetail(nodeId) {
 }
 
 /* Node selectors for containers, images, shell */
-let selectedNode = 'local';
+let selectedNode = 'all';
 
 function updateNodeSelectors(nodes) {
     const onlineNodes = (nodes || []).filter(n => n.status === 'online');
     const hasNodes = onlineNodes.length > 0;
-    const unifiedSelectors = ['container-node-selector', 'image-node-selector', 'stack-node-selector'];
-    unifiedSelectors.forEach(id => {
-        const sel = document.getElementById(id);
-        if (!sel) return;
-        const val = sel.value;
-        sel.innerHTML = '<option value="all">All Nodes</option><option value="local">Local</option>';
-        onlineNodes.forEach(n => {
-            const opt = document.createElement('option');
-            opt.value = n.id;
-            opt.textContent = n.alias || n.ip;
-            sel.appendChild(opt);
-        });
-        // Always default to 'all'
-        sel.value = val || 'all';
-    });
-    if (hasNodes && selectedNode === 'local') {
-        selectedNode = 'all';
-        loadContainers();
-        loadImages();
-    }
-    const shellSel = document.getElementById('shell-node-selector');
-    if (shellSel) {
-        const val = shellSel.value;
-        shellSel.innerHTML = '<option value="local">Local</option>';
-        (nodes || []).filter(n => n.status === 'online').forEach(n => {
-            const opt = document.createElement('option');
-            opt.value = n.id;
-            opt.textContent = n.alias || n.ip;
-            shellSel.appendChild(opt);
-        });
-        shellSel.value = val || 'local';
-    }
+    selectedNode = 'all';
     const createModalSel = document.getElementById('container-target-node');
     if (createModalSel) {
         const val = createModalSel.value;
@@ -2423,86 +2425,37 @@ function updateNodeSelectors(nodes) {
     }
 }
 
-function onContainerNodeChange() {
-    selectedNode = document.getElementById('container-node-selector')?.value || 'local';
-    loadContainers();
-}
+function onContainerNodeChange() {}
 
-function onImageNodeChange() {
-    selectedNode = document.getElementById('image-node-selector')?.value || 'local';
-    loadImages();
-}
+function onImageNodeChange() {}
 
-let selectedStackNode = 'local';
-function onStackNodeChange() {
-    selectedStackNode = document.getElementById('stack-node-selector')?.value || 'local';
-    loadStacks();
-}
+let selectedStackNode = 'all';
+function onStackNodeChange() {}
 
 async function loadContainers() {
-    if (selectedNode === 'local') {
-        try {
-            const containers = await api('GET', '/containers');
-            renderContainers(containers, 'local');
-            renderDashboardContainers(containers);
-            populateImageSelect(await api('GET', '/images'));
-        } catch (e) {}
-        return;
-    }
-    if (selectedNode === 'all') {
-        try {
-            const containers = await api('GET', '/containers/all');
-            renderContainers(Array.isArray(containers) ? containers : [], 'all');
-        } catch (e) {
-            renderContainers([], 'all');
-        }
-        return;
-    }
     try {
-        const containers = await api('GET', `/nodes/${encodeURIComponent(selectedNode)}/containers`);
-        renderContainers(Array.isArray(containers) ? containers : [], selectedNode);
+        const containers = await api('GET', '/containers/all');
+        renderContainers(Array.isArray(containers) ? containers : [], 'all');
     } catch (e) {
-        renderContainers([], selectedNode);
+        renderContainers([], 'all');
     }
+    return;
 }
 
 async function loadImages() {
     const localCard = document.getElementById('local-images-transfer-card');
     const sectionTitle = document.getElementById('images-section-title');
-    if (selectedNode === 'local') {
-        if (localCard) localCard.style.display = 'none';
-        if (sectionTitle) sectionTitle.textContent = 'Downloaded Images';
-        try {
-            const images = await api('GET', '/images');
-            renderImages(images, 'local');
-            populateImageSelect(images);
-        } catch (e) {}
-        return;
-    }
-    if (selectedNode === 'all') {
-        if (localCard) localCard.style.display = 'none';
-        if (sectionTitle) sectionTitle.textContent = 'Images (All Nodes)';
-        try {
-            const images = await api('GET', '/images/all');
-            renderImages(Array.isArray(images) ? images : [], 'all');
-        } catch (e) {
-            renderImages([], 'all');
-        }
-        return;
-    }
-    if (sectionTitle) sectionTitle.textContent = 'Remote Images';
-    if (localCard) localCard.style.display = 'block';
+    if (localCard) localCard.style.display = 'none';
+    if (sectionTitle) sectionTitle.textContent = 'Images (All Nodes)';
     try {
-        const remoteImages = await api('GET', `/nodes/${encodeURIComponent(selectedNode)}/images`);
-        renderImages(Array.isArray(remoteImages) ? remoteImages : [], selectedNode);
+        const images = await api('GET', '/images/all');
+        renderImages(Array.isArray(images) ? images : [], 'all');
+        populateImageSelect(Array.isArray(images) ? images : []);
     } catch (e) {
-        renderImages([], selectedNode);
+        renderImages([], 'all');
     }
-    try {
-        const localImages = await api('GET', '/images');
-        renderLocalImagesForTransfer(localImages);
-    } catch (e) {}
 }
+
 
 function onShellNodeChange() {
     const val = document.getElementById('shell-node-selector')?.value || 'local';
@@ -2516,33 +2469,6 @@ async function remoteContainerAction(nodeId, containerName, action) {
         toast(`Container ${action} sent`, 'success');
         setTimeout(() => loadContainers(), 1000);
     } catch (e) { toast(`Failed: ${e.message}`, 'error'); }
-}
-
-async function showRemoteContainerDetail(nodeId, name) {
-    try {
-        const c = await api('GET', `/nodes/${encodeURIComponent(nodeId)}/containers/${encodeURIComponent(name)}`);
-        if (!c) { toast('Container not found', 'warning'); return; }
-        const isRunning = c.status === 'running';
-        const detail = document.getElementById('detail-panel');
-        document.getElementById('detail-title').textContent = c.name || name;
-        document.getElementById('detail-status').textContent = c.status || '-';
-        document.getElementById('detail-status').className = `status-badge status-${c.status}`;
-        document.getElementById('detail-ip').textContent = c.ip_address || '-';
-        document.getElementById('detail-image').textContent = c.template_name || c.image || '-';
-        document.getElementById('detail-node').textContent = c.node_alias || nodeId.slice(0,8);
-        document.getElementById('detail-created').textContent = c.created || '-';
-        document.getElementById('detail-ssh-port').textContent = c.ssh_port || '-';
-        const actionsEl = document.getElementById('detail-actions');
-        actionsEl.innerHTML = `
-            ${isRunning
-                ? `<button class="btn btn-warning" onclick="remoteContainerAction('${nodeId}','${esc(name)}','stop')"><i class="bi bi-stop-fill"></i> Stop</button>`
-                : `<button class="btn btn-success" onclick="remoteContainerAction('${nodeId}','${esc(name)}','start')"><i class="bi bi-play-fill"></i> Start</button>`}
-            <button class="btn btn-primary" onclick="remoteContainerAction('${nodeId}','${esc(name)}','restart')"><i class="bi bi-arrow-repeat"></i> Restart</button>
-            <button class="btn btn-danger" onclick="remoteDeleteContainer('${nodeId}','${esc(name)}')"><i class="bi bi-trash"></i> Delete</button>
-        `;
-        document.getElementById('detail-logs').textContent = c.log || '(logs unavailable for remote containers)';
-        showPanel('detail');
-    } catch (e) { toast(`Failed to load remote container: ${e.message}`, 'error'); }
 }
 
 async function remoteDeleteContainer(nodeId, containerName) {

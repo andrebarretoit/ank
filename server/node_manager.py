@@ -186,6 +186,7 @@ class NodeManager:
                     config["mem_total_gb"] = round(total_kb / (1024 * 1024), 2)
                     config["mem_used_gb"] = round(used_kb / (1024 * 1024), 2)
                     config["mem_percent"] = round(used_kb / total_kb * 100, 1)
+                config["cpu_cores"] = info.get("cpu_cores", 0)
                 if info.get("device_model"):
                     config["device_model"] = info.get("device_model")
                 if info.get("kernel"):

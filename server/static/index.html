@@ -191,11 +191,9 @@
                 <div class="page-header">
                     <h2><i class="bi bi-grid-3x3-gap"></i> Containers</h2>
                     <div style="display:flex;gap:8px;align-items:center">
-                        <select id="container-node-selector" class="btn btn-ghost btn-sm" onchange="onContainerNodeChange()">
-                            <option value="local">Local</option>
-                        </select>
                         <button id="create-btn" class="btn btn-primary"><i class="bi bi-plus-lg"></i> New Container</button>
                     </div>
+                </div>
                 </div>
                 <div id="containers-list" class="container-list">
                     <div class="empty-state"><i class="bi bi-box-seam" style="font-size:48px;color:var(--text-muted)"></i><p>No containers yet</p></div>
@@ -207,9 +205,6 @@
                 <div class="page-header">
                     <h2><i class="bi bi-hdd-stack"></i> Images</h2>
                     <div style="display:flex;gap:8px;align-items:center">
-                        <select id="image-node-selector" class="btn btn-ghost btn-sm" onchange="onImageNodeChange()">
-                            <option value="local">Local</option>
-                        </select>
                         <button id="pull-btn" class="btn btn-primary"><i class="bi bi-cloud-download"></i> Pull Alpine</button>
                     </div>
                 </div>
@@ -271,10 +266,6 @@ EXPOSE 8080</textarea>
                 <div class="page-header">
                     <h2><i class="bi bi-stack"></i> Stacks</h2>
                     <div style="display:flex;gap:8px;align-items:center">
-                        <select id="stack-node-selector" class="btn btn-ghost btn-sm" onchange="onStackNodeChange()">
-                            <option value="all">All Nodes</option>
-                            <option value="local">Local</option>
-                        </select>
                         <button class="btn btn-primary" onclick="showCreateStackModal()"><i class="bi bi-plus-circle"></i> New Stack</button>
                     </div>
                 </div>
@@ -535,12 +526,7 @@ EXPOSE 8080</textarea>
                         <div class="detail-stat"><span class="detail-stat-label">Memory</span><span id="detail-memory" class="detail-stat-value">-</span></div>
                         <div class="detail-stat"><span class="detail-stat-label">CPU</span><span id="detail-cpu" class="detail-stat-value">-</span></div>
                     </div>
-                    <div class="detail-actions">
-                        <button id="detail-start" class="btn btn-success btn-sm"><i class="bi bi-play-fill"></i> Start</button>
-                        <button id="detail-stop" class="btn btn-warning btn-sm"><i class="bi bi-stop-fill"></i> Stop</button>
-                        <button id="detail-restart" class="btn btn-primary btn-sm"><i class="bi bi-arrow-repeat"></i> Restart</button>
-                        <button id="detail-delete" class="btn btn-danger btn-sm"><i class="bi bi-trash3"></i> Delete</button>
-                    </div>
+                    <div class="detail-actions" id="detail-actions"></div>
                     <div id="ssh-hint" class="ssh-hint" style="display:none;">
                         <div class="ssh-hint-header"><i class="bi bi-terminal"></i> SSH Access</div>
                         <code id="ssh-hint-cmd" class="ssh-hint-cmd">ssh root@0.0.0.0:0</code>

@@ -5322,11 +5322,15 @@ small{color:#334155}
 
         # Node data + aggregated cluster stats
         is_manager = False
-        cluster_cpu = 0.0
+        cluster_cpu_sum = 0.0
+        cluster_cpu_count = 0
+        cluster_cores = 0
         cluster_ram_used = 0
         cluster_ram_total = 0
+        cluster_ram_pct_sum = 0.0
         cluster_disk_used = 0
         cluster_disk_total = 0
+        cluster_disk_pct_sum = 0.0
         cluster_containers = local_containers
         cluster_containers_running = local_running
         cluster_stacks = local_stacks
@@ -5334,10 +5338,15 @@ small{color:#334155}
 
         try:
             nodes = nm.list_nodes() if nm else []
-            if nodes:
-                is_manager = True
+            is_manager = nm is not None
             for n in nodes:
                 is_online = n.get("status") == "online"
+                n_cores = n.get("cpu_cores", 0) if is_online else 0
+                n_cpu = n.get("cpu_percent", 0) if is_online else 0
+                n_ram_total = n.get("mem_total_gb", 0) if is_online else 0
+                n_ram_used = n.get("mem_used_gb", 0) if is_online else 0
+                n_disk_total = n.get("disk_total_gb", 0) if is_online else 0
+                n_disk_used = n.get("disk_used_gb", 0) if is_online else 0
                 nodes_list.append({
                     "id": n.get("id", ""),
                     "hostname": n.get("hostname", ""),
@@ -5345,19 +5354,26 @@ small{color:#334155}
                     "status": n.get("status", "unknown"),
                     "containers": n.get("containers", 0),
                     "containers_running": n.get("containers_running", 0),
-                    "cpu_percent": n.get("cpu_percent", 0) if is_online else 0,
-                    "mem_used_gb": n.get("mem_used_gb", 0) if is_online else 0,
-                    "mem_total_gb": n.get("mem_total_gb", 0) if is_online else 0,
-                    "disk_used_gb": n.get("disk_used_gb", 0) if is_online else 0,
-                    "disk_total_gb": n.get("disk_total_gb", 0) if is_online else 0,
+                    "cpu_cores": n_cores,
+                    "cpu_percent": n_cpu,
+                    "mem_used_gb": n_ram_used,
+                    "mem_total_gb": n_ram_total,
+                    "disk_used_gb": n_disk_used,
+                    "disk_total_gb": n_disk_total,
                     "stacks_count": n.get("stacks_count", 0) if is_online else 0,
                 })
                 if is_online:
-                    cluster_cpu += n.get("cpu_percent", 0) or 0
-                    cluster_ram_used += n.get("mem_used_gb", 0) or 0
-                    cluster_ram_total += n.get("mem_total_gb", 0) or 0
-                    cluster_disk_used += n.get("disk_used_gb", 0) or 0
-                    cluster_disk_total += n.get("disk_total_gb", 0) or 0
+                    cluster_cores += n_cores
+                    cluster_cpu_sum += n_cpu
+                    cluster_cpu_count += 1
+                    cluster_ram_used += n_ram_used
+                    cluster_ram_total += n_ram_total
+                    if n_ram_total > 0:
+                        cluster_ram_pct_sum += (n_ram_used / n_ram_total) * 100
+                    cluster_disk_used += n_disk_used
+                    cluster_disk_total += n_disk_total
+                    if n_disk_total > 0:
+                        cluster_disk_pct_sum += (n_disk_used / n_disk_total) * 100
                     cluster_containers += n.get("containers", 0) or 0
                     cluster_containers_running += n.get("containers_running", 0) or 0
                     cluster_stacks += n.get("stacks_count", 0) or 0
@@ -5368,17 +5384,45 @@ small{color:#334155}
         local_cpu = _cpu_usage_cache
         local_ram_used = 0
         local_ram_total = 0
+        local_cores = 0
+        try:
+            with open("/proc/stat", "r") as f:
+                for line in f:
+                    if line.startswith("processor"):
+                        local_cores += 1
+        except Exception:
+            pass
         try:
             with open("/proc/meminfo", "r") as f:
                 for line in f:
                     parts = line.split()
                     if parts[0] == "MemTotal:":
-                        local_ram_total = int(parts[1]) // 1024  # MB
+                        local_ram_total = int(parts[1]) // 1024
                     elif parts[0] == "MemAvailable:":
                         local_ram_used = local_ram_total - (int(parts[1]) // 1024)
         except Exception:
             pass
         disk_info = _get_disk_usage()
+
+        # Cluster averages
+        cluster_cores += local_cores
+        local_ram_used_gb = local_ram_used / 1024.0
+        local_ram_total_gb = local_ram_total / 1024.0
+        cluster_ram_used += local_ram_used_gb
+        cluster_ram_total += local_ram_total_gb
+        cluster_disk_used += disk_info.get("used", 0)
+        cluster_disk_total += disk_info.get("total", 0)
+        if local_ram_total > 0:
+            cluster_ram_pct_sum += (local_ram_used / local_ram_total) * 100
+        cluster_cpu_count += 1
+        cluster_cpu_sum += local_cpu
+        if disk_info.get("total", 0) > 0:
+            cluster_disk_pct_sum += (disk_info.get("used", 0) / disk_info.get("total", 1)) * 100
+
+        node_count = max(cluster_cpu_count, 1)
+        cluster_avg_cpu = round(cluster_cpu_sum / node_count, 1)
+        cluster_avg_ram_pct = round(cluster_ram_pct_sum / node_count, 1) if cluster_cpu_count > 0 else 0
+        cluster_avg_disk_pct = round(cluster_disk_pct_sum / node_count, 1) if cluster_cpu_count > 0 else 0
 
         dashboard = {
             "is_manager": is_manager,
@@ -5387,6 +5431,7 @@ small{color:#334155}
                 "containers_running": local_running,
                 "containers_stopped": local_stopped,
                 "stacks": local_stacks,
+                "cpu_cores": local_cores,
                 "cpu_percent": local_cpu,
                 "ram_used_mb": local_ram_used,
                 "ram_total_mb": local_ram_total,
@@ -5397,11 +5442,15 @@ small{color:#334155}
                 "containers_total": cluster_containers,
                 "containers_running": cluster_containers_running,
                 "stacks": cluster_stacks,
-                "cpu_percent": round(cluster_cpu, 1),
+                "cpu_cores": cluster_cores,
+                "cpu_percent": cluster_avg_cpu,
                 "ram_used_gb": round(cluster_ram_used, 2),
                 "ram_total_gb": round(cluster_ram_total, 2),
+                "ram_percent": cluster_avg_ram_pct,
                 "disk_used_gb": round(cluster_disk_used, 2),
                 "disk_total_gb": round(cluster_disk_total, 2),
+                "disk_percent": cluster_avg_disk_pct,
+                "nodes_count": node_count,
             } if is_manager else None,
             "nodes": nodes_list,
         }

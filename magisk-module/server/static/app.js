@@ -429,7 +429,7 @@ function renderContainers(containers, nodeId) {
         const stopAction = isRemote ? `remoteContainerAction('${itemNode}','${esc(name)}','stop')` : `stopContainer('${esc(name)}')`;
         const restartAction = isRemote ? `remoteContainerAction('${itemNode}','${esc(name)}','restart')` : `restartContainer('${esc(name)}')`;
         const deleteAction = isRemote ? `remoteDeleteContainer('${itemNode}','${esc(name)}')` : `deleteContainer('${esc(name)}')`;
-        const clickAction = isRemote ? `onclick="event.stopPropagation();"` : `onclick="event.stopPropagation(); showContainerDetail('${esc(name)}')"`;
+        const clickAction = isRemote ? `onclick="event.stopPropagation(); showRemoteContainerDetail('${itemNode}','${esc(name)}')"` : `onclick="event.stopPropagation(); showContainerDetail('${esc(name)}')"`;
         const nodeLabel = c.node_alias || (itemNode === 'local' ? 'local' : itemNode.slice(0, 8));
         const nodeTag = `<span class="status-badge" style="font-size:10px;background:${isRemote ? 'var(--accent)' : 'var(--text-muted)'};color:#fff;margin-left:6px">${esc(nodeLabel)}</span>`;
         return `
@@ -565,18 +565,31 @@ async function renderDashboardNodes() {
             if (isManager && cluster) {
                 clusterSection.style.display = 'block';
                 const el = (id) => document.getElementById(id);
-                el('cluster-cpu').textContent = `${cluster.cpu_percent || 0}%`;
-                el('cluster-containers').textContent = `${cluster.containers_running || 0}/${cluster.containers_total || 0}`;
-                if (cluster.ram_total_gb > 0) {
-                    el('cluster-memory').textContent = `${cluster.ram_used_gb.toFixed(1)} / ${cluster.ram_total_gb.toFixed(1)} GB`;
+                const cores = cluster.cpu_cores || 0;
+                const avgCpu = cluster.cpu_percent || 0;
+                el('cluster-cpu').textContent = `${avgCpu}%`;
+                el('cluster-cpu-label').textContent = `${cores} cores — avg usage`;
+                const ramUsed = cluster.ram_used_gb || 0;
+                const ramTotal = cluster.ram_total_gb || 0;
+                const ramPct = cluster.ram_percent || 0;
+                if (ramTotal > 0) {
+                    el('cluster-memory').textContent = `${ramUsed.toFixed(1)} / ${ramTotal.toFixed(1)} GB`;
+                    el('cluster-memory-label').textContent = `${ramPct.toFixed(0)}% avg usage`;
                 } else {
                     el('cluster-memory').textContent = '-';
+                    el('cluster-memory-label').textContent = 'Memory';
                 }
-                if (cluster.disk_total_gb > 0) {
-                    el('cluster-disk').textContent = `${cluster.disk_used_gb.toFixed(1)} / ${cluster.disk_total_gb.toFixed(1)} GB`;
+                const diskUsed = cluster.disk_used_gb || 0;
+                const diskTotal = cluster.disk_total_gb || 0;
+                const diskPct = cluster.disk_percent || 0;
+                if (diskTotal > 0) {
+                    el('cluster-disk').textContent = `${diskUsed.toFixed(1)} / ${diskTotal.toFixed(1)} GB`;
+                    el('cluster-disk-label').textContent = `${diskPct.toFixed(0)}% avg usage`;
                 } else {
                     el('cluster-disk').textContent = '-';
+                    el('cluster-disk-label').textContent = 'Disk';
                 }
+                el('cluster-containers').textContent = `${cluster.containers_running || 0}/${cluster.containers_total || 0}`;
             } else {
                 clusterSection.style.display = 'none';
             }
@@ -1302,14 +1315,16 @@ async function deployTemplate(id, name, baseReady) {
     if (!rootPass || rootPass.length < 4) { toast('Password must be at least 4 characters', 'warning'); return; }
     try {
         if (nodeId !== 'local') {
-            toast(`Deploying ${name} as "${containerName}" on ${nodeId.slice(0,8)}...`, 'info');
+            toast(`Deploying ${name} as "${containerName}" on remote...`, 'info');
             await api('POST', `/nodes/${encodeURIComponent(nodeId)}/containers`, { name: containerName, image: id, root_password: rootPass });
+            toast(`Container "${containerName}" creation sent to remote node`, 'success');
+            setTimeout(() => loadContainers(), 2000);
         } else {
             toast(`Deploying ${name} as "${containerName}"...`, 'info');
             await api('POST', '/images/deploy', { template: id, name: containerName, root_password: rootPass });
+            pollContainerStatus(containerName, 0);
+            loadAll();
         }
-        pollContainerStatus(containerName, 0);
-        loadAll();
     } catch (e) { toast(`Failed: ${e.message}`, 'error'); }
 }
 
@@ -2374,8 +2389,8 @@ function updateNodeSelectors(nodes) {
             opt.textContent = n.alias || n.ip;
             sel.appendChild(opt);
         });
-        // Default to 'all' when manager has nodes
-        sel.value = val || (hasNodes ? 'all' : 'local');
+        // Always default to 'all'
+        sel.value = val || 'all';
     });
     if (hasNodes && selectedNode === 'local') {
         selectedNode = 'all';
@@ -2501,6 +2516,33 @@ async function remoteContainerAction(nodeId, containerName, action) {
         toast(`Container ${action} sent`, 'success');
         setTimeout(() => loadContainers(), 1000);
     } catch (e) { toast(`Failed: ${e.message}`, 'error'); }
+}
+
+async function showRemoteContainerDetail(nodeId, name) {
+    try {
+        const c = await api('GET', `/nodes/${encodeURIComponent(nodeId)}/containers/${encodeURIComponent(name)}`);
+        if (!c) { toast('Container not found', 'warning'); return; }
+        const isRunning = c.status === 'running';
+        const detail = document.getElementById('detail-panel');
+        document.getElementById('detail-title').textContent = c.name || name;
+        document.getElementById('detail-status').textContent = c.status || '-';
+        document.getElementById('detail-status').className = `status-badge status-${c.status}`;
+        document.getElementById('detail-ip').textContent = c.ip_address || '-';
+        document.getElementById('detail-image').textContent = c.template_name || c.image || '-';
+        document.getElementById('detail-node').textContent = c.node_alias || nodeId.slice(0,8);
+        document.getElementById('detail-created').textContent = c.created || '-';
+        document.getElementById('detail-ssh-port').textContent = c.ssh_port || '-';
+        const actionsEl = document.getElementById('detail-actions');
+        actionsEl.innerHTML = `
+            ${isRunning
+                ? `<button class="btn btn-warning" onclick="remoteContainerAction('${nodeId}','${esc(name)}','stop')"><i class="bi bi-stop-fill"></i> Stop</button>`
+                : `<button class="btn btn-success" onclick="remoteContainerAction('${nodeId}','${esc(name)}','start')"><i class="bi bi-play-fill"></i> Start</button>`}
+            <button class="btn btn-primary" onclick="remoteContainerAction('${nodeId}','${esc(name)}','restart')"><i class="bi bi-arrow-repeat"></i> Restart</button>
+            <button class="btn btn-danger" onclick="remoteDeleteContainer('${nodeId}','${esc(name)}')"><i class="bi bi-trash"></i> Delete</button>
+        `;
+        document.getElementById('detail-logs').textContent = c.log || '(logs unavailable for remote containers)';
+        showPanel('detail');
+    } catch (e) { toast(`Failed to load remote container: ${e.message}`, 'error'); }
 }
 
 async function remoteDeleteContainer(nodeId, containerName) {
