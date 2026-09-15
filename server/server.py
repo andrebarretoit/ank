@@ -378,10 +378,25 @@ def get_container_stats(name):
         pass
     return {"memory_bytes": mem, "memory_limit": lim, "cpu_usage": cpu, "pids": pids}
 
+def _pid_alive(name):
+    """Check if the container's main process is still alive via PID file."""
+    config = load_container_config(name)
+    if not config:
+        return None
+    pid = config.get("pid")
+    if not pid:
+        return None
+    try:
+        os.kill(int(pid), 0)
+        return True
+    except (OSError, ProcessLookupError):
+        return False
+    except (ValueError, TypeError):
+        return None
+
+
 def _health_file_status(name):
-    """Primary liveness signal: ankd writes 'UP' or 'DOWN' to a host-accessible
-    file outside the rootfs. This bypasses SELinux (which blocks reading files
-    inside the container's merged/ dir) and overlayfs visibility issues."""
+    """Health file written by ankd (UP/DOWN). Runs inside container."""
     health_path = os.path.join(CONTAINERS_DIR, name, "merged", "tmp", "ank-health")
     try:
         with open(health_path, "r") as f:
@@ -392,8 +407,7 @@ def _health_file_status(name):
 
 
 def _sshd_port_open(name):
-    """Secondary liveness signal: try to connect to the container's SSH port.
-    TCP connections from localhost are not blocked by SELinux."""
+    """TCP check: can we connect to the container's SSH port?"""
     config = load_container_config(name)
     if not config:
         return None
@@ -412,21 +426,25 @@ def _sshd_port_open(name):
 
 
 def check_container_running(name):
-    """Check if a container is alive using two reliable signals:
-    1. Health file written by ankd (UP/DOWN) — most authoritative
-    2. TCP port check (sshd listening) — backup
-    Any signal saying "alive" = container is running. Only reports False
-    when both signals that could be read said "no"."""
+    """Check if a container is alive. Priority:
+    1. PID alive (process exists) — most reliable, can't lie
+    2. Health file says UP
+    3. TCP port open
+    Any positive signal = running. Only False when PID dead AND
+    (health says DOWN OR TCP closed)."""
+    pid = _pid_alive(name)
+    if pid:
+        return True
     health = _health_file_status(name)
     if health:
         return True
     tcp = _sshd_port_open(name)
     if tcp:
         return True
-    if health is False and tcp is False:
+    # PID dead + no other signal saying alive = stopped
+    if pid is False:
         return False
-    if health is None and tcp is None:
-        return True
+    # Ambiguous: PID unknown, no other signals. Default to running.
     return True
 
 
@@ -1748,12 +1766,14 @@ small{color:#334155}
                         note_container_stopped(name)
                     else:
                         log(f"Container {name} started")
-                        cfg["status"] = "running"
-                        save_container_config(name, cfg)
-                        # Open a grace window and reset the failure counter so
-                        # the very next poll (which can land within a second
-                        # or two of this) doesn't misread a not-yet-settled
-                        # marker/cgroup as "stopped".
+                        # Re-read config — container.sh updated PID and status
+                        cfg2 = load_container_config(name)
+                        if cfg2:
+                            cfg2["status"] = "running"
+                            save_container_config(name, cfg2)
+                        else:
+                            cfg["status"] = "running"
+                            save_container_config(name, cfg)
                         note_container_started(name)
             except Exception as e:
                 log(f"ERROR: start thread {name}: {e}")
