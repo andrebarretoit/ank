@@ -541,45 +541,6 @@ class Handler(BaseHTTPRequestHandler):
 
 HTTPServer(('0.0.0.0', int(os.environ.get('ANK_PORT', '{port}'))), Handler).serve_forever()"""
 
-# ============================================================
-# S6 service definitions for templates
-# ============================================================
-
-S6_SERVICES = {
-    "nginx": {
-        "run": "#!/bin/sh\nexec nginx",
-        "finish": "#!/bin/sh\ntrue"
-    },
-    "apache": {
-        "run": "#!/bin/sh\nexec httpd -D FOREGROUND",
-        "finish": "#!/bin/sh\ntrue"
-    },
-    "php": {
-        "run": "#!/bin/sh\nexec php82-cgi -b 0.0.0.0:8000",
-        "finish": "#!/bin/sh\ntrue"
-    },
-    "node": {
-        "run": "#!/bin/sh\ncd /var/www/app && exec node server.js",
-        "finish": "#!/bin/sh\ntrue"
-    },
-    "python": {
-        "run": "#!/bin/sh\ncd /var/www/app && exec python3 server.py",
-        "finish": "#!/bin/sh\ntrue"
-    }
-}
-
-def _write_s6_service(merged, service_name):
-    """Write s6 service definitions into merged dir."""
-    import stat
-    svc_dir = os.path.join(merged, "etc/services.d", service_name)
-    os.makedirs(svc_dir, exist_ok=True)
-    if service_name in S6_SERVICES:
-        for script_name in ("run", "finish"):
-            path = os.path.join(svc_dir, script_name)
-            with open(path, "w") as f:
-                f.write(S6_SERVICES[service_name][script_name])
-            os.chmod(path, os.stat(path).st_mode | stat.S_IEXEC)
-
 def _write_portfwd(merged, container_port, protocol="tcp"):
     """Write portfwd.conf into merged dir for the container."""
     ank_dir = os.path.join(merged, "etc/ank")
@@ -587,7 +548,7 @@ def _write_portfwd(merged, container_port, protocol="tcp"):
     with open(os.path.join(ank_dir, "portfwd.conf"), "w") as f:
         f.write(f"{container_port} {protocol}\n")
 
-def _write_ank_config(merged, service, port, static_path="", s6="false"):
+def _write_ank_config(merged, service, port, static_path=""):
     """Write unified /etc/ank/config into merged dir."""
     ank_dir = os.path.join(merged, "etc/ank")
     os.makedirs(ank_dir, exist_ok=True)
@@ -595,7 +556,6 @@ def _write_ank_config(merged, service, port, static_path="", s6="false"):
         f.write(f"service={service}\n")
         f.write(f"port={port}\n")
         f.write(f"static_path={static_path}\n")
-        f.write(f"s6={s6}\n")
 
 # check_auth replaced by _check_auth() token-based authentication (see security section above)
 
@@ -2466,8 +2426,7 @@ small{color:#334155}
                 if os.path.isdir(merged):
                     _service = config.get("template", "")
                     _sp = config.get("static_path", "")
-                    _s6 = "true" if config.get("s6", False) else "false"
-                    _write_ank_config(merged, _service, str(new_port), _sp, _s6)
+                    _write_ank_config(merged, _service, str(new_port), _sp)
                     # Patch nginx.conf, httpd.conf, server.py, server.js
                     if _service == "nginx":
                         nginx_conf = os.path.join(merged, "etc/nginx/nginx.conf")
@@ -2506,8 +2465,6 @@ small{color:#334155}
             config["serves_static"] = data["serves_static"]
         if "static_path" in data:
             config["static_path"] = data["static_path"]
-        if "s6" in data:
-            config["s6"] = data["s6"]
         if "root_password" in data and data["root_password"]:
             new_pass = data["root_password"]
             if len(new_pass) < 4:
@@ -2555,8 +2512,7 @@ small{color:#334155}
             if _pm:
                 _port = str(_pm[0].get("container_port", ""))
             _sp = config.get("static_path", "")
-            _s6 = "true" if config.get("s6", False) else "false"
-            _write_ank_config(merged, _service, _port, _sp, _s6)
+            _write_ank_config(merged, _service, _port, _sp)
         self.send_json({"message": f"Container '{name}' updated"})
 
     def api_pull_image(self, data):
@@ -2597,9 +2553,9 @@ small{color:#334155}
                         subprocess.run(["chmod", "666", os.path.join(merged_dev, "null")], timeout=5)
                         subprocess.run(["mknod", os.path.join(merged_dev, "urandom"), "c", "1", "9"], timeout=5)
                         subprocess.run(["chmod", "666", os.path.join(merged_dev, "urandom")], timeout=5)
-                        _pull_status[version]["output"].append("Installing packages (busybox, bash, openssh, s6)...")
+                        _pull_status[version]["output"].append("Installing packages (busybox, bash, openssh)...")
                         result = subprocess.run(["chroot", merged, "/sbin/apk", "add", "--no-cache",
-                                        "busybox", "bash", "shadow", "openssh", "openssl", "s6"],
+                                        "busybox", "bash", "shadow", "openssh", "openssl"],
                                        capture_output=True, text=True, timeout=120)
                         if result.stdout:
                             for line in result.stdout.strip().split("\n"):
@@ -2779,8 +2735,7 @@ small{color:#334155}
             "port_mappings": [],
             "root_password": root_password,
             "template": template_id,
-            "template_name": template["name"],
-            "s6": False
+            "template_name": template["name"]
         }
         save_container_config(container_name, stub_config)
 
@@ -2853,7 +2808,6 @@ small{color:#334155}
                 _chroot('mkdir -p /etc; echo "nameserver 8.8.8.8" > /etc/resolv.conf; echo "nameserver 8.8.4.4" >> /etc/resolv.conf')
 
                 config = load_container_config(container_name)
-                _s6_enabled = config.get("s6", False) if config else False
                 if config:
                     config["template"] = template_id
                     config["template_name"] = template["name"]
@@ -2903,33 +2857,33 @@ small{color:#334155}
                     _chroot(f'mkdir -p {static_dir} /run/nginx')
                     _write_file(os.path.join(merged, static_dir.lstrip('/'), 'index.html'), ANK_NGINX_HTML)
                     _write_file(os.path.join(merged, 'etc/nginx/nginx.conf'), ANK_NGINX_CONF.replace('{port}', str(actual_port)))
-                    _write_ank_config(merged, 'nginx', actual_port, static_dir, "true" if _s6_enabled else "false")
+                    _write_ank_config(merged, 'nginx', actual_port, static_dir)
 
                 elif template_id == "apache":
                     static_dir = template["static_path"]
                     _chroot(f'mkdir -p {static_dir}')
                     _chroot(f'sed -i "s/^Listen 80/Listen {actual_port}/" /etc/apache2/httpd.conf 2>/dev/null')
                     _write_file(os.path.join(merged, static_dir.lstrip('/'), 'index.html'), ANK_APACHE_HTML)
-                    _write_ank_config(merged, 'apache', actual_port, static_dir, "true" if _s6_enabled else "false")
+                    _write_ank_config(merged, 'apache', actual_port, static_dir)
 
                 elif template_id == "php":
                     php_dir = "/var/www/php"
                     _chroot(f'mkdir -p {php_dir}')
                     _write_file(os.path.join(merged, php_dir.lstrip('/'), 'index.php'), ANK_PHP_INDEX)
-                    _write_ank_config(merged, 'php', actual_port, php_dir, "true" if _s6_enabled else "false")
+                    _write_ank_config(merged, 'php', actual_port, php_dir)
 
                 elif template_id == "node":
                     node_dir = "/var/www/app"
                     _chroot(f'mkdir -p {node_dir}')
                     _write_file(os.path.join(merged, node_dir.lstrip('/'), 'server.js'), ANK_NODE_SERVER.replace('{port}', str(actual_port)))
                     _write_file(os.path.join(merged, node_dir.lstrip('/'), 'package.json'), '{"name":"ank-node-app","version":"1.0.0","main":"server.js"}')
-                    _write_ank_config(merged, 'node', actual_port, node_dir, "true" if _s6_enabled else "false")
+                    _write_ank_config(merged, 'node', actual_port, node_dir)
 
                 elif template_id == "python":
                     py_dir = "/var/www/app"
                     _chroot(f'mkdir -p {py_dir}')
                     _write_file(os.path.join(merged, py_dir.lstrip('/'), 'server.py'), ANK_PYTHON_SERVER.replace('{port}', str(actual_port)))
-                    _write_ank_config(merged, 'python', actual_port, py_dir, "true" if _s6_enabled else "false")
+                    _write_ank_config(merged, 'python', actual_port, py_dir)
 
                 cfg = load_container_config(container_name)
                 if cfg:
@@ -3130,7 +3084,7 @@ small{color:#334155}
                             lf.write(f"OK: {output[-300:]}\n")
 
                 if cmd_line:
-                    _write_ank_config(merged, cmd_line, ports[0] if ports else "", "", "false")
+                    _write_ank_config(merged, cmd_line, ports[0] if ports else "", "")
                     log(f"Ankfile CMD: {cmd_line}")
                     with open(log_path, "a") as lf:
                         lf.write(f"CMD: {cmd_line}\n")

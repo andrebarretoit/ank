@@ -830,7 +830,6 @@ async function showContainerDetail(name) {
         renderPortMappings(c.port_mappings || []);
         document.getElementById('detail-serves-static').checked = c.serves_static || false;
         document.getElementById('detail-static-path').value = c.static_path || '';
-        document.getElementById('detail-s6').checked = c.s6 || false;
         document.getElementById('detail-container-ip').value = c.ip_address || '-';
         document.getElementById('detail-container-subnet').value = (await api('GET', '/config')).network?.subnet || '-';
         const sshHint = document.getElementById('ssh-hint');
@@ -962,8 +961,7 @@ document.getElementById('detail-settings-form')?.addEventListener('submit', asyn
                 autostart: document.getElementById('detail-autostart').checked,
                 resources: { memory_limit: document.getElementById('detail-mem-limit').value, cpu_limit_percent: parseInt(document.getElementById('detail-cpu-limit').value) },
                 serves_static: document.getElementById('detail-serves-static').checked,
-                static_path: document.getElementById('detail-static-path').value || '',
-                s6: document.getElementById('detail-s6').checked
+                static_path: document.getElementById('detail-static-path').value || ''
             };
             const newPass = document.getElementById('detail-root-password').value;
             if (newPass && newPass.length >= 4) updateData.root_password = newPass;

@@ -74,13 +74,13 @@ _ensure_ankbase() {
     [ -e "$ANKBASE/dev/urandom" ] || mknod "$ANKBASE/dev/urandom" c 1 9 2>/dev/null; chmod 666 "$ANKBASE/dev/urandom" 2>/dev/null
 
     # Install packages (stream output)
-    echo "Installing openssh, bash, busybox, shadow, openssl, s6..."
+    echo "Installing openssh, bash, busybox, shadow, openssl..."
     mount -t proc proc "$ANKBASE/proc" 2>/dev/null
     local RC=1
     local apk_output=""
     for attempt in 1 2; do
         echo "apk add attempt 2/$attempt..."
-        apk_output=$(chroot "$ANKBASE" /sbin/apk add --no-cache busybox bash shadow openssh openssl s6 2>&1)
+        apk_output=$(chroot "$ANKBASE" /sbin/apk add --no-cache busybox bash shadow openssh openssl 2>&1)
         RC=$?
         if [ $RC -eq 0 ]; then
             echo "OK: All packages installed"
@@ -129,19 +129,12 @@ SSHEOF
     touch "$ANKBASE/root/.ssh/authorized_keys" 2>/dev/null
     chmod 600 "$ANKBASE/root/.ssh/authorized_keys" 2>/dev/null
 
-    # Create s6 service directory structure
-    mkdir -p "$ANKBASE/etc/s6-overlay/s6-rc.d"
-    mkdir -p "$ANKBASE/etc/s6-overlay/scripts"
-
-    # Create default empty services dir
-    mkdir -p "$ANKBASE/etc/s6/services"
-
     # Remove server files if any
     rm -rf "$ANKBASE/opt/ank" 2>/dev/null
 
     # Verify
     if [ -e "$ANKBASE/usr/sbin/sshd" ] && [ -e "$ANKBASE/bin/bash" ]; then
-        echo "ank-alpinebase-${VERSION} built successfully (openssh, bash, busybox, shadow, s6)"
+        echo "ank-alpinebase-${VERSION} built successfully (openssh, bash, busybox, shadow)"
         return 0
     else
         echo "ERROR: ank-alpinebase-${VERSION} build incomplete"
@@ -882,7 +875,7 @@ cmd_start() {
         [ -f "$ANKD_SRC" ] && cp "$ANKD_SRC" "$ROOTFS/usr/ankd/core/ankd.sh" 2>/dev/null
         echo "  Using ankd service manager"
         local INSTANCE_UUID=$(grep -o '"instance_uuid": *"[^"]*"' "$CONFIG" 2>/dev/null | cut -d'"' -f4)
-        local HEALTH_FILE="$CONTAINERS_DIR/$NAME/health"
+        local HEALTH_FILE="/tmp/ank-health"
         CONTAINER_INIT="export PATH=/bin:/sbin:/usr/bin:/usr/sbin; ANKD_CONTAINER=$NAME ANKD_SSHD_PORT=$SSHD_PORT ANKD_INSTANCE_UUID=${INSTANCE_UUID:-$NAME} ANK_HEALTH_FILE=$HEALTH_FILE /usr/ankd/core/ankd.sh daemon"
     else
         # Fallback: legacy inline init
