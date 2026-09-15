@@ -977,17 +977,23 @@ cmd_start() {
         exit 1
     fi
 
-    # Verify PID is the actual chroot process, not a nohup wrapper
-    # Scan /proc for the real process whose root is the container rootfs
+    # Verify PID is the actual chroot process, not a transient one.
+    # Multiple processes can share this rootfs in shared_host mode (the
+    # wrapper shell, ankd.sh, and everything ankd spawns), so instead of
+    # trusting the first match of /proc/[0-9]* (shell orders lexicographically
+    # -- "10" comes before "9" -- picking an ephemeral process), collect all
+    # candidate PIDs and pick the numerically smallest: the oldest, therefore
+    # most stable, for this rootfs.
     local REAL_PID=""
+    local candidates=""
     for p_dir in /proc/[0-9]*/; do
         local p_pid=$(basename "$p_dir")
         local p_root=$(readlink "/proc/$p_pid/root" 2>/dev/null)
-        if [ "$p_root" = "$ROOTFS" ]; then
-            REAL_PID="$p_pid"
-            break
-        fi
+        [ "$p_root" = "$ROOTFS" ] && candidates="$candidates $p_pid"
     done
+    if [ -n "$candidates" ]; then
+        REAL_PID=$(printf '%s\n' $candidates | sort -n | head -1)
+    fi
     if [ -n "$REAL_PID" ] && [ "$REAL_PID" != "$PID" ]; then
         echo "  Real container PID: $REAL_PID (was wrapper PID: $PID)"
         PID="$REAL_PID"
