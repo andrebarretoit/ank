@@ -289,16 +289,25 @@ if [ "$SSH_ENABLED" = "1" ] && [ -f "$ROOTFS/usr/sbin/sshd" ]; then
     # Generate host keys if missing
     [ ! -f "$ROOTFS/etc/ssh/ssh_host_rsa_key" ] && \
         chroot "$ROOTFS" /usr/bin/ssh-keygen -A 2>/dev/null || true
-    # Start sshd
-    chroot "$ROOTFS" /usr/sbin/sshd \
-        -D -p "$SSH_PORT" \
+    # Ensure /dev/null exists inside chroot for sshd
+    [ -e "$ROOTFS/dev/null" ] || mknod "$ROOTFS/dev/null" c 1 3 2>/dev/null
+    chmod 666 "$ROOTFS/dev/null" 2>/dev/null
+
+    # Start sshd (no -D: sshd daemonizes itself via fork, survives parent exit)
+    nohup chroot "$ROOTFS" /usr/sbin/sshd \
+        -p "$SSH_PORT" \
         -o "PidFile=/run/ankd/sshd.pid" \
         -o "PasswordAuthentication=yes" \
         -o "PermitRootLogin=yes" \
         -o "ChallengeResponseAuthentication=no" \
         </dev/null >/dev/null 2>&1 &
     SSHD_PID=$!
-    log "sshd started on port $SSH_PORT (PID: $SSHD_PID)"
+    sleep 2
+    if kill -0 "$SSHD_PID" 2>/dev/null; then
+        log "sshd started on port $SSH_PORT (PID: $SSHD_PID)"
+    else
+        log "ERROR: sshd failed to start on port $SSH_PORT"
+    fi
 else
     log "sshd disabled or sshd not found"
 fi
