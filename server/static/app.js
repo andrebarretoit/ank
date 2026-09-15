@@ -1,4 +1,4 @@
-/**
+﻿/**
  * ANK - Android Konteiner
  * Web Panel - No alerts, custom modals & toasts
  */
@@ -366,7 +366,7 @@ async function loadAll() {
         document.getElementById('stat-images').textContent = images.length;
         document.getElementById('stat-uptime').textContent = fmtUptime(status.uptime || 0);
         document.getElementById('stat-cpu').textContent = (info.cpu_usage != null ? info.cpu_usage + '%' : '-');
-        document.getElementById('stat-cpu-cores').textContent = (info.cpu_cores || 0) > 0 ? info.cpu_cores + ' cores — ' : '';
+        document.getElementById('stat-cpu-cores').textContent = (info.cpu_cores || 0) > 0 ? info.cpu_cores + ' cores ÔÇö ' : '';
         document.getElementById('info-device').textContent = info.device || '-';
         document.getElementById('info-kernel').textContent = info.kernel || '-';
         const memT = info.memory?.total_kb || 0;
@@ -573,7 +573,7 @@ async function renderDashboardNodes() {
                 const cores = cluster.cpu_cores || 0;
                 const avgCpu = cluster.cpu_percent || 0;
                 el('cluster-cpu').textContent = `${avgCpu}%`;
-                el('cluster-cpu-label').textContent = `${cores} cores — avg usage`;
+                el('cluster-cpu-label').textContent = `${cores} cores ÔÇö avg usage`;
                 const ramUsed = cluster.ram_used_gb || 0;
                 const ramTotal = cluster.ram_total_gb || 0;
                 const ramPct = cluster.ram_percent || 0;
@@ -664,7 +664,7 @@ function initCoreTerminal(nodeId) {
             scrollback: 5000
         });
         coreTerminal.open(el);
-        coreTerminal.writeln(`\x1b[1;36m  ANK Core Shell${nodeId && nodeId !== 'local' ? ' — ' + nodeId : ''}\x1b[0m`);
+        coreTerminal.writeln(`\x1b[1;36m  ANK Core Shell${nodeId && nodeId !== 'local' ? ' ÔÇö ' + nodeId : ''}\x1b[0m`);
         coreTerminal.writeln('\x1b[90m  Connecting...\x1b[0m\r\n');
         coreTerminal.focus();
         _connectCoreWs(el, nodeId);
@@ -702,12 +702,12 @@ async function _connectCoreWs(el, nodeId) {
     };
     coreWs.onclose = () => {
         if (coreTerminal) {
-            coreTerminal.writeln('\r\n\x1b[31m[Connection closed — click Shell tab to reconnect]\x1b[0m');
+            coreTerminal.writeln('\r\n\x1b[31m[Connection closed ÔÇö click Shell tab to reconnect]\x1b[0m');
         }
     };
     coreWs.onerror = () => {
         if (coreTerminal) {
-            coreTerminal.writeln('\r\n\x1b[31m[Connection error — check server is running]\x1b[0m');
+            coreTerminal.writeln('\r\n\x1b[31m[Connection error ÔÇö check server is running]\x1b[0m');
         }
     };
     if (coreTerminal) {
@@ -2577,7 +2577,7 @@ function toggleTheme() { setTheme(getTheme() === 'dark' ? 'light' : 'dark'); }
 });
 
 /* ============================================================
-   Task Manager — Service management for ankd
+   Task Manager ÔÇö Service management for ankd
    ============================================================ */
 
 async function loadTaskManager() {
@@ -2658,7 +2658,7 @@ async function taskManagerViewLog(service) {
         overlay.innerHTML = `
             <div style="background:var(--bg-primary);border:1px solid var(--border);border-radius:12px;width:90%;max-width:700px;max-height:80vh;display:flex;flex-direction:column;">
                 <div style="display:flex;justify-content:space-between;align-items:center;padding:12px 16px;border-bottom:1px solid var(--border);">
-                    <h4 style="margin:0;font-size:14px;"><i class="bi bi-journal-text"></i> ${service} — Logs</h4>
+                    <h4 style="margin:0;font-size:14px;"><i class="bi bi-journal-text"></i> ${service} ÔÇö Logs</h4>
                     <button class="btn btn-xs btn-ghost" onclick="this.closest('div[style*=fixed]').remove()"><i class="bi bi-x-lg"></i></button>
                 </div>
                 <pre style="margin:0;padding:16px;overflow:auto;flex:1;font-size:12px;line-height:1.5;color:var(--text-primary);background:transparent;">${logs.replace(/</g, '&lt;')}</pre>
