@@ -33,7 +33,7 @@ if [ ! -e "$ANK_DIR/usr/sbin/sshd" ]; then
     # Configure sshd
     mkdir -p "$ANK_DIR/etc/ssh" "$ANK_DIR/run/sshd" 2>/dev/null
     cat > "$ANK_DIR/etc/ssh/sshd_config" << 'SSHEOF'
-Port 8022
+Port 2200
 PermitRootLogin yes
 PasswordAuthentication yes
 ChallengeResponseAuthentication no
