@@ -1567,6 +1567,10 @@ small{color:#334155}
             self.api_node_images(path.split("/")[3])
         elif path.startswith("/api/nodes/") and path.endswith("/status"):
             self.api_node_status(path.split("/")[3])
+        elif path.startswith("/api/nodes/") and path.endswith("/system/info"):
+            self.api_node_system_info(path.split("/")[3])
+        elif path.startswith("/api/nodes/") and path.endswith("/logs"):
+            self.api_node_logs(path.split("/")[3])
         elif path.startswith("/api/nodes/") and "/containers/" in path and path.endswith("/logs"):
             parts = path.split("/")
             self.api_node_container_logs(parts[3], parts[5])
@@ -1709,6 +1713,8 @@ small{color:#334155}
         elif path.startswith("/api/nodes/") and path.endswith("/images/transfer"):
             parts = path.split("/")
             self.api_node_image_transfer(parts[3], data)
+        elif path.startswith("/api/nodes/") and path.endswith("/restart"):
+            self.api_node_restart(path.split("/")[3])
         elif path.startswith("/api/nodes/") and path.endswith("/containers"):
             parts = path.split("/")
             self.api_node_container_create(parts[3], data)
@@ -5210,6 +5216,36 @@ small{color:#334155}
         status = nm.get_node_status(node_id)
         self.send_json(status if status else {})
 
+    def api_node_system_info(self, node_id):
+        nm = self._get_node_manager()
+        if not nm:
+            self.send_json({"error": "node_manager not available"}, 500)
+            return
+        info = nm.get_node_system_info(node_id)
+        self.send_json(info if info else {})
+
+    def api_node_restart(self, node_id):
+        nm = self._get_node_manager()
+        if not nm:
+            self.send_json({"error": "node_manager not available"}, 500)
+            return
+        try:
+            result = nm._node_api_post(node_id, "/api/system/restart-device", {})
+            self.send_json(result if result else {"message": "Restart sent"})
+        except Exception as e:
+            self.send_json({"error": str(e)}, 500)
+
+    def api_node_logs(self, node_id):
+        nm = self._get_node_manager()
+        if not nm:
+            self.send_json({"error": "node_manager not available"}, 500)
+            return
+        try:
+            logs = nm.get_node_logs(node_id)
+            self.send_json(logs if logs else {"lines": []})
+        except Exception as e:
+            self.send_json({"lines": [], "error": str(e)})
+
     def api_node_container_logs(self, node_id, container_name):
         nm = self._get_node_manager()
         if not nm:
@@ -5392,6 +5428,12 @@ small{color:#334155}
                         local_cores += 1
         except Exception:
             pass
+        if local_cores == 0:
+            try:
+                import multiprocessing
+                local_cores = multiprocessing.cpu_count() or 1
+            except Exception:
+                local_cores = os.cpu_count() or 1
         try:
             with open("/proc/meminfo", "r") as f:
                 for line in f:

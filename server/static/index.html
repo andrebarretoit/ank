@@ -300,6 +300,9 @@ EXPOSE 8080</textarea>
                 <div class="page-header">
                     <h2><i class="bi bi-terminal"></i> Logs</h2>
                     <div style="display:flex;gap:8px;">
+                        <select id="log-node-selector" class="btn btn-ghost btn-sm" onchange="loadLogs(false)">
+                            <option value="local">Local</option>
+                        </select>
                         <select id="log-filter" class="btn btn-ghost btn-sm">
                             <option value="all">All logs</option>
                             <option value="server">Server</option>
@@ -775,6 +778,7 @@ EXPOSE 8080</textarea>
                 <h3><i class="bi bi-pc-display-horizontal" style="font-size:20px;color:var(--accent)"></i> <span id="node-detail-name">-</span></h3>
                 <div style="display:flex;gap:6px;align-items:center;">
                     <span id="node-detail-status" class="status-badge">-</span>
+                    <button class="btn btn-warning btn-sm" id="node-detail-restart" style="display:none" onclick="restartRemoteNode()"><i class="bi bi-arrow-clockwise"></i> Restart Device</button>
                     <button class="modal-close"><i class="bi bi-x-lg"></i></button>
                 </div>
             </div>

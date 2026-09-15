@@ -774,6 +774,24 @@ async function pollContainerStatus(name, attempt) {
     } catch (e) { loadContainers(); }
 }
 
+async function pollRemoteContainerStatus(nodeId, name, attempt) {
+    if (attempt > 60) { loadContainers(); return; }
+    try {
+        const c = await api('GET', `/nodes/${encodeURIComponent(nodeId)}/containers/${encodeURIComponent(name)}`);
+        if (c.status === 'building' || c.status === 'starting' || c.status === 'stopping') {
+            updateContainerBadge(name, c.status);
+            setTimeout(() => pollRemoteContainerStatus(nodeId, name, attempt + 1), 3000);
+        } else {
+            updateContainerBadge(name, c.status);
+            loadContainers();
+            const detailModal = document.getElementById('detail-modal');
+            if (detailModal && detailModal.style.display !== 'none' && document.getElementById('detail-name')?.textContent === name) {
+                showContainerDetail(name, nodeId);
+            }
+        }
+    } catch (e) { setTimeout(() => pollRemoteContainerStatus(nodeId, name, attempt + 1), 3000); }
+}
+
 function updateContainerBadge(name, status) {
     const card = document.querySelector(`.container-card[data-name="${name}"]`);
     if (!card) return;
@@ -1351,7 +1369,7 @@ async function deployTemplate(id, name, baseReady) {
             toast(`Deploying ${name} as "${containerName}" on remote...`, 'info');
             await api('POST', `/nodes/${encodeURIComponent(nodeId)}/containers`, { name: containerName, image: id, root_password: rootPass });
             toast(`Container "${containerName}" creation sent to remote node`, 'success');
-            setTimeout(() => loadContainers(), 2000);
+            setTimeout(() => { loadContainers(); pollRemoteContainerStatus(nodeId, containerName, 0); }, 1000);
         } else {
             toast(`Deploying ${name} as "${containerName}"...`, 'info');
             await api('POST', '/images/deploy', { template: id, name: containerName, root_password: rootPass });
@@ -1727,9 +1745,15 @@ const LOG_POLL_MS = 3000;
 async function loadLogs(append) {
     try {
         const filter = document.getElementById('log-filter')?.value || 'all';
+        const logNode = document.getElementById('log-node-selector')?.value || 'local';
         const params = new URLSearchParams({ filter });
         if (append && logsOffset > 0) params.set('offset', logsOffset);
-        const data = await api('GET', `/logs?${params}`);
+        let data;
+        if (logNode && logNode !== 'local') {
+            data = await api('GET', `/nodes/${encodeURIComponent(logNode)}/logs?${params}`);
+        } else {
+            data = await api('GET', `/logs?${params}`);
+        }
         const viewer = document.getElementById('log-viewer');
         if (!data.lines || data.lines.length === 0) {
             if (!append) viewer.innerHTML = '<div class="log-empty"><i class="bi bi-terminal"></i><p>No logs available</p></div>';
@@ -2303,25 +2327,41 @@ async function rejectPairing(reqId) {
 }
 
 /* Node detail modal (proxy to remote panel) */
+let currentNodeDetailId = null;
 function openNodeDetail(nodeId, name, status) {
+    currentNodeDetailId = nodeId;
     document.getElementById('node-detail-name').textContent = name;
     document.getElementById('node-detail-status').textContent = status;
     document.getElementById('node-detail-status').style.color = status === 'online' ? 'var(--success)' : 'var(--danger)';
     document.getElementById('node-detail-loading').style.display = 'block';
     document.getElementById('node-detail-content').style.display = 'none';
+    document.getElementById('node-detail-restart').style.display = status === 'online' ? '' : 'none';
     showModal('node-detail-modal');
     loadNodeDetail(nodeId);
+}
+
+async function restartRemoteNode() {
+    if (!currentNodeDetailId) return;
+    const ok = await confirmAction('Restart Device', 'This will reboot the remote device. Continue?');
+    if (!ok) return;
+    try {
+        await api('POST', `/nodes/${encodeURIComponent(currentNodeDetailId)}/restart`);
+        toast('Restart command sent to remote node', 'success');
+        hideModal('node-detail-modal');
+    } catch (e) { toast(`Failed: ${e.message}`, 'error'); }
 }
 
 async function loadNodeDetail(nodeId) {
     const el = document.getElementById('node-detail-content');
     const loading = document.getElementById('node-detail-loading');
     try {
-        const [info, containers, images] = await Promise.all([
+        const [status, sysInfo, containers, images] = await Promise.all([
             api('GET', `/nodes/${encodeURIComponent(nodeId)}/status`).catch(() => ({})),
+            api('GET', `/nodes/${encodeURIComponent(nodeId)}/system/info`).catch(() => ({})),
             api('GET', `/nodes/${encodeURIComponent(nodeId)}/containers`).catch(() => []),
             api('GET', `/nodes/${encodeURIComponent(nodeId)}/images`).catch(() => [])
         ]);
+        const info = { ...sysInfo, ...status };
         const dev = info.device_model || info.device || info.hostname || '-';
         const kernel = info.kernel || info.kernel_version || '-';
         const cpu = info.cpu_usage != null ? info.cpu_usage + '%' : (info.cpu || '-');
@@ -2415,13 +2455,37 @@ function updateNodeSelectors(nodes) {
     if (createModalSel) {
         const val = createModalSel.value;
         createModalSel.innerHTML = '<option value="local">Local</option>';
-        (nodes || []).filter(n => n.status === 'online').forEach(n => {
+        onlineNodes.forEach(n => {
             const opt = document.createElement('option');
             opt.value = n.id;
             opt.textContent = n.alias || n.ip;
             createModalSel.appendChild(opt);
         });
         createModalSel.value = val || 'local';
+    }
+    const logSel = document.getElementById('log-node-selector');
+    if (logSel) {
+        const val = logSel.value;
+        logSel.innerHTML = '<option value="local">Local</option>';
+        onlineNodes.forEach(n => {
+            const opt = document.createElement('option');
+            opt.value = n.id;
+            opt.textContent = n.alias || n.ip;
+            logSel.appendChild(opt);
+        });
+        logSel.value = val || 'local';
+    }
+    const shellSel = document.getElementById('shell-node-selector');
+    if (shellSel) {
+        const val = shellSel.value;
+        shellSel.innerHTML = '<option value="local">Local</option>';
+        onlineNodes.forEach(n => {
+            const opt = document.createElement('option');
+            opt.value = n.id;
+            opt.textContent = n.alias || n.ip;
+            shellSel.appendChild(opt);
+        });
+        shellSel.value = val || 'local';
     }
 }
 
@@ -2467,7 +2531,12 @@ async function remoteContainerAction(nodeId, containerName, action) {
     try {
         await api('POST', `/nodes/${encodeURIComponent(nodeId)}/containers/${encodeURIComponent(containerName)}/${action}`);
         toast(`Container ${action} sent`, 'success');
-        setTimeout(() => loadContainers(), 1000);
+        loadContainers();
+        pollRemoteContainerStatus(nodeId, containerName, 0);
+        const detailModal = document.getElementById('detail-modal');
+        if (detailModal && detailModal.style.display !== 'none' && document.getElementById('detail-name')?.textContent === containerName) {
+            setTimeout(() => showContainerDetail(containerName, nodeId), 1000);
+        }
     } catch (e) { toast(`Failed: ${e.message}`, 'error'); }
 }
 
