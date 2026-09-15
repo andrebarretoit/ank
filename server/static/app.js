@@ -728,5 +728,26 @@ document.getElementById('btn-create-container')?.addEventListener('click', async
   try { toast(`Deploying "${result.name}"...`,'info'); await api('POST', '/images/deploy', { template: result.template, name: result.name, root_password: result.password }); pollContainerStatus(result.name, 0); loadContainers(); } catch(e) { toast(`Failed: ${e.message}`,'error'); }
 });
 
+/* ═══════ FOOTER MODAL ═══════ */
+function openFooterModal() {
+  openModal('About ANK', `
+    <div class="footer-cards">
+      <a href="https://linkedin.com/in/andrebarretoit" target="_blank" rel="noopener" class="footer-card">
+        <i class="bi bi-linkedin"></i>
+        <div class="fc-title">LinkedIn</div>
+        <div class="fc-desc">Connect professionally</div>
+      </a>
+      <a href="https://andrebarreto.work" target="_blank" rel="noopener" class="footer-card">
+        <i class="bi bi-globe2"></i>
+        <div class="fc-title">Portfolio</div>
+        <div class="fc-desc">View projects & work</div>
+      </a>
+    </div>
+    <div style="text-align:center;margin-top:20px">
+      <span class="text-sm text-muted">ANK · Android Konteiner v2.0.0</span>
+    </div>
+  `);
+}
+
 /* ═══════ INIT ═══════ */
 if (isLoggedIn) { showApp(); detectWsProtocol().then(() => startRefreshTimer()); }
