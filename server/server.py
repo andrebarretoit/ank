@@ -695,6 +695,146 @@ def _ws_send_text(sock, text):
 def _ws_send_close(sock):
     _ws_send_frame(sock, 0x8, b"")
 
+def _ws_node_shell_relay(handler, node_id, cols=80, rows=24):
+    """Relay a browser WebSocket shell session through to a remote node's own
+    /ws/shell endpoint, so the Shell tab's node selector can actually attach to a
+    remote node instead of just showing a toast (previously a stub)."""
+    client_sock = handler.request
+    nm = handler._get_node_manager()
+    conn = nm.get_node_connection(node_id) if nm else None
+    if not conn or not conn.get("ip"):
+        _ws_send_text(client_sock, f"\r\nERROR: Node '{node_id}' not found\r\n")
+        _ws_send_close(client_sock)
+        return
+    if conn.get("status") != "online":
+        _ws_send_text(client_sock, f"\r\nERROR: Node '{node_id}' is offline\r\n")
+        _ws_send_close(client_sock)
+        return
+
+    import socket as _socket
+
+    remote_sock = None
+    try:
+        ip = conn["ip"]
+        port = int(conn.get("port", 8001))
+        token = conn.get("token", "")
+
+        remote_sock = _socket.create_connection((ip, port), timeout=10)
+        ws_key = base64.b64encode(secrets.token_bytes(16)).decode()
+        path = f"/ws/shell?cols={cols}&rows={rows}&token={token}"
+        handshake = (
+            f"GET {path} HTTP/1.1\r\n"
+            f"Host: {ip}:{port}\r\n"
+            f"Upgrade: websocket\r\n"
+            f"Connection: Upgrade\r\n"
+            f"Sec-WebSocket-Key: {ws_key}\r\n"
+            f"Sec-WebSocket-Version: 13\r\n"
+            f"\r\n"
+        )
+        remote_sock.sendall(handshake.encode("utf-8"))
+
+        # Read the HTTP response headers up to the blank line.
+        buf = b""
+        while b"\r\n\r\n" not in buf:
+            chunk = remote_sock.recv(4096)
+            if not chunk:
+                raise ConnectionError("Remote node closed connection during handshake")
+            buf += chunk
+        header_part, _, leftover = buf.partition(b"\r\n\r\n")
+        status_line = header_part.split(b"\r\n", 1)[0].decode("utf-8", "replace")
+        if " 101 " not in status_line:
+            raise ConnectionError(f"Remote node rejected WebSocket upgrade: {status_line}")
+
+        running = [True]
+
+        # Any bytes already read past the header belong to the first frame(s).
+        pending = bytearray(leftover)
+
+        def _remote_recv_exact(n):
+            while len(pending) < n:
+                chunk = remote_sock.recv(max(4096, n - len(pending)))
+                if not chunk:
+                    return None
+                pending.extend(chunk)
+            data = bytes(pending[:n])
+            del pending[:n]
+            return data
+
+        def _read_remote_frame():
+            head = _remote_recv_exact(2)
+            if not head:
+                return None, None
+            b0, b1 = struct.unpack("!BB", head)
+            opcode = b0 & 0x0F
+            masked = bool(b1 & 0x80)
+            length = b1 & 0x7F
+            if length == 126:
+                ext = _remote_recv_exact(2)
+                if not ext:
+                    return None, None
+                length = struct.unpack("!H", ext)[0]
+            elif length == 127:
+                ext = _remote_recv_exact(8)
+                if not ext:
+                    return None, None
+                length = struct.unpack("!Q", ext)[0]
+            mask_key = _remote_recv_exact(4) if masked else None
+            payload = _remote_recv_exact(length) if length else b""
+            if payload is None:
+                return None, None
+            if mask_key:
+                payload = bytes(b ^ mask_key[i % 4] for i, b in enumerate(payload))
+            return opcode, payload
+
+        def relay_remote_to_client():
+            while running[0]:
+                try:
+                    opcode, payload = _read_remote_frame()
+                except Exception:
+                    break
+                if opcode is None:
+                    break
+                if opcode == 0x8:
+                    break
+                if opcode in (0x1, 0x2):
+                    try:
+                        _ws_send_frame(client_sock, opcode, payload)
+                    except Exception:
+                        break
+            running[0] = False
+
+        t = threading.Thread(target=relay_remote_to_client, daemon=True)
+        t.start()
+
+        # Client -> remote: forward whatever the browser sends (resize/input JSON messages).
+        while running[0]:
+            opcode, payload = _ws_read_frame_rsock(client_sock)
+            if opcode is None:
+                break
+            if opcode == 0x8:
+                break
+            if opcode in (0x1, 0x2):
+                try:
+                    _ws_send_frame(remote_sock, opcode, payload)
+                except Exception:
+                    break
+        running[0] = False
+    except Exception as e:
+        try:
+            _ws_send_text(client_sock, f"\r\nERROR: {str(e)}\r\n")
+        except Exception:
+            pass
+    finally:
+        if remote_sock:
+            try:
+                remote_sock.close()
+            except Exception:
+                pass
+        try:
+            _ws_send_close(client_sock)
+        except Exception:
+            pass
+
 def _ws_pty_session(handler, container_name, cols=80, rows=24):
     """Handle a PTY-based WebSocket terminal session."""
     merged = os.path.join(CONTAINERS_DIR, container_name, "merged")
@@ -1148,6 +1288,42 @@ small{color:#334155}
             _ws_shell_session(self, cols, rows)
             return
 
+        # WebSocket node-shell relay
+        if path.startswith("/ws/node-shell/"):
+            self._is_websocket = True
+            upgrade = self.headers.get("Upgrade", "").lower()
+            ws_key = self.headers.get("Sec-WebSocket-Key", "")
+            if upgrade != "websocket" or not ws_key:
+                self._ws_send_error(400, "Invalid WebSocket upgrade request")
+                return
+            qs = parse_qs(parsed.query)
+            ws_token = qs.get("token", [None])[0]
+            if not _validate_token(ws_token):
+                log(f"WS_NODE_SHELL: auth failed from {self.client_address[0]}")
+                self._ws_send_error(401, "Unauthorized")
+                return
+            node_id = path.split("/")[3]
+            accept = _ws_accept_key(ws_key)
+            rsock = self.request
+            resp = (
+                b"HTTP/1.1 101 Switching Protocols\r\n"
+                b"Upgrade: websocket\r\n"
+                b"Connection: Upgrade\r\n"
+                b"Sec-WebSocket-Accept: " + accept.encode() + b"\r\n"
+                b"X-Content-Type-Options: nosniff\r\n"
+                b"\r\n"
+            )
+            rsock.sendall(resp)
+            cols = 80
+            rows = 24
+            try:
+                cols = int(qs.get("cols", [80])[0])
+                rows = int(qs.get("rows", [24])[0])
+            except Exception:
+                pass
+            _ws_node_shell_relay(self, node_id, cols, rows)
+            return
+
         # WebSocket upgrade for terminal
         if path.startswith("/ws/terminal/"):
             self._is_websocket = True
@@ -1310,6 +1486,8 @@ small{color:#334155}
             self.send_json({"protocol": proto})
         elif path == "/api/containers":
             self.api_list_containers()
+        elif path == "/api/containers/all":
+            self.api_all_containers()
         elif path.endswith("/files") and path.startswith("/api/containers/"):
             parts = path.split("/")
             name = parts[3]
@@ -1336,6 +1514,8 @@ small{color:#334155}
             self.api_container_inspect(path.split("/")[3])
         elif path == "/api/images":
             self.api_list_images()
+        elif path == "/api/images/all":
+            self.api_all_images()
         elif path == "/api/images/templates":
             self.api_image_templates()
         elif path == "/api/images/pull/status":
@@ -1358,6 +1538,8 @@ small{color:#334155}
             self.api_get_config()
         elif path == "/api/stacks":
             self.api_list_stacks()
+        elif path == "/api/stacks/all":
+            self.api_all_stacks()
         elif path.startswith("/api/stacks/") and path.endswith("/logs"):
             self.api_stack_logs(path.split("/")[3], parsed)
         elif path.startswith("/api/stacks/") and path.endswith("/metrics"):
@@ -1638,6 +1820,53 @@ small{color:#334155}
                     config["stats"] = get_container_stats(name)
                     containers.append(config)
         self.send_json(containers)
+
+    def api_all_containers(self):
+        """Unified containers view: local containers plus every online node's containers,
+        each tagged with which node it lives on."""
+        result = []
+        # Get local containers (reuse api_list_containers logic)
+        containers = []
+        if os.path.exists(CONTAINERS_DIR):
+            for cname in os.listdir(CONTAINERS_DIR):
+                if not os.path.isdir(os.path.join(CONTAINERS_DIR, cname)):
+                    continue
+                try:
+                    config = load_container_config(cname)
+                except Exception:
+                    continue
+                if config:
+                    if config.get("status") == "running" and should_mark_stopped(cname):
+                        config["status"] = "stopped"
+                        config["pid"] = None
+                        save_container_config(cname, config)
+                        note_container_stopped(cname)
+                    config["stats"] = get_container_stats(cname)
+                    containers.append(config)
+        for c in containers:
+            c = dict(c)
+            c["node"] = "local"
+            c["node_alias"] = "Local"
+            result.append(c)
+        nm = self._get_node_manager()
+        if nm:
+            try:
+                from node_proxy import NodeProxy
+                proxy = NodeProxy(nm)
+                for n in nm.list_nodes():
+                    if n.get("status") != "online":
+                        continue
+                    try:
+                        for c in (proxy.get_containers(n["id"]) or []):
+                            c = dict(c)
+                            c["node"] = n["id"]
+                            c["node_alias"] = n.get("alias") or n["id"]
+                            result.append(c)
+                    except Exception as e:
+                        log(f"[AGGREGATE] containers on {n.get('id')} failed: {e}")
+            except Exception as e:
+                log(f"[AGGREGATE] node_proxy unavailable: {e}")
+        self.send_json(result)
 
     def api_container_inspect(self, name):
         config = load_container_config(name)
@@ -4317,6 +4546,61 @@ small{color:#334155}
                     })
         self.send_json(images)
 
+    def api_all_images(self):
+        """Unified images view: local images plus every online node's images, each tagged
+        with which node it lives on."""
+        result = []
+        # Get local images (reuse api_list_images logic)
+        images = []
+        if os.path.exists(IMAGES_DIR):
+            for img_name in os.listdir(IMAGES_DIR):
+                if img_name == "ankfs" or img_name.startswith("alpine-"):
+                    continue
+                p = os.path.join(IMAGES_DIR, img_name)
+                if os.path.isdir(p):
+                    has_python = os.path.isfile(os.path.join(p, "usr/bin/python3"))
+                    has_sh = os.path.isfile(os.path.join(p, "bin/sh"))
+                    size = 0
+                    try:
+                        out = subprocess.run(["du", "-sb", p], capture_output=True, text=True, timeout=5)
+                        size = int(out.stdout.split("\t")[0]) if out.returncode == 0 else 0
+                    except Exception:
+                        pass
+                    if size == 0:
+                        try:
+                            size = sum(os.path.getsize(os.path.join(dp, f)) for dp, _, fn in os.walk(p) for f in fn)
+                        except Exception:
+                            pass
+                    images.append({
+                        "name": img_name,
+                        "complete": has_python and has_sh,
+                        "has_python": has_python,
+                        "size": size,
+                        "size_human": self._fmt_size(size)
+                    })
+        for img in images:
+            img = dict(img)
+            img["node"] = "local"
+            img["node_alias"] = "Local"
+            result.append(img)
+        nm = self._get_node_manager()
+        if nm:
+            try:
+                for n in nm.list_nodes():
+                    if n.get("status") != "online":
+                        continue
+                    try:
+                        for img in (nm.get_node_images(n["id"]) or []):
+                            img = dict(img)
+                            img["node"] = n["id"]
+                            img["node_alias"] = n.get("alias") or n["id"]
+                            result.append(img)
+                    except Exception as e:
+                        log(f"[AGGREGATE] images on {n.get('id')} failed: {e}")
+            except Exception as e:
+                log(f"[AGGREGATE] node listing failed: {e}")
+        self.send_json(result)
+
     def api_delete_image(self, name):
         if not name or name.startswith("/"):
             self.send_error(400, "Invalid image name")
@@ -4496,6 +4780,39 @@ small{color:#334155}
             return
         stacks = sm.list_stacks()
         self.send_json({"stacks": stacks})
+
+    def api_all_stacks(self):
+        """Unified stacks view: local stacks plus every online node's stacks, each tagged
+        with which node it lives on."""
+        result = []
+        sm = self._get_stack_manager()
+        try:
+            for s in (sm.list_stacks() if sm else []):
+                s = dict(s)
+                s["node"] = "local"
+                s["node_alias"] = "Local"
+                result.append(s)
+        except Exception as e:
+            log(f"[AGGREGATE] local stacks failed: {e}")
+        nm = self._get_node_manager()
+        if nm:
+            try:
+                from node_proxy import NodeProxy
+                proxy = NodeProxy(nm)
+                for n in nm.list_nodes():
+                    if n.get("status") != "online":
+                        continue
+                    try:
+                        for s in (proxy.get_stacks(n["id"]) or []):
+                            s = dict(s)
+                            s["node"] = n["id"]
+                            s["node_alias"] = n.get("alias") or n["id"]
+                            result.append(s)
+                    except Exception as e:
+                        log(f"[AGGREGATE] stacks on {n.get('id')} failed: {e}")
+            except Exception as e:
+                log(f"[AGGREGATE] node_proxy unavailable: {e}")
+        self.send_json({"stacks": result})
 
     def api_stack_inspect(self, name):
         sm = self._get_stack_manager()

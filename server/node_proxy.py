@@ -1,51 +1,16 @@
 #!/usr/bin/env python3
 """
 ANK Node Proxy - WebSocket and HTTP proxy for remote node communication.
+
+Shares its HTTP client with node_manager.py (_http_request) instead of keeping a
+second, drifting copy of the same request/response handling logic.
 """
 
-import json
-import urllib.request
-import urllib.error
+from node_manager import _http_request
 
 
 def _log(msg):
     print(f"[PROXY] {msg}", flush=True)
-
-
-def _http_request(url, method="GET", data=None, headers=None, timeout=15):
-    if headers is None:
-        headers = {}
-    body = None
-    if data is not None:
-        if isinstance(data, (dict, list)):
-            body = json.dumps(data).encode("utf-8")
-            headers.setdefault("Content-Type", "application/json")
-        elif isinstance(data, bytes):
-            body = data
-        else:
-            body = str(data).encode("utf-8")
-    req = urllib.request.Request(url, data=body, headers=headers, method=method)
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            ct = resp.headers.get("Content-Type", "")
-            raw = resp.read()
-            if "json" in ct:
-                try:
-                    return resp.status, json.loads(raw), ct
-                except json.JSONDecodeError:
-                    return resp.status, raw, ct
-            return resp.status, raw, ct
-    except urllib.error.HTTPError as e:
-        ct = e.headers.get("Content-Type", "") if e.headers else ""
-        raw = e.read() if e.fp else b""
-        if "json" in ct:
-            try:
-                return e.code, json.loads(raw), ct
-            except json.JSONDecodeError:
-                pass
-        return e.code, raw, ct
-    except Exception:
-        raise
 
 
 class NodeProxy:

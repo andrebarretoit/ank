@@ -127,26 +127,114 @@ class NodeManager:
             port = config.get("port", 8001)
             token = config.get("token", "")
             url = f"http://{ip}:{port}/api/status"
+            online = False
             try:
                 headers = {"Authorization": f"Bearer {token}"}
                 code, body, _ = _http_request(url, headers=headers, timeout=5)
-                if code == 200:
-                    config["status"] = "online"
-                    config["fail_count"] = 0
-                    config["last_seen"] = _utcnow()
-                else:
-                    if config.get("status") != "pending":
-                        config["fail_count"] = config.get("fail_count", 0) + 1
-                        if config["fail_count"] >= 3:
-                            config["status"] = "offline"
-                    config["last_seen"] = _utcnow()
+                online = (code == 200)
             except Exception:
+                online = False
+
+            if online:
+                config["status"] = "online"
+                config["fail_count"] = 0
+            else:
                 if config.get("status") != "pending":
                     config["fail_count"] = config.get("fail_count", 0) + 1
                     if config["fail_count"] >= 3:
                         config["status"] = "offline"
-                config["last_seen"] = _utcnow()
+            config["last_seen"] = _utcnow()
+
+            if online:
+                try:
+                    self._fetch_and_store_node_stats(node_id, config)
+                except Exception as e:
+                    _log(f"Stats refresh failed for {node_id}: {e}")
+
             self._save_node_config(node_id, config)
+
+    def _fetch_and_store_node_stats(self, node_id, config):
+        """Poll a node's live /api/status + /api/system/info (and container/image/stack
+        counts) and cache the result onto its config so list_nodes()/the dashboard reflect
+        real, current numbers instead of placeholder dashes."""
+        ip = config.get("ip", "")
+        port = config.get("port", 8001)
+        token = config.get("token", "")
+        headers = {"Authorization": f"Bearer {token}"}
+
+        try:
+            code, status, _ = _http_request(f"http://{ip}:{port}/api/status", headers=headers, timeout=8)
+            if code == 200 and isinstance(status, dict):
+                config["cpu_percent"] = status.get("cpu_usage", 0)
+                config["containers_total"] = status.get("containers_total", 0)
+                config["containers_running"] = status.get("containers_running", 0)
+                disk = status.get("disk", {}) or {}
+                config["disk_used_gb"] = disk.get("used", 0)
+                config["disk_total_gb"] = disk.get("total", 0)
+                config["uptime_seconds"] = status.get("uptime", 0)
+        except Exception as e:
+            _log(f"stats(status) failed for {node_id}: {e}")
+
+        try:
+            code, info, _ = _http_request(f"http://{ip}:{port}/api/system/info", headers=headers, timeout=8)
+            if code == 200 and isinstance(info, dict):
+                mem = info.get("memory", {}) or {}
+                total_kb = mem.get("total_kb", 0)
+                avail_kb = mem.get("available_kb", 0)
+                if total_kb:
+                    used_kb = max(total_kb - avail_kb, 0)
+                    config["mem_total_gb"] = round(total_kb / (1024 * 1024), 2)
+                    config["mem_used_gb"] = round(used_kb / (1024 * 1024), 2)
+                    config["mem_percent"] = round(used_kb / total_kb * 100, 1)
+                if info.get("device_model"):
+                    config["device_model"] = info.get("device_model")
+                if info.get("kernel"):
+                    config["kernel"] = info.get("kernel")
+        except Exception as e:
+            _log(f"stats(system/info) failed for {node_id}: {e}")
+
+        try:
+            images = self._node_api_get(node_id, "/api/images")
+            config["images_count"] = len(images) if isinstance(images, list) else 0
+        except Exception:
+            pass
+
+        try:
+            stacks = self.get_node_stacks(node_id)
+            config["stacks_count"] = len(stacks) if isinstance(stacks, list) else 0
+        except Exception:
+            pass
+
+        return config
+
+    def refresh_node(self, node_id):
+        """Actively poll a node right now (used by the manual Refresh button), instead of
+        just re-serving whatever the last heartbeat cycle happened to cache."""
+        config = self._load_node_config(node_id)
+        if not config:
+            return None
+        ip = config.get("ip", "")
+        port = config.get("port", 8001)
+        token = config.get("token", "")
+        try:
+            headers = {"Authorization": f"Bearer {token}"}
+            code, body, _ = _http_request(f"http://{ip}:{port}/api/status", headers=headers, timeout=8)
+            if code == 200:
+                config["status"] = "online"
+                config["fail_count"] = 0
+                self._fetch_and_store_node_stats(node_id, config)
+            else:
+                config["fail_count"] = config.get("fail_count", 0) + 1
+                if config["fail_count"] >= 3:
+                    config["status"] = "offline"
+        except Exception as e:
+            _log(f"refresh_node failed for {node_id}: {e}")
+            config["fail_count"] = config.get("fail_count", 0) + 1
+            if config["fail_count"] >= 3:
+                config["status"] = "offline"
+        config["last_seen"] = _utcnow()
+        self._save_node_config(node_id, config)
+        return self._sanitize_node(config)
 
     def _sync_manager_info(self):
         for node_id in self._list_node_ids():
@@ -185,6 +273,20 @@ class NodeManager:
         if not config:
             return None
         return self._sanitize_node(config)
+
+    def get_node_connection(self, node_id):
+        """Unsanitized connection info (ip/port/token) for proxies that need to talk to
+        the node directly, e.g. the remote-shell WebSocket relay."""
+        config = self._load_node_config(node_id)
+        if not config:
+            return None
+        return {
+            "ip": config.get("ip", ""),
+            "port": config.get("port", 8001),
+            "token": config.get("token", ""),
+            "alias": config.get("alias", ""),
+            "status": config.get("status", "")
+        }
 
     def get_manager_info(self):
         for node_id in self._list_node_ids():
@@ -475,6 +577,14 @@ class NodeManager:
     def get_node_logs(self, node_id):
         return self._node_api_get(node_id, "/api/logs")
 
+    def get_node_stacks(self, node_id):
+        result = self._node_api_get(node_id, "/api/stacks")
+        if isinstance(result, dict):
+            return result.get("stacks", [])
+        if isinstance(result, list):
+            return result
+        return []
+
     # ============================================================
     # Remote container management
     # ============================================================
@@ -542,69 +652,51 @@ class NodeManager:
     # ============================================================
 
     def aggregate_dashboard(self):
+        """Build the manager-side aggregate view from each node's cached heartbeat stats
+        (see _fetch_and_store_node_stats). This avoids re-polling every node on every
+        dashboard load and uses field names that actually exist on node config."""
         total_containers = 0
         running = 0
         stopped = 0
         images = 0
+        stacks = 0
         node_list = []
 
         for node_config in self.list_nodes():
-            node_id = node_config["id"]
             status = node_config.get("status", "offline")
+            is_online = status == "online"
+
+            containers_total = node_config.get("containers_total", 0) if is_online else 0
+            containers_running = node_config.get("containers_running", 0) if is_online else 0
+            images_count = node_config.get("images_count", 0) if is_online else 0
+            stacks_count = node_config.get("stacks_count", 0) if is_online else 0
 
             node_entry = {
-                "id": node_id,
+                "id": node_config["id"],
                 "alias": node_config.get("alias", ""),
                 "status": status,
                 "role": node_config.get("role", "managed"),
                 "ip": node_config.get("ip", ""),
-                "cpu_percent": 0,
-                "mem_percent": 0,
-                "mem_used": "0 GB",
-                "mem_total": "0 GB",
-                "disk_used": "0 GB",
-                "disk_total": "0 GB",
-                "uptime": "0s",
-                "containers_running": 0,
-                "containers_total": 0,
+                "cpu_percent": node_config.get("cpu_percent", 0) if is_online else 0,
+                "mem_percent": node_config.get("mem_percent", 0) if is_online else 0,
+                "mem_used_gb": node_config.get("mem_used_gb", 0) if is_online else 0,
+                "mem_total_gb": node_config.get("mem_total_gb", 0) if is_online else 0,
+                "disk_used_gb": node_config.get("disk_used_gb", 0) if is_online else 0,
+                "disk_total_gb": node_config.get("disk_total_gb", 0) if is_online else 0,
+                "uptime_seconds": node_config.get("uptime_seconds", 0) if is_online else 0,
+                "containers_running": containers_running,
+                "containers_total": containers_total,
+                "images_count": images_count,
+                "stacks_count": stacks_count,
                 "device_model": node_config.get("device_model", ""),
                 "kernel": node_config.get("kernel", "")
             }
 
-            if status == "online":
-                try:
-                    info = self.get_node_status(node_id)
-                    if isinstance(info, dict):
-                        node_entry["cpu_percent"] = info.get("cpu_usage", info.get("cpu_percent", 0))
-                        node_entry["mem_percent"] = info.get("mem_percent", 0)
-                        node_entry["mem_used"] = info.get("mem_used", "0 GB")
-                        node_entry["mem_total"] = info.get("mem_total", "0 GB")
-                        node_entry["disk_used"] = info.get("disk_used", "0 GB")
-                        node_entry["disk_total"] = info.get("disk_total", "0 GB")
-                        node_entry["uptime"] = info.get("uptime", "0s")
-                        node_entry["containers_running"] = info.get("containers_running", 0)
-                        node_entry["containers_total"] = info.get("containers_total", 0)
-                except Exception:
-                    pass
-
-                try:
-                    containers = self.get_node_containers(node_id)
-                    if isinstance(containers, list):
-                        node_entry["containers_total"] = len(containers)
-                        node_entry["containers_running"] = sum(1 for c in containers if c.get("status") == "running")
-                except Exception:
-                    pass
-
-                try:
-                    img_list = self.get_node_images(node_id)
-                    if isinstance(img_list, list):
-                        images += len(img_list)
-                except Exception:
-                    pass
-
-            total_containers += node_entry["containers_total"]
-            running += node_entry["containers_running"]
-            stopped += node_entry["containers_total"] - node_entry["containers_running"]
+            total_containers += containers_total
+            running += containers_running
+            stopped += max(containers_total - containers_running, 0)
+            images += images_count
+            stacks += stacks_count
             node_list.append(node_entry)
 
         return {
@@ -612,6 +704,7 @@ class NodeManager:
             "running": running,
             "stopped": stopped,
             "images": images,
+            "stacks": stacks,
             "nodes": node_list
         }
 
@@ -693,10 +786,21 @@ class NodeManager:
             _log(f"API GET failed for {node_id}{path}: {e}")
         return None
 
+    def _extract_error_message(self, body, code):
+        if isinstance(body, dict):
+            return body.get("error") or body.get("message") or f"Remote node returned HTTP {code}"
+        if isinstance(body, bytes):
+            try:
+                text = body.decode("utf-8", "replace").strip()
+                return text[:300] if text else f"Remote node returned HTTP {code}"
+            except Exception:
+                pass
+        return f"Remote node returned HTTP {code}"
+
     def _node_api_post(self, node_id, path, data):
         config = self._load_node_config(node_id)
         if not config:
-            return None
+            return {"error": "Node not found", "status_code": 404}
         ip = config.get("ip", "")
         port = config.get("port", 8001)
         token = config.get("token", "")
@@ -704,16 +808,19 @@ class NodeManager:
         headers = {"Authorization": f"Bearer {token}"}
         try:
             code, body, _ = _http_request(url, method="POST", data=data, headers=headers, timeout=30)
-            if isinstance(body, (dict, list)):
-                return body
+            if 200 <= code < 300:
+                return body if isinstance(body, (dict, list)) else {"ok": True}
+            err_msg = self._extract_error_message(body, code)
+            _log(f"API POST {node_id}{path} -> HTTP {code}: {err_msg}")
+            return {"error": err_msg, "status_code": code}
         except Exception as e:
             _log(f"API POST failed for {node_id}{path}: {e}")
-        return None
+            return {"error": str(e), "status_code": 502}
 
     def _node_api_delete(self, node_id, path):
         config = self._load_node_config(node_id)
         if not config:
-            return None
+            return {"error": "Node not found", "status_code": 404}
         ip = config.get("ip", "")
         port = config.get("port", 8001)
         token = config.get("token", "")
@@ -721,11 +828,14 @@ class NodeManager:
         headers = {"Authorization": f"Bearer {token}"}
         try:
             code, body, _ = _http_request(url, method="DELETE", headers=headers, timeout=15)
-            if isinstance(body, (dict, list)):
-                return body
+            if 200 <= code < 300:
+                return body if isinstance(body, (dict, list)) else {"ok": True}
+            err_msg = self._extract_error_message(body, code)
+            _log(f"API DELETE {node_id}{path} -> HTTP {code}: {err_msg}")
+            return {"error": err_msg, "status_code": code}
         except Exception as e:
             _log(f"API DELETE failed for {node_id}{path}: {e}")
-        return None
+            return {"error": str(e), "status_code": 502}
 
     def _detect_own_ip(self, remote_ip=""):
         import socket
