@@ -121,8 +121,10 @@ log "Server started (PID: $(cat $SERVER_PID_FILE)) | Arch: $ARCH | Musl: $MUSL"
 log "Panel: http://localhost:8001"
 
 # Install openssh if not present (tarball may not include it)
-if [ ! -e "$ROOTFS/usr/sbin/sshd" ]; then
-    log "sshd not found in ankfs, installing openssh..."
+# Only attempt once per install — flag file prevents boot spam
+SSH_FLAG="$ANK_DIR/logs/.openssh_installed"
+if [ ! -e "$ROOTFS/usr/sbin/sshd" ] && [ ! -f "$SSH_FLAG" ]; then
+    log "sshd not found in ankfs, installing openssh (one-time)..."
     mount -t proc proc "$ROOTFS/proc" 2>/dev/null
     mkdir -p "$ROOTFS/dev" 2>/dev/null
     if ! mountpoint -q "$ROOTFS/dev" 2>/dev/null; then
@@ -138,6 +140,14 @@ if [ ! -e "$ROOTFS/usr/sbin/sshd" ]; then
     chroot "$ROOTFS" /sbin/apk add --no-cache openssh bash shadow 2>&1 | while IFS= read -r line; do
         log "  apk: $line"
     done
+
+    if [ -e "$ROOTFS/usr/sbin/sshd" ]; then
+        touch "$SSH_FLAG"
+        log "openssh installed successfully"
+    else
+        touch "$SSH_FLAG"
+        log "WARN: openssh install failed (will not retry)"
+    fi
 
     # Configure sshd
     mkdir -p "$ROOTFS/etc/ssh" "$ROOTFS/run/sshd" 2>/dev/null
