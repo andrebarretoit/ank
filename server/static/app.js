@@ -463,8 +463,20 @@ function renderImages(images) {
                 <span class="image-name">${esc(img.name)}</span>
                 <span class="image-size">${img.size_human || fmtBytes(img.size || 0)}</span>
             </div>
+            <button class="btn btn-sm btn-danger" onclick="event.stopPropagation(); deleteImage('${esc(img.name)}')" title="Delete image"><i class="bi bi-trash"></i></button>
         </div>
     `).join('');
+}
+
+async function deleteImage(name) {
+    if (!confirm('Delete image "' + name + '"? This cannot be undone.')) return;
+    try {
+        await api('POST', '/images/' + encodeURIComponent(name) + '/delete');
+        toast('Image deleted', 'success');
+        loadImages();
+    } catch (e) {
+        toast('Failed to delete image: ' + e.message, 'error');
+    }
 }
 
 function renderLocalImagesForTransfer(images) {
@@ -1187,7 +1199,8 @@ function showPullModal(defaultVersion) {
     const overlay = document.createElement('div');
     overlay.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.7);z-index:10000;display:flex;align-items:center;justify-content:center;';
     overlay.innerHTML = `
-        <div style="background:#1e293b;border-radius:12px;padding:24px;max-width:560px;width:90%;color:#e2e8f0;font-family:system-ui,sans-serif;">
+        <div style="background:#1e293b;border-radius:12px;padding:24px;max-width:560px;width:90%;color:#e2e8f0;font-family:system-ui,sans-serif;position:relative;">
+            <button id="pull-close-x" style="position:absolute;top:12px;right:12px;background:none;border:none;color:#94a3b8;font-size:20px;cursor:pointer;padding:4px 8px;border-radius:4px;line-height:1;" title="Close">&times;</button>
             <h3 style="margin:0 0 12px;font-size:16px;"><i class="bi bi-cloud-download"></i> Pull Image</h3>
             <div style="display:flex;gap:8px;margin-bottom:12px;">
                 <input id="pull-version" type="text" value="${esc(defaultVersion)}" placeholder="Alpine version" style="flex:1;padding:8px 12px;border-radius:6px;border:1px solid #334155;background:#0f172a;color:#e2e8f0;font-size:14px;">
@@ -1201,7 +1214,15 @@ function showPullModal(defaultVersion) {
     const statusEl = overlay.querySelector('#pull-status');
     const goBtn = overlay.querySelector('#pull-go-btn');
     const versionInput = overlay.querySelector('#pull-version');
+    const closeX = overlay.querySelector('#pull-close-x');
     let pollInterval = null;
+
+    function closeModal() {
+        if (pollInterval) clearInterval(pollInterval);
+        overlay.remove();
+    }
+
+    closeX.addEventListener('click', closeModal);
 
     goBtn.addEventListener('click', async () => {
         const version = versionInput.value.trim();
@@ -1233,25 +1254,31 @@ function showPullModal(defaultVersion) {
                 } else if (st.state === 'done') {
                     statusEl.innerHTML = '<span style="color:#22c55e;">✓ Done!</span>';
                     clearInterval(pollInterval);
+                    goBtn.disabled = false;
+                    goBtn.innerHTML = '<i class="bi bi-cloud-download"></i> Pull';
+                    versionInput.disabled = false;
                     loadAll();
                 } else if (st.state === 'error') {
                     statusEl.innerHTML = '<span style="color:#ef4444;">✗ Failed</span>';
                     clearInterval(pollInterval);
+                    goBtn.disabled = false;
+                    goBtn.innerHTML = '<i class="bi bi-cloud-download"></i> Pull';
+                    versionInput.disabled = false;
                 } else if (st.state === 'idle') {
                     statusEl.textContent = 'Waiting...';
                 }
             } catch (e) {
                 statusEl.innerHTML = '<span style="color:#ef4444;">✗ Connection lost</span>';
                 clearInterval(pollInterval);
+                goBtn.disabled = false;
+                goBtn.innerHTML = '<i class="bi bi-cloud-download"></i> Pull';
+                versionInput.disabled = false;
             }
         }, 2000);
     });
 
     overlay.addEventListener('click', (e) => {
-        if (e.target === overlay) {
-            if (pollInterval) clearInterval(pollInterval);
-            overlay.remove();
-        }
+        if (e.target === overlay) closeModal();
     });
 }
 

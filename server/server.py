@@ -349,7 +349,7 @@ def _health_file_status(name):
     """Primary liveness signal: ankd writes 'UP' or 'DOWN' to a host-accessible
     file outside the rootfs. This bypasses SELinux (which blocks reading files
     inside the container's merged/ dir) and overlayfs visibility issues."""
-    health_path = os.path.join(CONTAINERS_DIR, name, "health")
+    health_path = os.path.join(CONTAINERS_DIR, name, "merged", "tmp", "ank-health")
     try:
         with open(health_path, "r") as f:
             status = f.read().strip()
@@ -962,6 +962,25 @@ class AnkHandler(BaseHTTPRequestHandler):
                 port += 1
             return start
 
+    def _find_base_image(self):
+        """Find best available ank-alpinebase image. Prefers 3.20 > highest version."""
+        preferred = "ank-alpinebase-3.20"
+        if os.path.isdir(os.path.join(IMAGES_DIR, preferred)) and os.path.lexists(os.path.join(IMAGES_DIR, preferred, "bin/sh")):
+            return preferred
+        candidates = []
+        if os.path.exists(IMAGES_DIR):
+            for name in os.listdir(IMAGES_DIR):
+                if name.startswith("ank-alpinebase-") and os.path.lexists(os.path.join(IMAGES_DIR, name, "bin/sh")):
+                    try:
+                        ver = name.split("ank-alpinebase-")[1]
+                        candidates.append((ver, name))
+                    except Exception:
+                        pass
+        if candidates:
+            candidates.sort(reverse=True)
+            return candidates[0][1]
+        return preferred
+
     def send_security_headers(self):
         self.send_header('X-Content-Type-Options', 'nosniff')
         self.send_header('X-Frame-Options', 'DENY')
@@ -1428,6 +1447,8 @@ small{color:#334155}
             self.api_deploy_template(data)
         elif path == "/api/images/ankfile":
             self.api_build_ankfile(data)
+        elif path.startswith("/api/images/") and path.endswith("/delete"):
+            self.api_delete_image(path.split("/")[3])
         elif path == "/api/containers/" and "upload" in path:
             pass
         elif path == "/api/system/shell":
@@ -2699,7 +2720,8 @@ small{color:#334155}
 
     def api_image_templates(self):
         templates = []
-        alpine_ready = os.path.isdir(os.path.join(IMAGES_DIR, "ank-alpinebase-3.20")) and os.path.lexists(os.path.join(IMAGES_DIR, "ank-alpinebase-3.20", "bin/sh"))
+        base_image = self._find_base_image()
+        alpine_ready = os.path.isdir(os.path.join(IMAGES_DIR, base_image)) and os.path.lexists(os.path.join(IMAGES_DIR, base_image, "bin/sh"))
         for t in self.IMAGE_TEMPLATES:
             tpl = dict(t)
             if t["category"] == "base":
@@ -2730,9 +2752,10 @@ small{color:#334155}
             self.send_error(404, f"Template '{template_id}' not found")
             return
 
-        base_img = os.path.join(IMAGES_DIR, "ank-alpinebase-3.20")
+        base_image = self._find_base_image()
+        base_img = os.path.join(IMAGES_DIR, base_image)
         if not os.path.isdir(base_img):
-            self.send_error(400, "Base ank-alpinebase-3.20 image not found. Reinstall the module.")
+            self.send_error(400, f"Base {base_image} image not found. Reinstall the module.")
             return
 
         root_password = data.get("root_password") or load_config().get("default_container_password", "ank123")
@@ -2744,7 +2767,7 @@ small{color:#334155}
         stub_config = {
             "name": container_name,
             "status": "building",
-            "image": "ank-alpinebase-3.20",
+            "image": base_image,
             "mode": get_mode().get("mode", "shared_host"),
             "autostart": False,
             "ip_address": "",
@@ -2771,7 +2794,7 @@ small{color:#334155}
                     lf.flush()
 
                 pkgs = " ".join(template.get("packages", []))
-                output, code = run_script("container.sh", "create", container_name, "ank-alpinebase-3.20", str(root_password), str(ssh_port), pkgs, template_id, timeout=300)
+                output, code = run_script("container.sh", "create", container_name, base_image, str(root_password), str(ssh_port), pkgs, template_id, timeout=300)
                 with open(log_path, "a") as lf:
                     lf.write(output + "\n")
                     lf.flush()
@@ -2963,6 +2986,10 @@ small{color:#334155}
                 continue
             if line.startswith('FROM '):
                 base_image = line.split(' ', 1)[1].strip()
+                # Map alpine-X.Y to ank-alpinebase-X.Y
+                case_alpine = base_image
+                if case_alpine.startswith("alpine-"):
+                    base_image = f"ank-alpinebase-{case_alpine[7:]}"
             elif line.startswith('PASSWD '):
                 root_password = line[7:].strip()
             elif line.startswith('RUN '):
@@ -4301,6 +4328,11 @@ small{color:#334155}
                         size = int(out.stdout.split("\t")[0]) if out.returncode == 0 else 0
                     except Exception:
                         pass
+                    if size == 0:
+                        try:
+                            size = sum(os.path.getsize(os.path.join(dp, f)) for dp, _, fn in os.walk(p) for f in fn)
+                        except Exception:
+                            pass
                     images.append({
                         "name": name,
                         "complete": has_python and has_sh,
@@ -4309,6 +4341,18 @@ small{color:#334155}
                         "size_human": self._fmt_size(size)
                     })
         self.send_json(images)
+
+    def api_delete_image(self, name):
+        if not name or name.startswith("/"):
+            self.send_error(400, "Invalid image name")
+            return
+        image_dir = os.path.join(IMAGES_DIR, name)
+        if not os.path.isdir(image_dir):
+            self.send_error(404, f"Image '{name}' not found")
+            return
+        import shutil
+        shutil.rmtree(image_dir)
+        self.send_json({"message": f"Image '{name}' deleted"})
 
     def api_receive_image_upload(self):
         import tarfile, io
