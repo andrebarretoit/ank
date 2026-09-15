@@ -30,22 +30,6 @@ from datetime import datetime, timedelta
 _port_lock = threading.Lock()
 _build_lock = threading.Lock()
 _building = False
-_pull_status = {}  # version -> {"state": "pulling|building|done|error", "output": [...], "error": ""}
-
-# --- Container status debouncing -------------------------------------------
-# check_container_running() is a single best-effort snapshot; any one of its
-# signals (cgroup, marker file, pid) can independently glitch for a tick on
-# Android (SELinux, overlayfs mount timing, a service respawn) without the
-# container actually having died. To satisfy "status never flips to stopped
-# while the container is alive", the poller only trusts should_mark_stopped(),
-# which requires several *consecutive* failed snapshots (spread over multiple
-# 15s poll cycles) and ignores everything during a short grace window right
-# after a container reports "running".
-_status_lock = threading.Lock()
-_status_fail_counts = {}     # name -> consecutive failed-check count
-_status_grace_until = {}     # name -> monotonic() time before which checks are skipped
-STATUS_FAIL_THRESHOLD = 3    # consecutive failures required before flipping to stopped
-STATUS_GRACE_SECONDS = 12    # skip checks for this long right after a start
 
 ANK_DIR = os.environ.get("ANK_DIR", "/data/local/ank")
 ANK_SDCARD = "/sdcard/AndroidKonteiner"
@@ -309,39 +293,6 @@ def run_script(script, *args, timeout=60):
     except Exception as e:
         return str(e), 1
 
-def run_script_stream(script, *args, output_list=None, timeout=300):
-    """Run a script line-by-line, appending each line to output_list. Returns return code."""
-    script_path = os.path.join(SCRIPTS_DIR, script)
-    cmd_parts = ["/system/bin/sh", script_path] + list(args)
-    cmd_str = " ".join(f"'{a}'" for a in cmd_parts)
-    try:
-        if os.geteuid() != 0:
-            proc = subprocess.Popen(
-                ["su", "-c", cmd_str],
-                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                text=True
-            )
-        else:
-            proc = subprocess.Popen(
-                cmd_parts,
-                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                text=True
-            )
-        for line in iter(proc.stdout.readline, ""):
-            if output_list is not None:
-                output_list.append(line.rstrip("\n"))
-        proc.wait(timeout=timeout)
-        return proc.returncode
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        if output_list is not None:
-            output_list.append("ERROR: Script timed out")
-        return 1
-    except Exception as e:
-        if output_list is not None:
-            output_list.append(f"ERROR: {e}")
-        return 1
-
 def get_container_stats(name):
     cgroup = f"/sys/fs/cgroup/ank/{name}"
     if not os.path.isdir(cgroup):
@@ -378,112 +329,24 @@ def get_container_stats(name):
         pass
     return {"memory_bytes": mem, "memory_limit": lim, "cpu_usage": cpu, "pids": pids}
 
-def _pid_alive(name):
-    """Check if the container's main process is still alive via PID file."""
-    config = load_container_config(name)
-    if not config:
-        return None
-    pid = config.get("pid")
-    if not pid:
-        return None
-    try:
-        os.kill(int(pid), 0)
-        return True
-    except (OSError, ProcessLookupError):
-        return False
-    except (ValueError, TypeError):
-        return None
-
-
-def _health_file_status(name):
-    """Health file written by ankd (UP/DOWN). Runs inside container."""
-    health_path = os.path.join(CONTAINERS_DIR, name, "merged", "tmp", "ank-health")
-    try:
-        with open(health_path, "r") as f:
-            status = f.read().strip()
-        return status == "UP"
-    except (OSError, IOError):
-        return None
-
-
-def _sshd_port_open(name):
-    """TCP check: can we connect to the container's SSH port?"""
-    config = load_container_config(name)
-    if not config:
-        return None
-    port = config.get("ssh_port")
-    if not port:
-        return None
-    import socket
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s.settimeout(2)
-        result = s.connect_ex(("127.0.0.1", int(port)))
-        s.close()
-        return result == 0
-    except (OSError, ValueError):
-        return None
-
-
 def check_container_running(name):
-    """Check if a container is alive. Priority:
-    1. PID alive (process exists) — most reliable
-    2. TCP port open (sshd listening) — definitive backup
-    3. Health file says UP
-    Any positive signal = running. Only False when PID dead AND
-    TCP closed AND health says DOWN."""
-    pid = _pid_alive(name)
+    marker = os.path.join(CONTAINERS_DIR, name, "merged", "tmp", "ankd-running")
+    try:
+        if os.path.exists(marker):
+            return True
+    except Exception:
+        pass
+    config = load_container_config(name)
+    if not config:
+        return False
+    pid = config.get("pid")
     if pid:
-        return True
-    tcp = _sshd_port_open(name)
-    if tcp:
-        return True
-    health = _health_file_status(name)
-    if health:
-        return True
-    # PID dead + TCP closed + no health = stopped
-    if pid is False:
-        return False
-    # PID unknown but TCP closed = likely stopped
-    if tcp is False and health is not True:
-        return False
-    # Ambiguous: default to running
-    return True
-
-
-def should_mark_stopped(name):
-    """Debounced decision used by anything that's about to persist a
-    "running" -> "stopped" transition. Requires STATUS_FAIL_THRESHOLD
-    consecutive failed check_container_running() snapshots, and never fires
-    during the STATUS_GRACE_SECONDS window right after a container was last
-    (re)started, so a single transient signal glitch can never flip status.
-    """
-    now = time.monotonic()
-    with _status_lock:
-        if now < _status_grace_until.get(name, 0):
-            return False
-        if check_container_running(name):
-            _status_fail_counts[name] = 0
-            return False
-        count = _status_fail_counts.get(name, 0) + 1
-        _status_fail_counts[name] = count
-        return count >= STATUS_FAIL_THRESHOLD
-
-
-def note_container_started(name):
-    """Reset debounce state and open a grace window. Call whenever a
-    container's status is set to "running"."""
-    with _status_lock:
-        _status_fail_counts[name] = 0
-        _status_grace_until[name] = time.monotonic() + STATUS_GRACE_SECONDS
-
-
-def note_container_stopped(name):
-    """Clear debounce state. Call whenever a container's status is set to
-    anything other than "running" (stopped, stopping, failed, building)."""
-    with _status_lock:
-        _status_fail_counts.pop(name, None)
-        _status_grace_until.pop(name, None)
+        try:
+            os.kill(int(pid), 0)
+            return True
+        except (OSError, ProcessLookupError, ValueError):
+            pass
+    return False
 
 def get_mode():
     try:
@@ -595,6 +458,45 @@ class Handler(BaseHTTPRequestHandler):
 
 HTTPServer(('0.0.0.0', int(os.environ.get('ANK_PORT', '{port}'))), Handler).serve_forever()"""
 
+# ============================================================
+# S6 service definitions for templates
+# ============================================================
+
+S6_SERVICES = {
+    "nginx": {
+        "run": "#!/bin/sh\nexec nginx",
+        "finish": "#!/bin/sh\ntrue"
+    },
+    "apache": {
+        "run": "#!/bin/sh\nexec httpd -D FOREGROUND",
+        "finish": "#!/bin/sh\ntrue"
+    },
+    "php": {
+        "run": "#!/bin/sh\nexec php82-cgi -b 0.0.0.0:8000",
+        "finish": "#!/bin/sh\ntrue"
+    },
+    "node": {
+        "run": "#!/bin/sh\ncd /var/www/app && exec node server.js",
+        "finish": "#!/bin/sh\ntrue"
+    },
+    "python": {
+        "run": "#!/bin/sh\ncd /var/www/app && exec python3 server.py",
+        "finish": "#!/bin/sh\ntrue"
+    }
+}
+
+def _write_s6_service(merged, service_name):
+    """Write s6 service definitions into merged dir."""
+    import stat
+    svc_dir = os.path.join(merged, "etc/services.d", service_name)
+    os.makedirs(svc_dir, exist_ok=True)
+    if service_name in S6_SERVICES:
+        for script_name in ("run", "finish"):
+            path = os.path.join(svc_dir, script_name)
+            with open(path, "w") as f:
+                f.write(S6_SERVICES[service_name][script_name])
+            os.chmod(path, os.stat(path).st_mode | stat.S_IEXEC)
+
 def _write_portfwd(merged, container_port, protocol="tcp"):
     """Write portfwd.conf into merged dir for the container."""
     ank_dir = os.path.join(merged, "etc/ank")
@@ -602,7 +504,7 @@ def _write_portfwd(merged, container_port, protocol="tcp"):
     with open(os.path.join(ank_dir, "portfwd.conf"), "w") as f:
         f.write(f"{container_port} {protocol}\n")
 
-def _write_ank_config(merged, service, port, static_path=""):
+def _write_ank_config(merged, service, port, static_path="", s6="false"):
     """Write unified /etc/ank/config into merged dir."""
     ank_dir = os.path.join(merged, "etc/ank")
     os.makedirs(ank_dir, exist_ok=True)
@@ -610,6 +512,7 @@ def _write_ank_config(merged, service, port, static_path=""):
         f.write(f"service={service}\n")
         f.write(f"port={port}\n")
         f.write(f"static_path={static_path}\n")
+        f.write(f"s6={s6}\n")
 
 # check_auth replaced by _check_auth() token-based authentication (see security section above)
 
@@ -944,7 +847,7 @@ def _ws_shell_session(handler, cols=80, rows=24):
 class AnkHandler(BaseHTTPRequestHandler):
 
     def _find_free_port(self, start=2200):
-        """Find a free port starting from 'start', checking configs AND actual TCP ports. Thread-safe."""
+        """Find a free port starting from 'start', checking existing containers. Thread-safe."""
         with _port_lock:
             used = set()
             for cfg_file in glob.glob(os.path.join(CONTAINERS_DIR, "*/config.json")):
@@ -975,25 +878,6 @@ class AnkHandler(BaseHTTPRequestHandler):
                         return port
                 port += 1
             return start
-
-    def _find_base_image(self):
-        """Find best available ank-alpinebase image. Prefers 3.20 > highest version."""
-        preferred = "ank-alpinebase-3.20"
-        if os.path.isdir(os.path.join(IMAGES_DIR, preferred)) and os.path.lexists(os.path.join(IMAGES_DIR, preferred, "bin/sh")):
-            return preferred
-        candidates = []
-        if os.path.exists(IMAGES_DIR):
-            for name in os.listdir(IMAGES_DIR):
-                if name.startswith("ank-alpinebase-") and os.path.lexists(os.path.join(IMAGES_DIR, name, "bin/sh")):
-                    try:
-                        ver = name.split("ank-alpinebase-")[1]
-                        candidates.append((ver, name))
-                    except Exception:
-                        pass
-        if candidates:
-            candidates.sort(reverse=True)
-            return candidates[0][1]
-        return preferred
 
     def send_security_headers(self):
         self.send_header('X-Content-Type-Options', 'nosniff')
@@ -1169,11 +1053,10 @@ small{color:#334155}
             if not config:
                 self._ws_send_error(404, f"Container '{container_name}' not found")
                 return
-            if config.get("status") == "running" and should_mark_stopped(container_name):
+            if config.get("status") == "running" and not check_container_running(container_name):
                 config["status"] = "stopped"
                 config["pid"] = None
                 save_container_config(container_name, config)
-                note_container_stopped(container_name)
             if config.get("status") != "running":
                 self._ws_send_error(400, f"Container '{container_name}' is not running (status: {config.get('status', 'unknown')})")
                 return
@@ -1338,14 +1221,6 @@ small{color:#334155}
             self.api_list_images()
         elif path == "/api/images/templates":
             self.api_image_templates()
-        elif path == "/api/images/pull/status":
-            qs = parsed.query
-            version = "3.20"
-            if qs:
-                for part in qs.split("&"):
-                    if part.startswith("version="):
-                        version = part.split("=", 1)[1]
-            self.api_pull_image_status({"version": version})
         elif path == "/api/system/info":
             self.api_system_info()
         elif path == "/api/networks":
@@ -1461,8 +1336,6 @@ small{color:#334155}
             self.api_deploy_template(data)
         elif path == "/api/images/ankfile":
             self.api_build_ankfile(data)
-        elif path.startswith("/api/images/") and path.endswith("/delete"):
-            self.api_delete_image(path.split("/")[3])
         elif path == "/api/containers/" and "upload" in path:
             pass
         elif path == "/api/system/shell":
@@ -1630,11 +1503,10 @@ small{color:#334155}
                 except Exception:
                     continue
                 if config:
-                    if config.get("status") == "running" and should_mark_stopped(name):
+                    if config.get("status") == "running" and not check_container_running(name):
                         config["status"] = "stopped"
                         config["pid"] = None
                         save_container_config(name, config)
-                        note_container_stopped(name)
                     config["stats"] = get_container_stats(name)
                     containers.append(config)
         self.send_json(containers)
@@ -1765,19 +1637,10 @@ small{color:#334155}
                         log(f"ERROR: start {name}: {output}")
                         cfg["status"] = "stopped"
                         cfg["pid"] = None
-                        save_container_config(name, cfg)
-                        note_container_stopped(name)
                     else:
                         log(f"Container {name} started")
-                        # Re-read config — container.sh updated PID and status
-                        cfg2 = load_container_config(name)
-                        if cfg2:
-                            cfg2["status"] = "running"
-                            save_container_config(name, cfg2)
-                        else:
-                            cfg["status"] = "running"
-                            save_container_config(name, cfg)
-                        note_container_started(name)
+                        cfg["status"] = "running"
+                    save_container_config(name, cfg)
             except Exception as e:
                 log(f"ERROR: start thread {name}: {e}")
                 cfg = load_container_config(name)
@@ -1785,7 +1648,6 @@ small{color:#334155}
                     cfg["status"] = "stopped"
                     cfg["pid"] = None
                     save_container_config(name, cfg)
-                    note_container_stopped(name)
         import threading
         threading.Thread(target=do_start, daemon=True).start()
         self.send_json({"message": f"Container '{name}' starting"})
@@ -1798,7 +1660,6 @@ small{color:#334155}
         # Write status BEFORE spawning thread
         config["status"] = "stopping"
         save_container_config(name, config)
-        note_container_stopped(name)
         def do_stop():
             try:
                 log_path = os.path.join(ANK_DIR, "logs", f"{name}.log")
@@ -1840,7 +1701,6 @@ small{color:#334155}
                     cfg["status"] = "stopped"
                     cfg["pid"] = None
                     save_container_config(name, cfg)
-                    note_container_stopped(name)
             except Exception as e:
                 log(f"ERROR: stop thread {name}: {e}")
                 cfg = load_container_config(name)
@@ -1848,7 +1708,6 @@ small{color:#334155}
                     cfg["status"] = "stopped"
                     cfg["pid"] = None
                     save_container_config(name, cfg)
-                    note_container_stopped(name)
         import threading
         threading.Thread(target=do_stop, daemon=True).start()
         self.send_json({"message": f"Container '{name}' stopping"})
@@ -2088,13 +1947,10 @@ small{color:#334155}
                         log(f"ERROR: restart {name}: {output}")
                         cfg3["status"] = "stopped"
                         cfg3["pid"] = None
-                        save_container_config(name, cfg3)
-                        note_container_stopped(name)
                     else:
                         log(f"Container {name} restarted")
                         cfg3["status"] = "running"
-                        save_container_config(name, cfg3)
-                        note_container_started(name)
+                    save_container_config(name, cfg3)
             except Exception as e:
                 log(f"ERROR: restart thread {name}: {e}")
                 cfg = load_container_config(name)
@@ -2102,7 +1958,6 @@ small{color:#334155}
                     cfg["status"] = "stopped"
                     cfg["pid"] = None
                     save_container_config(name, cfg)
-                    note_container_stopped(name)
         import threading
         threading.Thread(target=do_restart, daemon=True).start()
         self.send_json({"message": f"Container '{name}' restarting"})
@@ -2482,7 +2337,8 @@ small{color:#334155}
                 if os.path.isdir(merged):
                     _service = config.get("template", "")
                     _sp = config.get("static_path", "")
-                    _write_ank_config(merged, _service, str(new_port), _sp)
+                    _s6 = "true" if config.get("s6", False) else "false"
+                    _write_ank_config(merged, _service, str(new_port), _sp, _s6)
                     # Patch nginx.conf, httpd.conf, server.py, server.js
                     if _service == "nginx":
                         nginx_conf = os.path.join(merged, "etc/nginx/nginx.conf")
@@ -2521,6 +2377,8 @@ small{color:#334155}
             config["serves_static"] = data["serves_static"]
         if "static_path" in data:
             config["static_path"] = data["static_path"]
+        if "s6" in data:
+            config["s6"] = data["s6"]
         if "root_password" in data and data["root_password"]:
             new_pass = data["root_password"]
             if len(new_pass) < 4:
@@ -2568,43 +2426,56 @@ small{color:#334155}
             if _pm:
                 _port = str(_pm[0].get("container_port", ""))
             _sp = config.get("static_path", "")
-            _write_ank_config(merged, _service, _port, _sp)
+            _s6 = "true" if config.get("s6", False) else "false"
+            _write_ank_config(merged, _service, _port, _sp, _s6)
         self.send_json({"message": f"Container '{name}' updated"})
 
     def api_pull_image(self, data):
         version = data.get("version", "3.20")
-        if _pull_status.get(version, {}).get("state") in ("pulling", "building"):
-            self.send_error(409, f"Pull already in progress for alpine-{version}")
+        output, code = run_script("download-rootfs.sh", version)
+        if code != 0:
+            self.send_error(500, f"Failed to pull image: {output}")
             return
-        _pull_status[version] = {"state": "pulling", "output": [], "error": ""}
-        def _do_pull():
+        # Generate ank-alpinebase-{version} from downloaded alpine
+        alpine_dir = os.path.join(IMAGES_DIR, f"alpine-{version}")
+        ankbase_dir = os.path.join(IMAGES_DIR, f"ank-alpinebase-{version}")
+        if os.path.isdir(alpine_dir) and not os.path.isdir(ankbase_dir):
             try:
-                dl_out = _pull_status[version]["output"]
-                code = run_script_stream("download-rootfs.sh", version, output_list=dl_out, timeout=300)
-                if code != 0:
-                    _pull_status[version]["state"] = "error"
-                    _pull_status[version]["error"] = "\n".join(dl_out)
-                    return
-                _pull_status[version]["state"] = "building"
-                dl_out.append("Building ank-alpinebase (installing openssh, bash, openssl)...")
-                code2 = run_script_stream("container.sh", "build-base", version, output_list=dl_out, timeout=300)
-                if code2 != 0:
-                    _pull_status[version]["state"] = "error"
-                    _pull_status[version]["error"] = "\n".join(dl_out)
-                    return
-                _pull_status[version]["state"] = "done"
-                dl_out.append(f"Image ank-alpinebase-{version} ready")
-            except Exception as e:
-                _pull_status[version]["state"] = "error"
-                _pull_status[version]["error"] = str(e)
-        import threading
-        threading.Thread(target=_do_pull, daemon=True).start()
-        self.send_json({"message": f"Pulling alpine-{version}...", "version": version})
-
-    def api_pull_image_status(self, data):
-        version = data.get("version", "3.20")
-        status = _pull_status.get(version, {"state": "idle", "output": [], "error": ""})
-        self.send_json(status)
+                import shutil
+                shutil.copytree(alpine_dir, ankbase_dir)
+                # Install basic packages into the new ank-alpinebase
+                merged = ankbase_dir
+                _merged_write = os.path.join(merged, "etc/resolv.conf")
+                os.makedirs(os.path.dirname(_merged_write), exist_ok=True)
+                with open(_merged_write, "w") as f:
+                    f.write("nameserver 8.8.8.8\nnameserver 8.8.4.4\n")
+                # Install openssh/bash/busybox/shadow/s6 via chroot
+                merged_dev = os.path.join(merged, "dev")
+                merged_proc = os.path.join(merged, "proc")
+                try:
+                    os.makedirs(merged_dev, exist_ok=True)
+                    os.makedirs(merged_proc, exist_ok=True)
+                    subprocess.run(["mount", "-t", "tmpfs", "-o", "size=16m", "tmpfs", merged_dev], timeout=5)
+                    subprocess.run(["mount", "-t", "proc", "proc", merged_proc], timeout=5)
+                    subprocess.run(["mknod", os.path.join(merged_dev, "null"), "c", "1", "3"], timeout=5)
+                    subprocess.run(["chmod", "666", os.path.join(merged_dev, "null")], timeout=5)
+                    subprocess.run(["mknod", os.path.join(merged_dev, "urandom"), "c", "1", "9"], timeout=5)
+                    subprocess.run(["chmod", "666", os.path.join(merged_dev, "urandom")], timeout=5)
+                    subprocess.run(["chroot", merged, "/sbin/apk", "add", "--no-cache",
+                                    "busybox", "bash", "shadow", "openssh", "openssl", "s6"],
+                                   capture_output=True, timeout=120)
+                except Exception:
+                    pass
+                finally:
+                    for m in [merged_proc, merged_dev]:
+                        try: subprocess.run(["umount", m], timeout=5)
+                        except Exception: pass
+                # Mark as ank-alpinebase
+                with open(os.path.join(merged, ".ank-base"), "w") as f:
+                    f.write(f"ank-alpinebase-{version}\n")
+            except Exception:
+                pass
+        self.send_json({"message": f"Image 'ank-alpinebase-{version}' ready"})
 
     # ============================================================
     # Image Templates
@@ -2697,8 +2568,7 @@ small{color:#334155}
 
     def api_image_templates(self):
         templates = []
-        base_image = self._find_base_image()
-        alpine_ready = os.path.isdir(os.path.join(IMAGES_DIR, base_image)) and os.path.lexists(os.path.join(IMAGES_DIR, base_image, "bin/sh"))
+        alpine_ready = os.path.isdir(os.path.join(IMAGES_DIR, "ank-alpinebase-3.20")) and os.path.lexists(os.path.join(IMAGES_DIR, "ank-alpinebase-3.20", "bin/sh"))
         for t in self.IMAGE_TEMPLATES:
             tpl = dict(t)
             if t["category"] == "base":
@@ -2729,10 +2599,9 @@ small{color:#334155}
             self.send_error(404, f"Template '{template_id}' not found")
             return
 
-        base_image = self._find_base_image()
-        base_img = os.path.join(IMAGES_DIR, base_image)
+        base_img = os.path.join(IMAGES_DIR, "ank-alpinebase-3.20")
         if not os.path.isdir(base_img):
-            self.send_error(400, f"Base {base_image} image not found. Reinstall the module.")
+            self.send_error(400, "Base ank-alpinebase-3.20 image not found. Reinstall the module.")
             return
 
         root_password = data.get("root_password") or load_config().get("default_container_password", "ank123")
@@ -2744,7 +2613,7 @@ small{color:#334155}
         stub_config = {
             "name": container_name,
             "status": "building",
-            "image": base_image,
+            "image": "ank-alpinebase-3.20",
             "mode": get_mode().get("mode", "shared_host"),
             "autostart": False,
             "ip_address": "",
@@ -2756,7 +2625,8 @@ small{color:#334155}
             "port_mappings": [],
             "root_password": root_password,
             "template": template_id,
-            "template_name": template["name"]
+            "template_name": template["name"],
+            "s6": False
         }
         save_container_config(container_name, stub_config)
 
@@ -2770,7 +2640,7 @@ small{color:#334155}
                     lf.flush()
 
                 pkgs = " ".join(template.get("packages", []))
-                output, code = run_script("container.sh", "create", container_name, base_image, str(root_password), str(ssh_port), pkgs, template_id, timeout=300)
+                output, code = run_script("container.sh", "create", container_name, "ank-alpinebase-3.20", str(root_password), str(ssh_port), pkgs, template_id, timeout=300)
                 with open(log_path, "a") as lf:
                     lf.write(output + "\n")
                     lf.flush()
@@ -2829,6 +2699,7 @@ small{color:#334155}
                 _chroot('mkdir -p /etc; echo "nameserver 8.8.8.8" > /etc/resolv.conf; echo "nameserver 8.8.4.4" >> /etc/resolv.conf')
 
                 config = load_container_config(container_name)
+                _s6_enabled = config.get("s6", False) if config else False
                 if config:
                     config["template"] = template_id
                     config["template_name"] = template["name"]
@@ -2878,33 +2749,33 @@ small{color:#334155}
                     _chroot(f'mkdir -p {static_dir} /run/nginx')
                     _write_file(os.path.join(merged, static_dir.lstrip('/'), 'index.html'), ANK_NGINX_HTML)
                     _write_file(os.path.join(merged, 'etc/nginx/nginx.conf'), ANK_NGINX_CONF.replace('{port}', str(actual_port)))
-                    _write_ank_config(merged, 'nginx', actual_port, static_dir)
+                    _write_ank_config(merged, 'nginx', actual_port, static_dir, "true" if _s6_enabled else "false")
 
                 elif template_id == "apache":
                     static_dir = template["static_path"]
                     _chroot(f'mkdir -p {static_dir}')
                     _chroot(f'sed -i "s/^Listen 80/Listen {actual_port}/" /etc/apache2/httpd.conf 2>/dev/null')
                     _write_file(os.path.join(merged, static_dir.lstrip('/'), 'index.html'), ANK_APACHE_HTML)
-                    _write_ank_config(merged, 'apache', actual_port, static_dir)
+                    _write_ank_config(merged, 'apache', actual_port, static_dir, "true" if _s6_enabled else "false")
 
                 elif template_id == "php":
                     php_dir = "/var/www/php"
                     _chroot(f'mkdir -p {php_dir}')
                     _write_file(os.path.join(merged, php_dir.lstrip('/'), 'index.php'), ANK_PHP_INDEX)
-                    _write_ank_config(merged, 'php', actual_port, php_dir)
+                    _write_ank_config(merged, 'php', actual_port, php_dir, "true" if _s6_enabled else "false")
 
                 elif template_id == "node":
                     node_dir = "/var/www/app"
                     _chroot(f'mkdir -p {node_dir}')
                     _write_file(os.path.join(merged, node_dir.lstrip('/'), 'server.js'), ANK_NODE_SERVER.replace('{port}', str(actual_port)))
                     _write_file(os.path.join(merged, node_dir.lstrip('/'), 'package.json'), '{"name":"ank-node-app","version":"1.0.0","main":"server.js"}')
-                    _write_ank_config(merged, 'node', actual_port, node_dir)
+                    _write_ank_config(merged, 'node', actual_port, node_dir, "true" if _s6_enabled else "false")
 
                 elif template_id == "python":
                     py_dir = "/var/www/app"
                     _chroot(f'mkdir -p {py_dir}')
                     _write_file(os.path.join(merged, py_dir.lstrip('/'), 'server.py'), ANK_PYTHON_SERVER.replace('{port}', str(actual_port)))
-                    _write_ank_config(merged, 'python', actual_port, py_dir)
+                    _write_ank_config(merged, 'python', actual_port, py_dir, "true" if _s6_enabled else "false")
 
                 cfg = load_container_config(container_name)
                 if cfg:
@@ -2961,10 +2832,6 @@ small{color:#334155}
                 continue
             if line.startswith('FROM '):
                 base_image = line.split(' ', 1)[1].strip()
-                # Map alpine-X.Y to ank-alpinebase-X.Y
-                case_alpine = base_image
-                if case_alpine.startswith("alpine-"):
-                    base_image = f"ank-alpinebase-{case_alpine[7:]}"
             elif line.startswith('PASSWD '):
                 root_password = line[7:].strip()
             elif line.startswith('RUN '):
@@ -3105,7 +2972,7 @@ small{color:#334155}
                             lf.write(f"OK: {output[-300:]}\n")
 
                 if cmd_line:
-                    _write_ank_config(merged, cmd_line, ports[0] if ports else "", "")
+                    _write_ank_config(merged, cmd_line, ports[0] if ports else "", "", "false")
                     log(f"Ankfile CMD: {cmd_line}")
                     with open(log_path, "a") as lf:
                         lf.write(f"CMD: {cmd_line}\n")
@@ -4303,11 +4170,6 @@ small{color:#334155}
                         size = int(out.stdout.split("\t")[0]) if out.returncode == 0 else 0
                     except Exception:
                         pass
-                    if size == 0:
-                        try:
-                            size = sum(os.path.getsize(os.path.join(dp, f)) for dp, _, fn in os.walk(p) for f in fn)
-                        except Exception:
-                            pass
                     images.append({
                         "name": name,
                         "complete": has_python and has_sh,
@@ -4316,18 +4178,6 @@ small{color:#334155}
                         "size_human": self._fmt_size(size)
                     })
         self.send_json(images)
-
-    def api_delete_image(self, name):
-        if not name or name.startswith("/"):
-            self.send_error(400, "Invalid image name")
-            return
-        image_dir = os.path.join(IMAGES_DIR, name)
-        if not os.path.isdir(image_dir):
-            self.send_error(404, f"Image '{name}' not found")
-            return
-        import shutil
-        shutil.rmtree(image_dir)
-        self.send_json({"message": f"Image '{name}' deleted"})
 
     def api_receive_image_upload(self):
         import tarfile, io

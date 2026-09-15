@@ -74,13 +74,13 @@ _ensure_ankbase() {
     [ -e "$ANKBASE/dev/urandom" ] || mknod "$ANKBASE/dev/urandom" c 1 9 2>/dev/null; chmod 666 "$ANKBASE/dev/urandom" 2>/dev/null
 
     # Install packages (stream output)
-    echo "Installing openssh, bash, busybox, shadow, openssl..."
+    echo "Installing openssh, bash, busybox, shadow, openssl, s6..."
     mount -t proc proc "$ANKBASE/proc" 2>/dev/null
     local RC=1
     local apk_output=""
     for attempt in 1 2; do
         echo "apk add attempt 2/$attempt..."
-        apk_output=$(chroot "$ANKBASE" /sbin/apk add --no-cache busybox bash shadow openssh openssl 2>&1)
+        apk_output=$(chroot "$ANKBASE" /sbin/apk add --no-cache busybox bash shadow openssh openssl s6 2>&1)
         RC=$?
         if [ $RC -eq 0 ]; then
             echo "OK: All packages installed"
@@ -129,12 +129,19 @@ SSHEOF
     touch "$ANKBASE/root/.ssh/authorized_keys" 2>/dev/null
     chmod 600 "$ANKBASE/root/.ssh/authorized_keys" 2>/dev/null
 
+    # Create s6 service directory structure
+    mkdir -p "$ANKBASE/etc/s6-overlay/s6-rc.d"
+    mkdir -p "$ANKBASE/etc/s6-overlay/scripts"
+
+    # Create default empty services dir
+    mkdir -p "$ANKBASE/etc/s6/services"
+
     # Remove server files if any
     rm -rf "$ANKBASE/opt/ank" 2>/dev/null
 
     # Verify
     if [ -e "$ANKBASE/usr/sbin/sshd" ] && [ -e "$ANKBASE/bin/bash" ]; then
-        echo "ank-alpinebase-${VERSION} built successfully (openssh, bash, busybox, shadow)"
+        echo "ank-alpinebase-${VERSION} built successfully (openssh, bash, busybox, shadow, s6)"
         return 0
     else
         echo "ERROR: ank-alpinebase-${VERSION} build incomplete"
@@ -861,25 +868,6 @@ cmd_start() {
         fi
     fi
 
-    # Kill any stale process holding our SSH port
-    if [ "$SSHD_PORT" != "22" ]; then
-        local hex_port=$(printf '%04X' $SSHD_PORT)
-        local inode=$(awk -v port="$hex_port" '$2 ~ ":"port"$" {split($2,a,":"); print $10}' /proc/net/tcp 2>/dev/null | head -1)
-        if [ -n "$inode" ] && [ "$inode" != "0" ]; then
-            for fd_dir in /proc/[0-9]*/fd; do
-                local p=$(dirname "$fd_dir" | xargs basename)
-                if ls -la "$fd_dir" 2>/dev/null | grep -q "socket:\[$inode\]"; then
-                    if [ "$p" != "$PID" ] 2>/dev/null; then
-                        echo "  Killing stale process $p on port $SSHD_PORT (inode=$inode)"
-                        kill -9 "$p" 2>/dev/null
-                        sleep 1
-                    fi
-                    break
-                fi
-            done
-        fi
-    fi
-
     # Cleanup stale PID files and temp files from previous run
     rm -f "$ROOTFS/run/nginx.pid" "$ROOTFS/run/nginx.lock" 2>/dev/null
     rm -f "$ROOTFS/run/sshd.pid" "$ROOTFS/run/sshd.pid.lock" 2>/dev/null
@@ -894,8 +882,7 @@ cmd_start() {
         [ -f "$ANKD_SRC" ] && cp "$ANKD_SRC" "$ROOTFS/usr/ankd/core/ankd.sh" 2>/dev/null
         echo "  Using ankd service manager"
         local INSTANCE_UUID=$(grep -o '"instance_uuid": *"[^"]*"' "$CONFIG" 2>/dev/null | cut -d'"' -f4)
-        local HEALTH_FILE="/tmp/ank-health"
-        CONTAINER_INIT="export PATH=/bin:/sbin:/usr/bin:/usr/sbin; ANKD_CONTAINER=$NAME ANKD_SSHD_PORT=$SSHD_PORT ANKD_INSTANCE_UUID=${INSTANCE_UUID:-$NAME} ANK_HEALTH_FILE=$HEALTH_FILE /usr/ankd/core/ankd.sh daemon"
+        CONTAINER_INIT="export PATH=/bin:/sbin:/usr/bin:/usr/sbin; ANKD_CONTAINER=$NAME ANKD_SSHD_PORT=$SSHD_PORT ANKD_INSTANCE_UUID=${INSTANCE_UUID:-$NAME} /usr/ankd/core/ankd.sh daemon"
     else
         # Fallback: legacy inline init
         echo "  WARN: ankd not installed, using legacy init"
@@ -975,22 +962,6 @@ cmd_start() {
         sed -i "s/\"status\": \"[^\"]*\"/\"status\": \"stopped\"/" "$CONFIG"
         sed -i "s/\"pid\": [^,]*/\"pid\": null/" "$CONFIG"
         exit 1
-    fi
-
-    # Verify PID is the actual chroot process, not a nohup wrapper
-    # Scan /proc for the real process whose root is the container rootfs
-    local REAL_PID=""
-    for p_dir in /proc/[0-9]*/; do
-        local p_pid=$(basename "$p_dir")
-        local p_root=$(readlink "/proc/$p_pid/root" 2>/dev/null)
-        if [ "$p_root" = "$ROOTFS" ]; then
-            REAL_PID="$p_pid"
-            break
-        fi
-    done
-    if [ -n "$REAL_PID" ] && [ "$REAL_PID" != "$PID" ]; then
-        echo "  Real container PID: $REAL_PID (was wrapper PID: $PID)"
-        PID="$REAL_PID"
     fi
 
     # Move to cgroup. The cgroup dir is only created once by `cmd_create`,
@@ -1249,7 +1220,6 @@ cmd_stop() {
     # ============================================================
     echo "  Final cleanup..."
     rm -f "$CONTAINER_DIR/ank.procs"
-    rm -f "$CONTAINER_DIR/health"
 
     # Update config
     sed -i "s/\"status\": \"[^\"]*\"/\"status\": \"stopped\"/" "$CONFIG"
@@ -1655,14 +1625,13 @@ case "$CMD" in
     delete)     cmd_delete "$NAME" ;;
     list)       cmd_list ;;
     inspect)    cmd_inspect "$NAME" ;;
-    build-base) _ensure_ankbase "$NAME" ;;
     svc-list)   cmd_svc_list "$NAME" ;;
     svc-start)  cmd_svc_start "$NAME" "$3" ;;
     svc-stop)   cmd_svc_stop "$NAME" "$3" ;;
     svc-restart) cmd_svc_restart "$NAME" "$3" ;;
     svc-logs)   cmd_svc_logs "$NAME" "$3" "$4" ;;
     *)
-        echo "Usage: $0 {create|start|stop|delete|list|inspect|build-base|svc-list|svc-start|svc-stop|svc-restart|svc-logs} <name> [args]"
+        echo "Usage: $0 {create|start|stop|delete|list|inspect|svc-list|svc-start|svc-stop|svc-restart|svc-logs} <name> [args]"
         exit 1
         ;;
 esac

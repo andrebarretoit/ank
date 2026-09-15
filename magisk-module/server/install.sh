@@ -381,9 +381,9 @@ if [ ! -d "$ANKBASE/bin" ]; then
         echo "nameserver 8.8.8.8" > "$ANKBASE/etc/resolv.conf"
         echo "nameserver 8.8.4.4" >> "$ANKBASE/etc/resolv.conf"
         echo "127.0.0.1 localhost" > "$ANKBASE/etc/hosts"
-        echo "[ANK-INSTALL] Installing openssh, bash, s6 in ank-alpinebase-3.20..."
+        echo "[ANK-INSTALL] Installing openssh, bash in ank-alpinebase-3.20..."
         mount -t proc proc "$ANKBASE/proc" 2>/dev/null
-        APK_PKGS="busybox bash shadow openssh openssl s6"
+        APK_PKGS="busybox bash shadow openssh openssl"
         APK_RETRIES=3
         RET=1
         for attempt in 1 2 3; do
@@ -431,9 +431,8 @@ SSHEOF
             chmod 700 "$ANKBASE/root/.ssh"
             touch "$ANKBASE/root/.ssh/authorized_keys"
             chmod 600 "$ANKBASE/root/.ssh/authorized_keys"
-            mkdir -p "$ANKBASE/etc/s6/services"
             rm -rf "$ANKBASE/opt/ank" 2>/dev/null
-            log OK "ank-alpinebase-3.20 built (openssh, bash, busybox, shadow, s6)"
+            log OK "ank-alpinebase-3.20 built (openssh, bash, busybox, shadow)"
         fi
     fi
 else

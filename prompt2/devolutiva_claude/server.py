@@ -30,7 +30,6 @@ from datetime import datetime, timedelta
 _port_lock = threading.Lock()
 _build_lock = threading.Lock()
 _building = False
-_pull_status = {}  # version -> {"state": "pulling|building|done|error", "output": [...], "error": ""}
 
 # --- Container status debouncing -------------------------------------------
 # check_container_running() is a single best-effort snapshot; any one of its
@@ -309,39 +308,6 @@ def run_script(script, *args, timeout=60):
     except Exception as e:
         return str(e), 1
 
-def run_script_stream(script, *args, output_list=None, timeout=300):
-    """Run a script line-by-line, appending each line to output_list. Returns return code."""
-    script_path = os.path.join(SCRIPTS_DIR, script)
-    cmd_parts = ["/system/bin/sh", script_path] + list(args)
-    cmd_str = " ".join(f"'{a}'" for a in cmd_parts)
-    try:
-        if os.geteuid() != 0:
-            proc = subprocess.Popen(
-                ["su", "-c", cmd_str],
-                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                text=True
-            )
-        else:
-            proc = subprocess.Popen(
-                cmd_parts,
-                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                text=True
-            )
-        for line in iter(proc.stdout.readline, ""):
-            if output_list is not None:
-                output_list.append(line.rstrip("\n"))
-        proc.wait(timeout=timeout)
-        return proc.returncode
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        if output_list is not None:
-            output_list.append("ERROR: Script timed out")
-        return 1
-    except Exception as e:
-        if output_list is not None:
-            output_list.append(f"ERROR: {e}")
-        return 1
-
 def get_container_stats(name):
     cgroup = f"/sys/fs/cgroup/ank/{name}"
     if not os.path.isdir(cgroup):
@@ -378,76 +344,99 @@ def get_container_stats(name):
         pass
     return {"memory_bytes": mem, "memory_limit": lim, "cpu_usage": cpu, "pids": pids}
 
-def _pid_alive(name):
-    """Check if the container's main process is still alive via PID file."""
-    config = load_container_config(name)
-    if not config:
-        return None
-    pid = config.get("pid")
-    if not pid:
-        return None
+def _cgroup_has_live_pids(name):
+    """Primary liveness signal: is any PID still a member of the container's
+    cgroup ("/sys/fs/cgroup/ank/{name}/pids.current" > 0)?
+
+    This is the most robust of the three signals available to us:
+    - It's a plain read of a cgroupfs pseudo-file, which root always has
+      access to -- unlike /proc/*/cmdline (SELinux-blocked) or the marker
+      file (depends on overlayfs upperdir visibility).
+    - Every descendant process forked inside the container inherits cgroup
+      membership automatically (cgroup namespaces aren't used here), so it
+      keeps working even when the original tracked PID dies and ankd
+      respawns a service under a new PID -- the exact "PID issue" scenario
+      described for this bug.
+    Returns True/False, or None if the signal isn't available (cgroups
+    disabled for this mode, or the cgroup directory doesn't exist).
+    """
+    p = os.path.join("/sys/fs/cgroup/ank", name, "pids.current")
     try:
-        os.kill(int(pid), 0)
-        return True
-    except (OSError, ProcessLookupError):
-        return False
-    except (ValueError, TypeError):
-        return None
-
-
-def _health_file_status(name):
-    """Health file written by ankd (UP/DOWN). Runs inside container."""
-    health_path = os.path.join(CONTAINERS_DIR, name, "merged", "tmp", "ank-health")
-    try:
-        with open(health_path, "r") as f:
-            status = f.read().strip()
-        return status == "UP"
-    except (OSError, IOError):
-        return None
-
-
-def _sshd_port_open(name):
-    """TCP check: can we connect to the container's SSH port?"""
-    config = load_container_config(name)
-    if not config:
-        return None
-    port = config.get("ssh_port")
-    if not port:
-        return None
-    import socket
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s.settimeout(2)
-        result = s.connect_ex(("127.0.0.1", int(port)))
-        s.close()
-        return result == 0
+        with open(p) as f:
+            return int(f.read().strip()) > 0
     except (OSError, ValueError):
         return None
 
 
+def _marker_present(name):
+    """Secondary signal: host-written marker file under the container's
+    rootfs. Can go stale/invisible on overlayfs mount hiccups, so it's only
+    ever used to say "yes" -- never treated as authoritative for "no"."""
+    marker = os.path.join(CONTAINERS_DIR, name, "merged", "tmp", "ankd-running")
+    try:
+        return os.path.exists(marker)
+    except OSError:
+        return None
+
+
+def _pid_alive(pid):
+    """Tertiary signal: is the tracked PID alive? Checks /proc/<pid> first
+    (a plain stat, which survives SELinux restrictions that block reading
+    /proc/*/cmdline or /proc/*/status content), then falls back to
+    kill(pid, 0). A PermissionError from kill() still means the process
+    exists (we're just not allowed to signal it), so that counts as alive.
+    """
+    if not pid:
+        return None
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return None
+    try:
+        if os.path.isdir(f"/proc/{pid}"):
+            return True
+    except OSError:
+        pass
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return None
+
+
 def check_container_running(name):
-    """Check if a container is alive. Priority:
-    1. PID alive (process exists) — most reliable
-    2. TCP port open (sshd listening) — definitive backup
-    3. Health file says UP
-    Any positive signal = running. Only False when PID dead AND
-    TCP closed AND health says DOWN."""
-    pid = _pid_alive(name)
-    if pid:
+    """Single best-effort snapshot combining all three signals. Any signal
+    that reports "alive" is trusted immediately (a container is running if
+    ANY evidence says so, since the signals fail independently for unrelated
+    environment reasons, not because the container died). Only reports False
+    when every signal that could actually be read said "no". If every signal
+    was unavailable, we can't tell -- assume still running rather than risk
+    a false "stopped" (requirement: never flip to stopped incorrectly).
+
+    NOTE: this is a single point-in-time check and can glitch. Callers that
+    decide whether to change a container's stored status (the /containers
+    poller, the terminal auth check) must go through should_mark_stopped()
+    instead, which debounces this across multiple polls.
+    """
+    config = load_container_config(name)
+    pid = config.get("pid") if config else None
+
+    cgroup_signal = _cgroup_has_live_pids(name)
+    if cgroup_signal:
         return True
-    tcp = _sshd_port_open(name)
-    if tcp:
+    marker_signal = _marker_present(name)
+    if marker_signal:
         return True
-    health = _health_file_status(name)
-    if health:
+    pid_signal = _pid_alive(pid)
+    if pid_signal:
         return True
-    # PID dead + TCP closed + no health = stopped
-    if pid is False:
+
+    if any(signal_ is False for signal_ in (cgroup_signal, marker_signal, pid_signal)):
         return False
-    # PID unknown but TCP closed = likely stopped
-    if tcp is False and health is not True:
-        return False
-    # Ambiguous: default to running
     return True
 
 
@@ -595,6 +584,45 @@ class Handler(BaseHTTPRequestHandler):
 
 HTTPServer(('0.0.0.0', int(os.environ.get('ANK_PORT', '{port}'))), Handler).serve_forever()"""
 
+# ============================================================
+# S6 service definitions for templates
+# ============================================================
+
+S6_SERVICES = {
+    "nginx": {
+        "run": "#!/bin/sh\nexec nginx",
+        "finish": "#!/bin/sh\ntrue"
+    },
+    "apache": {
+        "run": "#!/bin/sh\nexec httpd -D FOREGROUND",
+        "finish": "#!/bin/sh\ntrue"
+    },
+    "php": {
+        "run": "#!/bin/sh\nexec php82-cgi -b 0.0.0.0:8000",
+        "finish": "#!/bin/sh\ntrue"
+    },
+    "node": {
+        "run": "#!/bin/sh\ncd /var/www/app && exec node server.js",
+        "finish": "#!/bin/sh\ntrue"
+    },
+    "python": {
+        "run": "#!/bin/sh\ncd /var/www/app && exec python3 server.py",
+        "finish": "#!/bin/sh\ntrue"
+    }
+}
+
+def _write_s6_service(merged, service_name):
+    """Write s6 service definitions into merged dir."""
+    import stat
+    svc_dir = os.path.join(merged, "etc/services.d", service_name)
+    os.makedirs(svc_dir, exist_ok=True)
+    if service_name in S6_SERVICES:
+        for script_name in ("run", "finish"):
+            path = os.path.join(svc_dir, script_name)
+            with open(path, "w") as f:
+                f.write(S6_SERVICES[service_name][script_name])
+            os.chmod(path, os.stat(path).st_mode | stat.S_IEXEC)
+
 def _write_portfwd(merged, container_port, protocol="tcp"):
     """Write portfwd.conf into merged dir for the container."""
     ank_dir = os.path.join(merged, "etc/ank")
@@ -602,7 +630,7 @@ def _write_portfwd(merged, container_port, protocol="tcp"):
     with open(os.path.join(ank_dir, "portfwd.conf"), "w") as f:
         f.write(f"{container_port} {protocol}\n")
 
-def _write_ank_config(merged, service, port, static_path=""):
+def _write_ank_config(merged, service, port, static_path="", s6="false"):
     """Write unified /etc/ank/config into merged dir."""
     ank_dir = os.path.join(merged, "etc/ank")
     os.makedirs(ank_dir, exist_ok=True)
@@ -610,6 +638,7 @@ def _write_ank_config(merged, service, port, static_path=""):
         f.write(f"service={service}\n")
         f.write(f"port={port}\n")
         f.write(f"static_path={static_path}\n")
+        f.write(f"s6={s6}\n")
 
 # check_auth replaced by _check_auth() token-based authentication (see security section above)
 
@@ -941,10 +970,151 @@ def _ws_shell_session(handler, cols=80, rows=24):
         _ws_send_close(handler.request)
 
 
+def _ws_node_shell_relay(handler, node_id, cols=80, rows=24):
+    """Relay a browser WebSocket shell session through to a remote node's own
+    /ws/shell endpoint, so the Shell tab's node selector can actually attach to a
+    remote node instead of just showing a toast (previously a stub)."""
+    client_sock = handler.request
+    nm = handler._get_node_manager()
+    conn = nm.get_node_connection(node_id) if nm else None
+    if not conn or not conn.get("ip"):
+        _ws_send_text(client_sock, f"\r\nERROR: Node '{node_id}' not found\r\n")
+        _ws_send_close(client_sock)
+        return
+    if conn.get("status") != "online":
+        _ws_send_text(client_sock, f"\r\nERROR: Node '{node_id}' is offline\r\n")
+        _ws_send_close(client_sock)
+        return
+
+    import socket as _socket
+
+    remote_sock = None
+    try:
+        ip = conn["ip"]
+        port = int(conn.get("port", 8001))
+        token = conn.get("token", "")
+
+        remote_sock = _socket.create_connection((ip, port), timeout=10)
+        ws_key = base64.b64encode(secrets.token_bytes(16)).decode()
+        path = f"/ws/shell?cols={cols}&rows={rows}&token={token}"
+        handshake = (
+            f"GET {path} HTTP/1.1\r\n"
+            f"Host: {ip}:{port}\r\n"
+            f"Upgrade: websocket\r\n"
+            f"Connection: Upgrade\r\n"
+            f"Sec-WebSocket-Key: {ws_key}\r\n"
+            f"Sec-WebSocket-Version: 13\r\n"
+            f"\r\n"
+        )
+        remote_sock.sendall(handshake.encode("utf-8"))
+
+        # Read the HTTP response headers up to the blank line.
+        buf = b""
+        while b"\r\n\r\n" not in buf:
+            chunk = remote_sock.recv(4096)
+            if not chunk:
+                raise ConnectionError("Remote node closed connection during handshake")
+            buf += chunk
+        header_part, _, leftover = buf.partition(b"\r\n\r\n")
+        status_line = header_part.split(b"\r\n", 1)[0].decode("utf-8", "replace")
+        if " 101 " not in status_line:
+            raise ConnectionError(f"Remote node rejected WebSocket upgrade: {status_line}")
+
+        running = [True]
+
+        # Any bytes already read past the header belong to the first frame(s).
+        pending = bytearray(leftover)
+
+        def _remote_recv_exact(n):
+            while len(pending) < n:
+                chunk = remote_sock.recv(max(4096, n - len(pending)))
+                if not chunk:
+                    return None
+                pending.extend(chunk)
+            data = bytes(pending[:n])
+            del pending[:n]
+            return data
+
+        def _read_remote_frame():
+            head = _remote_recv_exact(2)
+            if not head:
+                return None, None
+            b0, b1 = struct.unpack("!BB", head)
+            opcode = b0 & 0x0F
+            masked = bool(b1 & 0x80)
+            length = b1 & 0x7F
+            if length == 126:
+                ext = _remote_recv_exact(2)
+                if not ext:
+                    return None, None
+                length = struct.unpack("!H", ext)[0]
+            elif length == 127:
+                ext = _remote_recv_exact(8)
+                if not ext:
+                    return None, None
+                length = struct.unpack("!Q", ext)[0]
+            mask_key = _remote_recv_exact(4) if masked else None
+            payload = _remote_recv_exact(length) if length else b""
+            if payload is None:
+                return None, None
+            if mask_key:
+                payload = bytes(b ^ mask_key[i % 4] for i, b in enumerate(payload))
+            return opcode, payload
+
+        def relay_remote_to_client():
+            while running[0]:
+                try:
+                    opcode, payload = _read_remote_frame()
+                except Exception:
+                    break
+                if opcode is None:
+                    break
+                if opcode == 0x8:
+                    break
+                if opcode in (0x1, 0x2):
+                    try:
+                        _ws_send_frame(client_sock, opcode, payload)
+                    except Exception:
+                        break
+            running[0] = False
+
+        t = threading.Thread(target=relay_remote_to_client, daemon=True)
+        t.start()
+
+        # Client -> remote: forward whatever the browser sends (resize/input JSON messages).
+        while running[0]:
+            opcode, payload = _ws_read_frame_rsock(client_sock)
+            if opcode is None:
+                break
+            if opcode == 0x8:
+                break
+            if opcode in (0x1, 0x2):
+                try:
+                    _ws_send_frame(remote_sock, opcode, payload)
+                except Exception:
+                    break
+        running[0] = False
+    except Exception as e:
+        try:
+            _ws_send_text(client_sock, f"\r\nERROR: {str(e)}\r\n")
+        except Exception:
+            pass
+    finally:
+        if remote_sock:
+            try:
+                remote_sock.close()
+            except Exception:
+                pass
+        try:
+            _ws_send_close(client_sock)
+        except Exception:
+            pass
+
+
 class AnkHandler(BaseHTTPRequestHandler):
 
     def _find_free_port(self, start=2200):
-        """Find a free port starting from 'start', checking configs AND actual TCP ports. Thread-safe."""
+        """Find a free port starting from 'start', checking existing containers. Thread-safe."""
         with _port_lock:
             used = set()
             for cfg_file in glob.glob(os.path.join(CONTAINERS_DIR, "*/config.json")):
@@ -975,25 +1145,6 @@ class AnkHandler(BaseHTTPRequestHandler):
                         return port
                 port += 1
             return start
-
-    def _find_base_image(self):
-        """Find best available ank-alpinebase image. Prefers 3.20 > highest version."""
-        preferred = "ank-alpinebase-3.20"
-        if os.path.isdir(os.path.join(IMAGES_DIR, preferred)) and os.path.lexists(os.path.join(IMAGES_DIR, preferred, "bin/sh")):
-            return preferred
-        candidates = []
-        if os.path.exists(IMAGES_DIR):
-            for name in os.listdir(IMAGES_DIR):
-                if name.startswith("ank-alpinebase-") and os.path.lexists(os.path.join(IMAGES_DIR, name, "bin/sh")):
-                    try:
-                        ver = name.split("ank-alpinebase-")[1]
-                        candidates.append((ver, name))
-                    except Exception:
-                        pass
-        if candidates:
-            candidates.sort(reverse=True)
-            return candidates[0][1]
-        return preferred
 
     def send_security_headers(self):
         self.send_header('X-Content-Type-Options', 'nosniff')
@@ -1146,6 +1297,42 @@ small{color:#334155}
             except Exception:
                 pass
             _ws_shell_session(self, cols, rows)
+            return
+
+        # WebSocket upgrade for shell on a REMOTE node (relayed through this manager)
+        if path.startswith("/ws/node-shell/"):
+            self._is_websocket = True
+            upgrade = self.headers.get("Upgrade", "").lower()
+            ws_key = self.headers.get("Sec-WebSocket-Key", "")
+            if upgrade != "websocket" or not ws_key:
+                self._ws_send_error(400, "Invalid WebSocket upgrade request")
+                return
+            qs = parse_qs(parsed.query)
+            ws_token = qs.get("token", [None])[0]
+            if not _validate_token(ws_token):
+                log(f"WS_NODE_SHELL: auth failed from {self.client_address[0]}")
+                self._ws_send_error(401, "Unauthorized")
+                return
+            node_id = path.split("/")[3]
+            accept = _ws_accept_key(ws_key)
+            rsock = self.request
+            resp = (
+                b"HTTP/1.1 101 Switching Protocols\r\n"
+                b"Upgrade: websocket\r\n"
+                b"Connection: Upgrade\r\n"
+                b"Sec-WebSocket-Accept: " + accept.encode() + b"\r\n"
+                b"X-Content-Type-Options: nosniff\r\n"
+                b"\r\n"
+            )
+            rsock.sendall(resp)
+            cols = 80
+            rows = 24
+            try:
+                cols = int(qs.get("cols", [80])[0])
+                rows = int(qs.get("rows", [24])[0])
+            except Exception:
+                pass
+            _ws_node_shell_relay(self, node_id, cols, rows)
             return
 
         # WebSocket upgrade for terminal
@@ -1330,22 +1517,18 @@ small{color:#334155}
             name = parts[3]
             qs = parsed.query
             self.api_files_stat(name, qs)
+        elif path == "/api/containers/all":
+            self.api_all_containers()
         elif path.startswith("/api/containers/") and path.endswith("/logs"):
             self.api_container_logs(path.split("/")[3])
         elif path.startswith("/api/containers/"):
             self.api_container_inspect(path.split("/")[3])
         elif path == "/api/images":
             self.api_list_images()
+        elif path == "/api/images/all":
+            self.api_all_images()
         elif path == "/api/images/templates":
             self.api_image_templates()
-        elif path == "/api/images/pull/status":
-            qs = parsed.query
-            version = "3.20"
-            if qs:
-                for part in qs.split("&"):
-                    if part.startswith("version="):
-                        version = part.split("=", 1)[1]
-            self.api_pull_image_status({"version": version})
         elif path == "/api/system/info":
             self.api_system_info()
         elif path == "/api/networks":
@@ -1358,6 +1541,8 @@ small{color:#334155}
             self.api_get_config()
         elif path == "/api/stacks":
             self.api_list_stacks()
+        elif path == "/api/stacks/all":
+            self.api_all_stacks()
         elif path.startswith("/api/stacks/") and path.endswith("/logs"):
             self.api_stack_logs(path.split("/")[3], parsed)
         elif path.startswith("/api/stacks/") and path.endswith("/metrics"):
@@ -1461,8 +1646,6 @@ small{color:#334155}
             self.api_deploy_template(data)
         elif path == "/api/images/ankfile":
             self.api_build_ankfile(data)
-        elif path.startswith("/api/images/") and path.endswith("/delete"):
-            self.api_delete_image(path.split("/")[3])
         elif path == "/api/containers/" and "upload" in path:
             pass
         elif path == "/api/system/shell":
@@ -1619,7 +1802,7 @@ small{color:#334155}
     # Container API
     # ============================================================
 
-    def api_list_containers(self):
+    def _build_local_containers(self):
         containers = []
         if os.path.exists(CONTAINERS_DIR):
             for name in os.listdir(CONTAINERS_DIR):
@@ -1637,7 +1820,39 @@ small{color:#334155}
                         note_container_stopped(name)
                     config["stats"] = get_container_stats(name)
                     containers.append(config)
-        self.send_json(containers)
+        return containers
+
+    def api_list_containers(self):
+        self.send_json(self._build_local_containers())
+
+    def api_all_containers(self):
+        """Unified containers view: local containers plus every online node's containers,
+        each tagged with which node it lives on."""
+        result = []
+        for c in self._build_local_containers():
+            c = dict(c)
+            c["node"] = "local"
+            c["node_alias"] = "Local"
+            result.append(c)
+        nm = self._get_node_manager()
+        if nm:
+            try:
+                from node_proxy import NodeProxy
+                proxy = NodeProxy(nm)
+                for n in nm.list_nodes():
+                    if n.get("status") != "online":
+                        continue
+                    try:
+                        for c in (proxy.get_containers(n["id"]) or []):
+                            c = dict(c)
+                            c["node"] = n["id"]
+                            c["node_alias"] = n.get("alias") or n["id"]
+                            result.append(c)
+                    except Exception as e:
+                        log(f"[AGGREGATE] containers on {n.get('id')} failed: {e}")
+            except Exception as e:
+                log(f"[AGGREGATE] node_proxy unavailable: {e}")
+        self.send_json(result)
 
     def api_container_inspect(self, name):
         config = load_container_config(name)
@@ -1656,6 +1871,24 @@ small{color:#334155}
         self.send_json({"logs": logs})
 
     def api_create_container(self, data):
+        # Unified create-container modal: an optional "node" field routes creation to a
+        # remote node instead of always creating locally, without changing the contract
+        # for existing callers that never send "node" (they keep creating locally).
+        target_node = (data.get("node") or "local").strip()
+        if target_node and target_node != "local":
+            nm = self._get_node_manager()
+            if not nm:
+                self.send_error(500, "node_manager not available")
+                return
+            name = data.get("name", "")
+            if not name:
+                self.send_error(400, "Container name required")
+                return
+            remote_data = {k: v for k, v in data.items() if k != "node"}
+            result = nm.create_container_on_node(target_node, remote_data)
+            self._send_node_api_result(result, {"message": f"Container '{name}' creation sent"})
+            return
+
         name = data.get("name")
         if not name:
             self.send_error(400, "Container name required")
@@ -1769,14 +2002,12 @@ small{color:#334155}
                         note_container_stopped(name)
                     else:
                         log(f"Container {name} started")
-                        # Re-read config — container.sh updated PID and status
-                        cfg2 = load_container_config(name)
-                        if cfg2:
-                            cfg2["status"] = "running"
-                            save_container_config(name, cfg2)
-                        else:
-                            cfg["status"] = "running"
-                            save_container_config(name, cfg)
+                        cfg["status"] = "running"
+                        save_container_config(name, cfg)
+                        # Open a grace window and reset the failure counter so
+                        # the very next poll (which can land within a second
+                        # or two of this) doesn't misread a not-yet-settled
+                        # marker/cgroup as "stopped".
                         note_container_started(name)
             except Exception as e:
                 log(f"ERROR: start thread {name}: {e}")
@@ -2482,7 +2713,8 @@ small{color:#334155}
                 if os.path.isdir(merged):
                     _service = config.get("template", "")
                     _sp = config.get("static_path", "")
-                    _write_ank_config(merged, _service, str(new_port), _sp)
+                    _s6 = "true" if config.get("s6", False) else "false"
+                    _write_ank_config(merged, _service, str(new_port), _sp, _s6)
                     # Patch nginx.conf, httpd.conf, server.py, server.js
                     if _service == "nginx":
                         nginx_conf = os.path.join(merged, "etc/nginx/nginx.conf")
@@ -2521,6 +2753,8 @@ small{color:#334155}
             config["serves_static"] = data["serves_static"]
         if "static_path" in data:
             config["static_path"] = data["static_path"]
+        if "s6" in data:
+            config["s6"] = data["s6"]
         if "root_password" in data and data["root_password"]:
             new_pass = data["root_password"]
             if len(new_pass) < 4:
@@ -2568,43 +2802,56 @@ small{color:#334155}
             if _pm:
                 _port = str(_pm[0].get("container_port", ""))
             _sp = config.get("static_path", "")
-            _write_ank_config(merged, _service, _port, _sp)
+            _s6 = "true" if config.get("s6", False) else "false"
+            _write_ank_config(merged, _service, _port, _sp, _s6)
         self.send_json({"message": f"Container '{name}' updated"})
 
     def api_pull_image(self, data):
         version = data.get("version", "3.20")
-        if _pull_status.get(version, {}).get("state") in ("pulling", "building"):
-            self.send_error(409, f"Pull already in progress for alpine-{version}")
+        output, code = run_script("download-rootfs.sh", version)
+        if code != 0:
+            self.send_error(500, f"Failed to pull image: {output}")
             return
-        _pull_status[version] = {"state": "pulling", "output": [], "error": ""}
-        def _do_pull():
+        # Generate ank-alpinebase-{version} from downloaded alpine
+        alpine_dir = os.path.join(IMAGES_DIR, f"alpine-{version}")
+        ankbase_dir = os.path.join(IMAGES_DIR, f"ank-alpinebase-{version}")
+        if os.path.isdir(alpine_dir) and not os.path.isdir(ankbase_dir):
             try:
-                dl_out = _pull_status[version]["output"]
-                code = run_script_stream("download-rootfs.sh", version, output_list=dl_out, timeout=300)
-                if code != 0:
-                    _pull_status[version]["state"] = "error"
-                    _pull_status[version]["error"] = "\n".join(dl_out)
-                    return
-                _pull_status[version]["state"] = "building"
-                dl_out.append("Building ank-alpinebase (installing openssh, bash, openssl)...")
-                code2 = run_script_stream("container.sh", "build-base", version, output_list=dl_out, timeout=300)
-                if code2 != 0:
-                    _pull_status[version]["state"] = "error"
-                    _pull_status[version]["error"] = "\n".join(dl_out)
-                    return
-                _pull_status[version]["state"] = "done"
-                dl_out.append(f"Image ank-alpinebase-{version} ready")
-            except Exception as e:
-                _pull_status[version]["state"] = "error"
-                _pull_status[version]["error"] = str(e)
-        import threading
-        threading.Thread(target=_do_pull, daemon=True).start()
-        self.send_json({"message": f"Pulling alpine-{version}...", "version": version})
-
-    def api_pull_image_status(self, data):
-        version = data.get("version", "3.20")
-        status = _pull_status.get(version, {"state": "idle", "output": [], "error": ""})
-        self.send_json(status)
+                import shutil
+                shutil.copytree(alpine_dir, ankbase_dir)
+                # Install basic packages into the new ank-alpinebase
+                merged = ankbase_dir
+                _merged_write = os.path.join(merged, "etc/resolv.conf")
+                os.makedirs(os.path.dirname(_merged_write), exist_ok=True)
+                with open(_merged_write, "w") as f:
+                    f.write("nameserver 8.8.8.8\nnameserver 8.8.4.4\n")
+                # Install openssh/bash/busybox/shadow/s6 via chroot
+                merged_dev = os.path.join(merged, "dev")
+                merged_proc = os.path.join(merged, "proc")
+                try:
+                    os.makedirs(merged_dev, exist_ok=True)
+                    os.makedirs(merged_proc, exist_ok=True)
+                    subprocess.run(["mount", "-t", "tmpfs", "-o", "size=16m", "tmpfs", merged_dev], timeout=5)
+                    subprocess.run(["mount", "-t", "proc", "proc", merged_proc], timeout=5)
+                    subprocess.run(["mknod", os.path.join(merged_dev, "null"), "c", "1", "3"], timeout=5)
+                    subprocess.run(["chmod", "666", os.path.join(merged_dev, "null")], timeout=5)
+                    subprocess.run(["mknod", os.path.join(merged_dev, "urandom"), "c", "1", "9"], timeout=5)
+                    subprocess.run(["chmod", "666", os.path.join(merged_dev, "urandom")], timeout=5)
+                    subprocess.run(["chroot", merged, "/sbin/apk", "add", "--no-cache",
+                                    "busybox", "bash", "shadow", "openssh", "openssl", "s6"],
+                                   capture_output=True, timeout=120)
+                except Exception:
+                    pass
+                finally:
+                    for m in [merged_proc, merged_dev]:
+                        try: subprocess.run(["umount", m], timeout=5)
+                        except Exception: pass
+                # Mark as ank-alpinebase
+                with open(os.path.join(merged, ".ank-base"), "w") as f:
+                    f.write(f"ank-alpinebase-{version}\n")
+            except Exception:
+                pass
+        self.send_json({"message": f"Image 'ank-alpinebase-{version}' ready"})
 
     # ============================================================
     # Image Templates
@@ -2697,8 +2944,7 @@ small{color:#334155}
 
     def api_image_templates(self):
         templates = []
-        base_image = self._find_base_image()
-        alpine_ready = os.path.isdir(os.path.join(IMAGES_DIR, base_image)) and os.path.lexists(os.path.join(IMAGES_DIR, base_image, "bin/sh"))
+        alpine_ready = os.path.isdir(os.path.join(IMAGES_DIR, "ank-alpinebase-3.20")) and os.path.lexists(os.path.join(IMAGES_DIR, "ank-alpinebase-3.20", "bin/sh"))
         for t in self.IMAGE_TEMPLATES:
             tpl = dict(t)
             if t["category"] == "base":
@@ -2729,10 +2975,9 @@ small{color:#334155}
             self.send_error(404, f"Template '{template_id}' not found")
             return
 
-        base_image = self._find_base_image()
-        base_img = os.path.join(IMAGES_DIR, base_image)
+        base_img = os.path.join(IMAGES_DIR, "ank-alpinebase-3.20")
         if not os.path.isdir(base_img):
-            self.send_error(400, f"Base {base_image} image not found. Reinstall the module.")
+            self.send_error(400, "Base ank-alpinebase-3.20 image not found. Reinstall the module.")
             return
 
         root_password = data.get("root_password") or load_config().get("default_container_password", "ank123")
@@ -2744,7 +2989,7 @@ small{color:#334155}
         stub_config = {
             "name": container_name,
             "status": "building",
-            "image": base_image,
+            "image": "ank-alpinebase-3.20",
             "mode": get_mode().get("mode", "shared_host"),
             "autostart": False,
             "ip_address": "",
@@ -2756,7 +3001,8 @@ small{color:#334155}
             "port_mappings": [],
             "root_password": root_password,
             "template": template_id,
-            "template_name": template["name"]
+            "template_name": template["name"],
+            "s6": False
         }
         save_container_config(container_name, stub_config)
 
@@ -2770,7 +3016,7 @@ small{color:#334155}
                     lf.flush()
 
                 pkgs = " ".join(template.get("packages", []))
-                output, code = run_script("container.sh", "create", container_name, base_image, str(root_password), str(ssh_port), pkgs, template_id, timeout=300)
+                output, code = run_script("container.sh", "create", container_name, "ank-alpinebase-3.20", str(root_password), str(ssh_port), pkgs, template_id, timeout=300)
                 with open(log_path, "a") as lf:
                     lf.write(output + "\n")
                     lf.flush()
@@ -2829,6 +3075,7 @@ small{color:#334155}
                 _chroot('mkdir -p /etc; echo "nameserver 8.8.8.8" > /etc/resolv.conf; echo "nameserver 8.8.4.4" >> /etc/resolv.conf')
 
                 config = load_container_config(container_name)
+                _s6_enabled = config.get("s6", False) if config else False
                 if config:
                     config["template"] = template_id
                     config["template_name"] = template["name"]
@@ -2878,33 +3125,33 @@ small{color:#334155}
                     _chroot(f'mkdir -p {static_dir} /run/nginx')
                     _write_file(os.path.join(merged, static_dir.lstrip('/'), 'index.html'), ANK_NGINX_HTML)
                     _write_file(os.path.join(merged, 'etc/nginx/nginx.conf'), ANK_NGINX_CONF.replace('{port}', str(actual_port)))
-                    _write_ank_config(merged, 'nginx', actual_port, static_dir)
+                    _write_ank_config(merged, 'nginx', actual_port, static_dir, "true" if _s6_enabled else "false")
 
                 elif template_id == "apache":
                     static_dir = template["static_path"]
                     _chroot(f'mkdir -p {static_dir}')
                     _chroot(f'sed -i "s/^Listen 80/Listen {actual_port}/" /etc/apache2/httpd.conf 2>/dev/null')
                     _write_file(os.path.join(merged, static_dir.lstrip('/'), 'index.html'), ANK_APACHE_HTML)
-                    _write_ank_config(merged, 'apache', actual_port, static_dir)
+                    _write_ank_config(merged, 'apache', actual_port, static_dir, "true" if _s6_enabled else "false")
 
                 elif template_id == "php":
                     php_dir = "/var/www/php"
                     _chroot(f'mkdir -p {php_dir}')
                     _write_file(os.path.join(merged, php_dir.lstrip('/'), 'index.php'), ANK_PHP_INDEX)
-                    _write_ank_config(merged, 'php', actual_port, php_dir)
+                    _write_ank_config(merged, 'php', actual_port, php_dir, "true" if _s6_enabled else "false")
 
                 elif template_id == "node":
                     node_dir = "/var/www/app"
                     _chroot(f'mkdir -p {node_dir}')
                     _write_file(os.path.join(merged, node_dir.lstrip('/'), 'server.js'), ANK_NODE_SERVER.replace('{port}', str(actual_port)))
                     _write_file(os.path.join(merged, node_dir.lstrip('/'), 'package.json'), '{"name":"ank-node-app","version":"1.0.0","main":"server.js"}')
-                    _write_ank_config(merged, 'node', actual_port, node_dir)
+                    _write_ank_config(merged, 'node', actual_port, node_dir, "true" if _s6_enabled else "false")
 
                 elif template_id == "python":
                     py_dir = "/var/www/app"
                     _chroot(f'mkdir -p {py_dir}')
                     _write_file(os.path.join(merged, py_dir.lstrip('/'), 'server.py'), ANK_PYTHON_SERVER.replace('{port}', str(actual_port)))
-                    _write_ank_config(merged, 'python', actual_port, py_dir)
+                    _write_ank_config(merged, 'python', actual_port, py_dir, "true" if _s6_enabled else "false")
 
                 cfg = load_container_config(container_name)
                 if cfg:
@@ -2961,10 +3208,6 @@ small{color:#334155}
                 continue
             if line.startswith('FROM '):
                 base_image = line.split(' ', 1)[1].strip()
-                # Map alpine-X.Y to ank-alpinebase-X.Y
-                case_alpine = base_image
-                if case_alpine.startswith("alpine-"):
-                    base_image = f"ank-alpinebase-{case_alpine[7:]}"
             elif line.startswith('PASSWD '):
                 root_password = line[7:].strip()
             elif line.startswith('RUN '):
@@ -3105,7 +3348,7 @@ small{color:#334155}
                             lf.write(f"OK: {output[-300:]}\n")
 
                 if cmd_line:
-                    _write_ank_config(merged, cmd_line, ports[0] if ports else "", "")
+                    _write_ank_config(merged, cmd_line, ports[0] if ports else "", "", "false")
                     log(f"Ankfile CMD: {cmd_line}")
                     with open(log_path, "a") as lf:
                         lf.write(f"CMD: {cmd_line}\n")
@@ -4287,7 +4530,7 @@ small{color:#334155}
             "building": _building
         })
 
-    def api_list_images(self):
+    def _build_local_images(self):
         images = []
         if os.path.exists(IMAGES_DIR):
             for name in os.listdir(IMAGES_DIR):
@@ -4303,11 +4546,6 @@ small{color:#334155}
                         size = int(out.stdout.split("\t")[0]) if out.returncode == 0 else 0
                     except Exception:
                         pass
-                    if size == 0:
-                        try:
-                            size = sum(os.path.getsize(os.path.join(dp, f)) for dp, _, fn in os.walk(p) for f in fn)
-                        except Exception:
-                            pass
                     images.append({
                         "name": name,
                         "complete": has_python and has_sh,
@@ -4315,19 +4553,37 @@ small{color:#334155}
                         "size": size,
                         "size_human": self._fmt_size(size)
                     })
-        self.send_json(images)
+        return images
 
-    def api_delete_image(self, name):
-        if not name or name.startswith("/"):
-            self.send_error(400, "Invalid image name")
-            return
-        image_dir = os.path.join(IMAGES_DIR, name)
-        if not os.path.isdir(image_dir):
-            self.send_error(404, f"Image '{name}' not found")
-            return
-        import shutil
-        shutil.rmtree(image_dir)
-        self.send_json({"message": f"Image '{name}' deleted"})
+    def api_list_images(self):
+        self.send_json(self._build_local_images())
+
+    def api_all_images(self):
+        """Unified images view: local images plus every online node's images, each tagged
+        with which node it lives on."""
+        result = []
+        for img in self._build_local_images():
+            img = dict(img)
+            img["node"] = "local"
+            img["node_alias"] = "Local"
+            result.append(img)
+        nm = self._get_node_manager()
+        if nm:
+            try:
+                for n in nm.list_nodes():
+                    if n.get("status") != "online":
+                        continue
+                    try:
+                        for img in (nm.get_node_images(n["id"]) or []):
+                            img = dict(img)
+                            img["node"] = n["id"]
+                            img["node_alias"] = n.get("alias") or n["id"]
+                            result.append(img)
+                    except Exception as e:
+                        log(f"[AGGREGATE] images on {n.get('id')} failed: {e}")
+            except Exception as e:
+                log(f"[AGGREGATE] node listing failed: {e}")
+        self.send_json(result)
 
     def api_receive_image_upload(self):
         import tarfile, io
@@ -4496,6 +4752,39 @@ small{color:#334155}
             return
         stacks = sm.list_stacks()
         self.send_json({"stacks": stacks})
+
+    def api_all_stacks(self):
+        """Unified stacks view: local stacks plus every online node's stacks, each tagged
+        with which node it lives on."""
+        result = []
+        sm = self._get_stack_manager()
+        try:
+            for s in (sm.list_stacks() if sm else []):
+                s = dict(s)
+                s["node"] = "local"
+                s["node_alias"] = "Local"
+                result.append(s)
+        except Exception as e:
+            log(f"[AGGREGATE] local stacks failed: {e}")
+        nm = self._get_node_manager()
+        if nm:
+            try:
+                from node_proxy import NodeProxy
+                proxy = NodeProxy(nm)
+                for n in nm.list_nodes():
+                    if n.get("status") != "online":
+                        continue
+                    try:
+                        for s in (proxy.get_stacks(n["id"]) or []):
+                            s = dict(s)
+                            s["node"] = n["id"]
+                            s["node_alias"] = n.get("alias") or n["id"]
+                            result.append(s)
+                    except Exception as e:
+                        log(f"[AGGREGATE] stacks on {n.get('id')} failed: {e}")
+            except Exception as e:
+                log(f"[AGGREGATE] node_proxy unavailable: {e}")
+        self.send_json({"stacks": result})
 
     def api_stack_inspect(self, name):
         sm = self._get_stack_manager()
@@ -4802,7 +5091,9 @@ small{color:#334155}
         if not nm:
             self.send_json({"error": "node_manager not available"}, 500)
             return
-        result = nm.get_node(node_id)
+        # Actively poll the node right now instead of just re-serving the last
+        # cached heartbeat snapshot (was previously a no-op refresh).
+        result = nm.refresh_node(node_id)
         if not result:
             self.send_json({"error": "Node not found"}, 404)
             return
@@ -4901,6 +5192,14 @@ small{color:#334155}
         logs = nm.get_container_logs_on_node(node_id, container_name)
         self.send_json(logs if logs else {"logs": []})
 
+    def _send_node_api_result(self, result, fallback):
+        """Propagate the real remote status code/error instead of always answering 200,
+        so the caller can tell a failed remote action from a successful one."""
+        if isinstance(result, dict) and result.get("error"):
+            self.send_json(result, result.get("status_code", 502))
+            return
+        self.send_json(result if result else fallback)
+
     def api_node_container_action(self, node_id, container_name, action):
         nm = self._get_node_manager()
         if not nm:
@@ -4916,7 +5215,7 @@ small{color:#334155}
             else:
                 self.send_json({"error": f"Unknown action: {action}"}, 400)
                 return
-            self.send_json(result if result else {"message": f"Container {action} sent"})
+            self._send_node_api_result(result, {"message": f"Container {action} sent"})
         except Exception as e:
             self.send_json({"error": str(e)}, 500)
 
@@ -4930,7 +5229,7 @@ small{color:#334155}
             self.send_json({"error": "command required"}, 400)
             return
         result = nm.exec_container_on_node(node_id, container_name, cmd)
-        self.send_json(result if result else {"stdout": "", "stderr": "No response", "code": 1})
+        self._send_node_api_result(result, {"stdout": "", "stderr": "No response", "code": 1})
 
     def api_node_container_delete(self, node_id, container_name):
         nm = self._get_node_manager()
@@ -4938,7 +5237,7 @@ small{color:#334155}
             self.send_json({"error": "node_manager not available"}, 500)
             return
         result = nm.delete_container_on_node(node_id, container_name)
-        self.send_json(result if result else {"message": f"Container '{container_name}' delete sent"})
+        self._send_node_api_result(result, {"message": f"Container '{container_name}' delete sent"})
 
     def api_node_image_pull(self, node_id, data):
         nm = self._get_node_manager()
@@ -4950,7 +5249,7 @@ small{color:#334155}
             self.send_json({"error": "version required"}, 400)
             return
         result = nm.pull_image_on_node(node_id, version)
-        self.send_json(result if result else {"message": "Pull started"})
+        self._send_node_api_result(result, {"message": "Pull started"})
 
     def api_node_image_transfer(self, node_id, data):
         nm = self._get_node_manager()
@@ -4962,7 +5261,8 @@ small{color:#334155}
             self.send_json({"error": "image name required"}, 400)
             return
         result = nm.transfer_image_to_node(node_id, image_name)
-        self.send_json(result)
+        status = 502 if isinstance(result, dict) and result.get("error") else 200
+        self.send_json(result, status)
 
     def api_node_container_create(self, node_id, data):
         nm = self._get_node_manager()
@@ -4974,49 +5274,102 @@ small{color:#334155}
             self.send_json({"error": "Container name required"}, 400)
             return
         result = nm.create_container_on_node(node_id, data)
-        self.send_json(result if result else {"message": f"Container '{name}' creation sent"})
+        self._send_node_api_result(result, {"message": f"Container '{name}' creation sent"})
 
     # ============================================================
     # System Dashboard (aggregate across nodes)
     # ============================================================
 
+    def _get_local_dashboard_entry(self):
+        """Build the 'local' node card for the dashboard using the same live data the
+        rest of the local UI already relies on (status/system-info/images/stacks)."""
+        total = running = stopped = 0
+        containers = self._list_containers_dict()
+        total = len(containers)
+        running = sum(1 for c in containers if c.get("status") == "running")
+        stopped = total - running
+
+        uptime_sec = 0
+        try:
+            with open("/proc/uptime", "r") as f:
+                uptime_sec = float(f.read().split()[0])
+        except Exception:
+            pass
+
+        mem_total = mem_available = 0
+        try:
+            with open("/proc/meminfo", "r") as f:
+                for line in f:
+                    parts = line.split()
+                    if parts[0] == "MemTotal:":
+                        mem_total = int(parts[1])
+                    elif parts[0] == "MemAvailable:":
+                        mem_available = int(parts[1])
+        except Exception:
+            pass
+
+        mem_percent = mem_used_gb = mem_total_gb = 0
+        if mem_total:
+            mem_used = max(mem_total - mem_available, 0)
+            mem_percent = round(mem_used / mem_total * 100, 1)
+            mem_used_gb = round(mem_used / (1024 * 1024), 2)
+            mem_total_gb = round(mem_total / (1024 * 1024), 2)
+
+        disk_info = _get_disk_usage()
+
+        images_count = 0
+        try:
+            images_count = len(self._build_local_images())
+        except Exception:
+            pass
+
+        stacks_count = 0
+        try:
+            sm = self._get_stack_manager()
+            stacks_count = len(sm.list_stacks()) if sm else 0
+        except Exception:
+            pass
+
+        entry = {
+            "id": "local",
+            "alias": "Local",
+            "status": "online",
+            "role": "local",
+            "ip": "127.0.0.1",
+            "cpu_percent": _cpu_usage_cache,
+            "mem_percent": mem_percent,
+            "mem_used_gb": mem_used_gb,
+            "mem_total_gb": mem_total_gb,
+            "disk_used_gb": disk_info.get("used", 0),
+            "disk_total_gb": disk_info.get("total", 0),
+            "uptime_seconds": uptime_sec,
+            "containers_running": running,
+            "containers_total": total,
+            "images_count": images_count,
+            "stacks_count": stacks_count
+        }
+        return entry, total, running, stopped
+
     def api_system_dashboard(self):
         nm = self._get_node_manager()
-        sm = self._get_stack_manager()
+        local_entry, local_total, local_running, local_stopped = self._get_local_dashboard_entry()
         dashboard = {
-            "total_containers": 0,
-            "running_containers": 0,
-            "stopped_containers": 0,
-            "total_stacks": 0,
-            "nodes": []
+            "total_containers": local_total,
+            "running_containers": local_running,
+            "stopped_containers": local_stopped,
+            "total_stacks": local_entry.get("stacks_count", 0),
+            "nodes": [local_entry]
         }
-        try:
-            containers = self._list_containers_dict()
-            dashboard["total_containers"] = len(containers)
-            dashboard["running_containers"] = sum(1 for c in containers if c.get("status") == "running")
-            dashboard["stopped_containers"] = sum(1 for c in containers if c.get("status") != "running")
-        except Exception:
-            pass
-        try:
-            stacks = sm.list_stacks() if sm else []
-            dashboard["total_stacks"] = len(stacks)
-        except Exception:
-            pass
-        try:
-            nodes = nm.list_nodes() if nm else []
-            for n in nodes:
-                dashboard["nodes"].append({
-                    "id": n.get("id", ""),
-                    "hostname": n.get("hostname", ""),
-                    "status": n.get("status", "unknown"),
-                    "containers": n.get("containers", 0),
-                    "cpu": n.get("cpu", "-"),
-                    "ram": n.get("ram", "-"),
-                    "disk": n.get("disk", "-"),
-                    "uptime": n.get("uptime", "-")
-                })
-        except Exception:
-            pass
+        if nm:
+            try:
+                agg = nm.aggregate_dashboard()
+                dashboard["total_containers"] += agg.get("total_containers", 0)
+                dashboard["running_containers"] += agg.get("running", 0)
+                dashboard["stopped_containers"] += agg.get("stopped", 0)
+                dashboard["total_stacks"] += agg.get("stacks", 0)
+                dashboard["nodes"].extend(agg.get("nodes", []))
+            except Exception as e:
+                log(f"[DASHBOARD] node aggregation failed: {e}")
         self.send_json(dashboard)
 
     def _list_containers_dict(self):

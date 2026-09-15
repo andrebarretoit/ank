@@ -542,8 +542,11 @@ class StackManager:
                 continue
             if line.startswith("FROM "):
                 base = line.split(" ", 1)[1].strip()
-                if not base.startswith("ank-"):
-                    base = f"ank-alpinebase-{base}" if not base.startswith("alpine") else f"ank-{base}"
+                # Map alpine-X.Y to ank-alpinebase-X.Y
+                if base.startswith("alpine-"):
+                    base = f"ank-alpinebase-{base[7:]}"
+                elif not base.startswith("ank-"):
+                    base = f"ank-alpinebase-{base}"
                 result["base_image"] = base
             elif line.startswith("PASSWD "):
                 result["root_password"] = line[7:].strip()

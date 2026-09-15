@@ -463,20 +463,8 @@ function renderImages(images) {
                 <span class="image-name">${esc(img.name)}</span>
                 <span class="image-size">${img.size_human || fmtBytes(img.size || 0)}</span>
             </div>
-            <button class="btn btn-sm btn-danger" onclick="event.stopPropagation(); deleteImage('${esc(img.name)}')" title="Delete image"><i class="bi bi-trash"></i></button>
         </div>
     `).join('');
-}
-
-async function deleteImage(name) {
-    if (!confirm('Delete image "' + name + '"? This cannot be undone.')) return;
-    try {
-        await api('POST', '/images/' + encodeURIComponent(name) + '/delete');
-        toast('Image deleted', 'success');
-        loadImages();
-    } catch (e) {
-        toast('Failed to delete image: ' + e.message, 'error');
-    }
 }
 
 function renderLocalImagesForTransfer(images) {
@@ -830,6 +818,7 @@ async function showContainerDetail(name) {
         renderPortMappings(c.port_mappings || []);
         document.getElementById('detail-serves-static').checked = c.serves_static || false;
         document.getElementById('detail-static-path').value = c.static_path || '';
+        document.getElementById('detail-s6').checked = c.s6 || false;
         document.getElementById('detail-container-ip').value = c.ip_address || '-';
         document.getElementById('detail-container-subnet').value = (await api('GET', '/config')).network?.subnet || '-';
         const sshHint = document.getElementById('ssh-hint');
@@ -961,7 +950,8 @@ document.getElementById('detail-settings-form')?.addEventListener('submit', asyn
                 autostart: document.getElementById('detail-autostart').checked,
                 resources: { memory_limit: document.getElementById('detail-mem-limit').value, cpu_limit_percent: parseInt(document.getElementById('detail-cpu-limit').value) },
                 serves_static: document.getElementById('detail-serves-static').checked,
-                static_path: document.getElementById('detail-static-path').value || ''
+                static_path: document.getElementById('detail-static-path').value || '',
+                s6: document.getElementById('detail-s6').checked
             };
             const newPass = document.getElementById('detail-root-password').value;
             if (newPass && newPass.length >= 4) updateData.root_password = newPass;
@@ -1189,96 +1179,18 @@ document.getElementById('create-form').addEventListener('submit', async (e) => {
     submitBtn.innerHTML = origHTML;
 });
 
-document.getElementById('pull-btn').addEventListener('click', () => {
-    showPullModal('3.20');
-});
-
-function showPullModal(defaultVersion) {
-    const overlay = document.createElement('div');
-    overlay.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.7);z-index:10000;display:flex;align-items:center;justify-content:center;';
-    overlay.innerHTML = `
-        <div style="background:#1e293b;border-radius:12px;padding:24px;max-width:560px;width:90%;color:#e2e8f0;font-family:system-ui,sans-serif;position:relative;">
-            <button id="pull-close-x" style="position:absolute;top:12px;right:12px;background:none;border:none;color:#94a3b8;font-size:20px;cursor:pointer;padding:4px 8px;border-radius:4px;line-height:1;" title="Close">&times;</button>
-            <h3 style="margin:0 0 12px;font-size:16px;"><i class="bi bi-cloud-download"></i> Pull Image</h3>
-            <div style="display:flex;gap:8px;margin-bottom:12px;">
-                <input id="pull-version" type="text" value="${esc(defaultVersion)}" placeholder="Alpine version" style="flex:1;padding:8px 12px;border-radius:6px;border:1px solid #334155;background:#0f172a;color:#e2e8f0;font-size:14px;">
-                <button id="pull-go-btn" class="btn btn-primary" style="min-width:80px;"><i class="bi bi-cloud-download"></i> Pull</button>
-            </div>
-            <div id="pull-status" style="color:#94a3b8;font-size:13px;margin-bottom:8px;"></div>
-            <div style="background:#0f172a;border-radius:8px;padding:12px;height:250px;overflow-y:auto;font-family:monospace;font-size:10px;color:#94a3b8;white-space:pre-wrap;line-height:1.6;" id="pull-log"></div>
-        </div>`;
-    document.body.appendChild(overlay);
-    const logEl = overlay.querySelector('#pull-log');
-    const statusEl = overlay.querySelector('#pull-status');
-    const goBtn = overlay.querySelector('#pull-go-btn');
-    const versionInput = overlay.querySelector('#pull-version');
-    const closeX = overlay.querySelector('#pull-close-x');
-    let pollInterval = null;
-
-    function closeModal() {
-        if (pollInterval) clearInterval(pollInterval);
-        overlay.remove();
-    }
-
-    closeX.addEventListener('click', closeModal);
-
-    goBtn.addEventListener('click', async () => {
-        const version = versionInput.value.trim();
-        if (!version) return;
-        goBtn.disabled = true;
-        goBtn.innerHTML = '<i class="bi bi-arrow-repeat spin"></i>';
-        versionInput.disabled = true;
+document.getElementById('pull-btn').addEventListener('click', async () => {
+    const version = await inputModal('Pull Image', 'Alpine version to download:', '3.20');
+    if (!version) return;
+    await btnLoading(document.getElementById('pull-btn'), async () => {
         try {
+            toast(`Pulling alpine-${version}...`, 'info');
             await api('POST', '/images/pull', { version });
-        } catch (e) {
-            logEl.textContent += 'ERROR: ' + e.message + '\n';
-            goBtn.disabled = false;
-            goBtn.innerHTML = '<i class="bi bi-cloud-download"></i> Pull';
-            versionInput.disabled = false;
-            return;
-        }
-        statusEl.textContent = 'Starting download...';
-        pollInterval = setInterval(async () => {
-            try {
-                const st = await api('GET', `/images/pull/status?version=${encodeURIComponent(version)}`);
-                if (st.output && st.output.length > 0) {
-                    logEl.textContent = st.output.join('\n') + '\n';
-                    logEl.scrollTop = logEl.scrollHeight;
-                }
-                if (st.state === 'pulling') {
-                    statusEl.innerHTML = '<i class="bi bi-arrow-repeat spin"></i> Downloading rootfs...';
-                } else if (st.state === 'building') {
-                    statusEl.innerHTML = '<i class="bi bi-arrow-repeat spin"></i> Building base image...';
-                } else if (st.state === 'done') {
-                    statusEl.innerHTML = '<span style="color:#22c55e;">✓ Done!</span>';
-                    clearInterval(pollInterval);
-                    goBtn.disabled = false;
-                    goBtn.innerHTML = '<i class="bi bi-cloud-download"></i> Pull';
-                    versionInput.disabled = false;
-                    loadAll();
-                } else if (st.state === 'error') {
-                    statusEl.innerHTML = '<span style="color:#ef4444;">✗ Failed</span>';
-                    clearInterval(pollInterval);
-                    goBtn.disabled = false;
-                    goBtn.innerHTML = '<i class="bi bi-cloud-download"></i> Pull';
-                    versionInput.disabled = false;
-                } else if (st.state === 'idle') {
-                    statusEl.textContent = 'Waiting...';
-                }
-            } catch (e) {
-                statusEl.innerHTML = '<span style="color:#ef4444;">✗ Connection lost</span>';
-                clearInterval(pollInterval);
-                goBtn.disabled = false;
-                goBtn.innerHTML = '<i class="bi bi-cloud-download"></i> Pull';
-                versionInput.disabled = false;
-            }
-        }, 2000);
+            toast(`Image alpine-${version} downloaded`, 'success');
+            loadAll();
+        } catch (e) { toast(`Failed: ${e.message}`, 'error'); }
     });
-
-    overlay.addEventListener('click', (e) => {
-        if (e.target === overlay) closeModal();
-    });
-}
+});
 
 async function loadTemplates() {
     try {
