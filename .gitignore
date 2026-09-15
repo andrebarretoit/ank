@@ -11,3 +11,8 @@ __pycache__/
 *.tar.gz
 build_zip.py
 build_exe.py
+dev_temp/
+prompt/
+prompt2/
+prompt3/
+dev_fix.patch
