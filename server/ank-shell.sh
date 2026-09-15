@@ -48,6 +48,59 @@ _json_bool() {
 }
 
 # ============================================================
+# HELPER: API GET via curl
+# ============================================================
+_api_get() {
+    local path="$1"
+    curl -s "http://127.0.0.1:${ANK_PORT:-8001}${path}" 2>/dev/null
+}
+
+_api_post() {
+    local path="$1" data="$2"
+    curl -s -X POST -H "Content-Type: application/json" -d "$data" "http://127.0.0.1:${ANK_PORT:-8001}${path}" 2>/dev/null
+}
+
+_api_delete() {
+    local path="$1"
+    curl -s -X DELETE "http://127.0.0.1:${ANK_PORT:-8001}${path}" 2>/dev/null
+}
+
+# ============================================================
+# HELPER: Find which node a container lives on
+# Returns: "local" or node_id
+# ============================================================
+_find_container_node() {
+    local name="$1"
+    local json=$(_api_get "/api/containers/all")
+    [ -z "$json" ] && echo "local" && return
+    echo "$json" | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    for c in data:
+        if c.get('name') == '$name':
+            print(c.get('node', 'local'))
+            sys.exit(0)
+    print('local')
+except: print('local')
+" 2>/dev/null
+}
+
+# ============================================================
+# HELPER: Resolve container node_id to alias
+# ============================================================
+_node_alias() {
+    local node_id="$1"
+    [ "$node_id" = "local" ] && echo "local" && return
+    local fp="$NODES_DIR/${node_id}.json"
+    if [ -f "$fp" ]; then
+        _json_val "$fp" "alias"
+    else
+        echo "$node_id"
+    fi
+}
+
+# ============================================================
 # HELPER: History (index-based)
 # ============================================================
 HIST_FILE="$ANK_DIR/.ank_history"
@@ -313,78 +366,77 @@ _print_row() {
 # ============================================================
 ank_help() {
     cat << 'EOF'
-ANK - Android Konteiner CLI
+ANK - Android Konteiner CLI (Full Cluster Support)
 
 Container commands:
-  ank ps                    List all containers
-  ank start <name>          Start a container
-  ank stop <name>           Stop a container
-  ank restart <name>        Restart a container
-  ank rm <name>             Delete a container
-  ank logs <name>           View container logs
-  ank exec <name> <cmd>     Execute command in container
-  ank inspect <name>        Show container details
+  ank ps                      List all containers (local + remote)
+  ank start <name>            Start a container (auto-detects node)
+  ank stop <name>             Stop a container (auto-detects node)
+  ank restart <name>          Restart a container (auto-detects node)
+  ank rm <name>               Delete a container (auto-detects node)
+  ank logs <name>             Show container logs (local + remote)
+  ank exec <name> <cmd>       Execute command in container
+  ank inspect <name>          Show container details (local + remote)
 
 Image commands:
-  ank images                List available images
-  ank list-images           List available images (alias)
-  ank templates             List deploy templates
-  ank deploy <tpl> <name>   Deploy a template
-  ank pull <version>        Download base image
-  ank build -i <file>       Build image from .ankfile
+  ank images                  List images (all nodes)
+  ank templates               List deploy templates
+  ank deploy <tpl> <name>     Create container from template
+  ank pull [version]          Download Alpine base rootfs
+  ank build -i <file>         Build image from .ankfile
 
 File commands:
-  ank npad <file>           Open text editor (Ankfiles validated, others plain)
-  ank ls                    List files in ank-engine
-  ank copy <src> <dst>      Copy a file
-  ank ren <old> <new>       Rename a file
-  ank erase <file>          Delete a file
+  ank npad <file>             Edit .ankfile (vi-like)
+  ank ls                      List files
+  ank copy <src> <dst>        Copy file
+  ank ren <old> <new>         Rename file
+  ank erase <file>            Delete file
 
 Stack commands:
-  ank stack ls              List all stacks
-  ank stack inspect <name>  Show stack details
-  ank stack create <name> [tpl] [count]  Create a stack
-  ank stack scale <name> <count>         Scale stack
-  ank stack rm <name>       Delete a stack
+  ank stack ls                List stacks
+  ank stack inspect <name>    Show stack details
+  ank stack create <n> [t]    Create stack
+  ank stack scale <n> <c>     Scale stack
+  ank stack rm <name>         Delete stack
 
 Backup commands:
-  ank backup ls             List backup routines
-  ank backup inspect <id>   Show routine details
-  ank backup run <id>       Execute backup
-  ank backup rm <id>        Delete backup routine
+  ank backup ls               List backup routines
+  ank backup inspect <id>     Show routine details
+  ank backup run <id>         Execute backup
+  ank backup rm <id>          Delete routine
 
 Node commands:
-  ank node ls               List remote nodes
-  ank node inspect <id>     Show node details
-  ank node add              Add remote node (interactive)
-  ank node rm <id>          Remove a node
+  ank node ls                 List connected nodes (with status)
+  ank node inspect <id>       Show node details + live stats
+  ank node add                Pair a new remote node
+  ank node rm <id>            Remove a paired node
 
 Diagnostics:
-  ank ping <host> [count]   Ping a host
-  ank traceroute <host>     Trace route to host
-  ank nslookup <host>       DNS lookup
-  ank ip                    Show IP addresses
-  ank ifconfig              Show network interfaces
-  ank route                 Show routing table
-  ank netstat               Show network connections
-  ank ss                    Show socket stats
+  ank ping <host> [count]     Ping a host
+  ank traceroute <host>       Trace route to host
+  ank nslookup <host>         DNS lookup
+  ank ip                      Show IP addresses
+  ank ifconfig                Show network interfaces
+  ank route                   Show routing table
+  ank netstat                 Show network connections
+  ank ss                      Show socket stats
 
 System:
-  ank help                  Show this help
-  ank --version             Show system info (neofetch style)
-  ank history               Show command history
-  ank !{NUM}                Re-execute command from history
-  ank --man <cmd>           Show detailed help for a command
-  ank exit                  Exit ANK shell
+  ank help                    Show this help
+  ank --version               Show version
+  ank history                 Show command history
+  ank !{NUM}                  Re-execute from history
+  ank --man <cmd>             Detailed help for a command
+  ank exit                    Exit ANK shell
 
 ANK-Core commands:
-  ank-core status           Show system status
-  ank-core restart          Restart ANK server
-  ank-core info             Show device info
-  ank-core network          Show network config
-  ank-core clean            Cleanup orphaned resources
-  ank-core logs             Show server logs
-  ank-core --man <cmd>      Show detailed help
+  ank-core status             Cluster status (all nodes)
+  ank-core restart            Restart ANK server
+  ank-core info               Device info + cluster overview
+  ank-core network            Show network config
+  ank-core clean              Cleanup orphaned resources
+  ank-core logs               Show server logs
+  ank-core --man <cmd>        Detailed help
 EOF
 }
 
@@ -409,17 +461,43 @@ ank_ps() {
     _print_row "NAME" "STATUS" "IP" "IMAGE" "PID"
     printf "%s\n" "----------------------------------------------------------------------"
     local found=0
-    for cfg in $(_list_containers); do
-        local name=$(_json_val "$cfg" "name")
-        local status=$(_json_val "$cfg" "status")
-        local ip=$(_json_val "$cfg" "ip_address")
-        local image=$(_json_val "$cfg" "image")
-        local pid=$(_json_num "$cfg" "pid")
-        [ -z "$ip" ] && ip="N/A"
-        [ -z "$pid" ] && pid="-"
-        _print_row "$name" "$status" "$ip" "$image" "$pid"
-        found=1
-    done
+    if command -v curl >/dev/null 2>&1; then
+        local json=$(curl -s "http://127.0.0.1:${ANK_PORT:-8001}/api/containers/all" 2>/dev/null)
+        if [ -n "$json" ] && [ "$json" != "null" ]; then
+            local i=0
+            while true; do
+                local name=$(echo "$json" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d[$i]['name'] if $i<len(d) else '');" 2>/dev/null)
+                [ -z "$name" ] && break
+                local status=$(echo "$json" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d[$i].get('status',''))" 2>/dev/null)
+                local ip=$(echo "$json" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d[$i].get('ip_address','N/A'))" 2>/dev/null)
+                local image=$(echo "$json" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d[$i].get('template_name') or d[$i].get('image',''))" 2>/dev/null)
+                local pid=$(echo "$json" | python3 -c "import sys,json; d=json.load(sys.stdin); p=d[$i].get('pid'); print(p if p else '-')" 2>/dev/null)
+                local node=$(echo "$json" | python3 -c "import sys,json; d=json.load(sys.stdin); n=d[$i].get('node','local'); print('local' if n=='local' else d[$i].get('node_alias',n[:8]))" 2>/dev/null)
+                [ -z "$ip" ] && ip="N/A"
+                [ -z "$pid" ] && pid="-"
+                if [ "$node" != "local" ] && [ -n "$node" ]; then
+                    _print_row "$name" "$status" "$ip" "$image" "$pid" "[$node]"
+                else
+                    _print_row "$name" "$status" "$ip" "$image" "$pid"
+                fi
+                found=1
+                i=$((i + 1))
+            done
+        fi
+    fi
+    if [ "$found" -eq 0 ]; then
+        for cfg in $(_list_containers); do
+            local name=$(_json_val "$cfg" "name")
+            local status=$(_json_val "$cfg" "status")
+            local ip=$(_json_val "$cfg" "ip_address")
+            local image=$(_json_val "$cfg" "image")
+            local pid=$(_json_num "$cfg" "pid")
+            [ -z "$ip" ] && ip="N/A"
+            [ -z "$pid" ] && pid="-"
+            _print_row "$name" "$status" "$ip" "$image" "$pid"
+            found=1
+        done
+    fi
     [ "$found" -eq 0 ] && echo "No containers found."
 }
 
@@ -432,7 +510,14 @@ ank_start() {
         echo "Usage: ank start <name>"
         return 1
     fi
-    sh "$SCRIPTS_DIR/container.sh" start "$name" 2>&1 | tail -20
+    local node=$(_find_container_node "$name")
+    if [ "$node" != "local" ]; then
+        echo "Starting '$name' on node $(_node_alias "$node")..."
+        _api_post "/api/nodes/${node}/containers/${name}/start" "{}"
+        echo "Start command sent"
+    else
+        sh "$SCRIPTS_DIR/container.sh" start "$name" 2>&1 | tail -20
+    fi
 }
 
 # ============================================================
@@ -444,7 +529,14 @@ ank_stop() {
         echo "Usage: ank stop <name>"
         return 1
     fi
-    sh "$SCRIPTS_DIR/container.sh" stop "$name" 2>&1 | tail -5
+    local node=$(_find_container_node "$name")
+    if [ "$node" != "local" ]; then
+        echo "Stopping '$name' on node $(_node_alias "$node")..."
+        _api_post "/api/nodes/${node}/containers/${name}/stop" "{}"
+        echo "Stop command sent"
+    else
+        sh "$SCRIPTS_DIR/container.sh" stop "$name" 2>&1 | tail -5
+    fi
 }
 
 # ============================================================
@@ -456,9 +548,16 @@ ank_restart() {
         echo "Usage: ank restart <name>"
         return 1
     fi
-    sh "$SCRIPTS_DIR/container.sh" stop "$name" >/dev/null 2>&1
-    sleep 1
-    sh "$SCRIPTS_DIR/container.sh" start "$name" 2>&1 | tail -5
+    local node=$(_find_container_node "$name")
+    if [ "$node" != "local" ]; then
+        echo "Restarting '$name' on node $(_node_alias "$node")..."
+        _api_post "/api/nodes/${node}/containers/${name}/restart" "{}"
+        echo "Restart command sent"
+    else
+        sh "$SCRIPTS_DIR/container.sh" stop "$name" >/dev/null 2>&1
+        sleep 1
+        sh "$SCRIPTS_DIR/container.sh" start "$name" 2>&1 | tail -5
+    fi
 }
 
 # ============================================================
@@ -470,7 +569,14 @@ ank_rm() {
         echo "Usage: ank rm <name>"
         return 1
     fi
-    sh "$SCRIPTS_DIR/container.sh" delete "$name" 2>&1 | tail -5
+    local node=$(_find_container_node "$name")
+    if [ "$node" != "local" ]; then
+        echo "Deleting '$name' on node $(_node_alias "$node")..."
+        _api_delete "/api/nodes/${node}/containers/${name}"
+        echo "Delete command sent"
+    else
+        sh "$SCRIPTS_DIR/container.sh" delete "$name" 2>&1 | tail -5
+    fi
 }
 
 # ============================================================
@@ -482,11 +588,31 @@ ank_logs() {
         echo "Usage: ank logs <name>"
         return 1
     fi
-    local logpath="$LOGS_DIR/${name}.log"
-    if [ -f "$logpath" ]; then
-        tail -50 "$logpath"
+    local node=$(_find_container_node "$name")
+    if [ "$node" != "local" ]; then
+        local json=$(_api_get "/api/nodes/${node}/containers/${name}/logs")
+        if [ -n "$json" ]; then
+            echo "$json" | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    logs = d.get('logs', [])
+    if isinstance(logs, list):
+        for l in logs: print(l)
+    else:
+        print(logs)
+except: pass
+" 2>/dev/null
+        else
+            echo "No logs for '$name' on remote node"
+        fi
     else
-        echo "No logs for '$name'"
+        local logpath="$LOGS_DIR/${name}.log"
+        if [ -f "$logpath" ]; then
+            tail -50 "$logpath"
+        else
+            echo "No logs for '$name'"
+        fi
     fi
 }
 
@@ -501,18 +627,35 @@ ank_exec() {
         echo "Usage: ank exec <name> <command>"
         return 1
     fi
-    local config="$CONTAINERS_DIR/$name/config.json"
-    if [ ! -f "$config" ]; then
-        echo "Container '$name' not found"
-        return 1
+    local node=$(_find_container_node "$name")
+    if [ "$node" != "local" ]; then
+        local json=$(_api_post "/api/nodes/${node}/containers/${name}/exec" "{\"command\":\"$cmd\"}")
+        if [ -n "$json" ]; then
+            echo "$json" | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    print(d.get('stdout', ''))
+    if d.get('stderr'): print(d['stderr'], file=sys.stderr)
+except: pass
+" 2>/dev/null
+        else
+            echo "Exec failed on remote node"
+        fi
+    else
+        local config="$CONTAINERS_DIR/$name/config.json"
+        if [ ! -f "$config" ]; then
+            echo "Container '$name' not found"
+            return 1
+        fi
+        local status=$(_json_val "$config" "status")
+        if [ "$status" != "running" ]; then
+            echo "Container '$name' not running"
+            return 1
+        fi
+        local merged="$CONTAINERS_DIR/$name/merged"
+        chroot "$merged" /bin/sh -c "export PATH=/bin:/sbin:/usr/bin:/usr/sbin; hostname $name 2>/dev/null; $cmd"
     fi
-    local status=$(_json_val "$config" "status")
-    if [ "$status" != "running" ]; then
-        echo "Container '$name' not running"
-        return 1
-    fi
-    local merged="$CONTAINERS_DIR/$name/merged"
-    chroot "$merged" /bin/sh -c "export PATH=/bin:/sbin:/usr/bin:/usr/sbin; hostname $name 2>/dev/null; $cmd"
 }
 
 # ============================================================
@@ -524,59 +667,91 @@ ank_inspect() {
         echo "Usage: ank inspect <name>"
         return 1
     fi
-    local config="$CONTAINERS_DIR/$name/config.json"
-    if [ ! -f "$config" ]; then
-        echo "Container '$name' not found"
-        return 1
+    local node=$(_find_container_node "$name")
+    if [ "$node" != "local" ]; then
+        local json=$(_api_get "/api/nodes/${node}/containers/${name}")
+        if [ -n "$json" ] && [ "$json" != "{}" ]; then
+            echo "$json" | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    print(f'Name:       {d.get(\"name\", \"-\")}')
+    print(f'Status:     {d.get(\"status\", \"-\")}')
+    print(f'Node:       {_node_alias(\"$node\")}')
+    print(f'Image:      {d.get(\"template_name\") or d.get(\"image\", \"-\")}')
+    print(f'Mode:       {d.get(\"mode\", \"-\")}')
+    print(f'IP:         {d.get(\"ip_address\", \"N/A\")}')
+    print(f'PID:        {d.get(\"pid\") or \"N/A\"}')
+    r = d.get('resources', {})
+    print(f'Memory:     {r.get(\"memory_limit\", \"N/A\")}')
+    print(f'CPU:        {r.get(\"cpu_limit_percent\", \"N/A\")}%')
+    print(f'Created:    {d.get(\"created_at\", \"?\")}')
+except Exception as e: print(f'Error: {e}')
+" 2>/dev/null
+        else
+            echo "Container '$name' not found on remote node"
+        fi
+    else
+        local config="$CONTAINERS_DIR/$name/config.json"
+        if [ ! -f "$config" ]; then
+            echo "Container '$name' not found"
+            return 1
+        fi
+        local cname=$(_json_val "$config" "name")
+        local status=$(_json_val "$config" "status")
+        local image=$(_json_val "$config" "image")
+        local mode=$(_json_val "$config" "mode")
+        local ip=$(_json_val "$config" "ip_address")
+        local pid=$(_json_num "$config" "pid")
+        local tpl=$(_json_val "$config" "template_name")
+        local autostart=$(_json_bool "$config" "autostart")
+        local mem=$(_json_val "$config" "memory_limit")
+        local cpu=$(_json_num "$config" "cpu_limit_percent")
+        local created=$(_json_val "$config" "created_at")
+        [ -z "$ip" ] && ip="N/A"
+        [ -z "$pid" ] && pid="N/A"
+        [ -z "$tpl" ] && tpl="none"
+        [ -z "$mem" ] && mem="N/A"
+        [ -z "$cpu" ] && cpu="N/A"
+        [ -z "$created" ] && created="?"
+        printf "Name:       %s\n" "$cname"
+        printf "Status:     %s\n" "$status"
+        printf "Image:      %s\n" "$image"
+        printf "Mode:       %s\n" "$mode"
+        printf "IP:         %s\n" "$ip"
+        printf "PID:        %s\n" "$pid"
+        printf "Template:   %s\n" "$tpl"
+        printf "Autostart:  %s\n" "$autostart"
+        printf "Memory:     %s\n" "$mem"
+        printf "CPU:        %s%%\n" "$cpu"
+        printf "Created:    %s\n" "$created"
     fi
-    local name=$(_json_val "$config" "name")
-    local status=$(_json_val "$config" "status")
-    local image=$(_json_val "$config" "image")
-    local mode=$(_json_val "$config" "mode")
-    local ip=$(_json_val "$config" "ip_address")
-    local pid=$(_json_num "$config" "pid")
-    local tpl=$(_json_val "$config" "template_name")
-    local autostart=$(_json_bool "$config" "autostart")
-    local mem=$(_json_val "$config" "memory_limit")
-    local cpu=$(_json_num "$config" "cpu_limit_percent")
-    local created=$(_json_val "$config" "created_at")
-    [ -z "$ip" ] && ip="N/A"
-    [ -z "$pid" ] && pid="N/A"
-    [ -z "$tpl" ] && tpl="none"
-    [ -z "$mem" ] && mem="N/A"
-    [ -z "$cpu" ] && cpu="N/A"
-    [ -z "$created" ] && created="?"
-    printf "Name:       %s\n" "$name"
-    printf "Status:     %s\n" "$status"
-    printf "Image:      %s\n" "$image"
-    printf "Mode:       %s\n" "$mode"
-    printf "IP:         %s\n" "$ip"
-    printf "PID:        %s\n" "$pid"
-    printf "Template:   %s\n" "$tpl"
-    printf "Autostart:  %s\n" "$autostart"
-    printf "Memory:     %s\n" "$mem"
-    printf "CPU:        %s%%\n" "$cpu"
-    printf "Created:    %s\n" "$created"
 }
 
 # ============================================================
 # ANK: images / list-images
 # ============================================================
 ank_images() {
-    if [ ! -d "$IMAGES_DIR" ]; then
+    local json=$(_api_get "/api/images/all")
+    if [ -n "$json" ] && [ "$json" != "[]" ] && [ "$json" != "null" ]; then
+        printf "%-25s %-12s %s\n" "NAME" "SIZE" "NODE"
+        printf "%s\n" "--------------------------------------------------------------"
+        echo "$json" | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    for img in data:
+        name = img.get('name', img.get('id', '?'))
+        size = img.get('size', 0)
+        size_str = f'{size/(1024*1024):.1f} MB' if size and size > 0 else '-'
+        node = img.get('node', 'local')
+        node_str = 'local' if node == 'local' else img.get('node_alias', node[:8])
+        print(f'{name:25s} {size_str:12s} {node_str}')
+except: pass
+" 2>/dev/null
+    else
         echo "No images found."
-        return
     fi
-    local found=0
-    for img in $(ls "$IMAGES_DIR" 2>/dev/null); do
-        [ -d "$IMAGES_DIR/$img" ] || continue
-        local base="$IMAGES_DIR/$img"
-        local has_sh="no"
-        [ -e "$base/bin/sh" ] && has_sh="yes"
-        printf "%-25s bin/sh: %s\n" "$img" "$has_sh"
-        found=1
-    done
-    [ "$found" -eq 0 ] && echo "No images found."
 }
 
 # ============================================================
@@ -1033,27 +1208,29 @@ ank_backup_rm() {
 # ANK: node ls
 # ============================================================
 ank_node_ls() {
-    if [ ! -d "$NODES_DIR" ]; then
+    local json=$(_api_get "/api/nodes")
+    if [ -n "$json" ]; then
+        printf "%-15s %-16s %-8s %-10s %-10s %s\n" "ALIAS" "IP" "PORT" "STATUS" "CPU" "RAM"
+        printf "%s\n" "--------------------------------------------------------------------------"
+        echo "$json" | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    nodes = d.get('nodes', d) if isinstance(d, dict) else d
+    if not nodes: print('No nodes found.')
+    for n in nodes:
+        alias = n.get('alias') or n.get('ip', '?')
+        ip = n.get('ip', '?')
+        port = n.get('port', 8001)
+        status = n.get('status', '?')
+        cpu = f\"{n.get('cpu_percent', 0):.0f}%\" if status == 'online' else '-'
+        ram = f\"{n.get('mem_used_gb',0):.1f}/{n.get('mem_total_gb',0):.1f}GB\" if status == 'online' else '-'
+        print(f'{alias:15s} {ip:16s} {port:<8d} {status:10s} {cpu:10s} {ram}')
+except: print('No nodes found.')
+" 2>/dev/null
+    else
         echo "No nodes found."
-        return
     fi
-    printf "%-15s %-20s %-16s %-10s %s\n" "ID" "ALIAS" "IP" "PORT" "STATUS"
-    printf "%s\n" "--------------------------------------------------------------------"
-    local found=0
-    for fp in "$NODES_DIR"/*.json; do
-        [ -f "$fp" ] || continue
-        local id=$(_json_val "$fp" "id")
-        local alias=$(_json_val "$fp" "alias")
-        local ip=$(_json_val "$fp" "ip")
-        local port=$(_json_num "$fp" "port")
-        local status=$(_json_val "$fp" "status")
-        [ -z "$alias" ] && alias="$ip"
-        [ -z "$port" ] && port="8001"
-        [ -z "$status" ] && status="?"
-        printf "%-15s %-20s %-16s %-10s %s\n" "$id" "$alias" "$ip" "$port" "$status"
-        found=1
-    done
-    [ "$found" -eq 0 ] && echo "No nodes found."
 }
 
 # ============================================================
@@ -1070,7 +1247,38 @@ ank_node_inspect() {
         echo "Node '$id' not found"
         return 1
     fi
-    cat "$fp"
+    local alias=$(_json_val "$fp" "alias")
+    local ip=$(_json_val "$fp" "ip")
+    local port=$(_json_num "$fp" "port")
+    local status=$(_json_val "$fp" "status")
+    local node_id=$(_json_val "$fp" "id")
+    echo "Node: ${alias:-$ip}"
+    echo "ID:   $node_id"
+    echo "IP:   $ip"
+    echo "Port: ${port:-8001}"
+    echo "Status: ${status:-?}"
+    echo ""
+    if [ "$status" = "online" ]; then
+        echo "Fetching live status..."
+        local info=$(_api_get "/api/nodes/${node_id}/status")
+        if [ -n "$info" ]; then
+            echo "$info" | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    cpu = d.get('cpu_usage', '-')
+    disk = d.get('disk', {})
+    uptime = d.get('uptime', 0)
+    running = d.get('containers_running', 0)
+    total = d.get('containers_total', 0)
+    print(f'CPU:      {cpu}%')
+    print(f'Disk:     {disk.get(\"used\",\"?\")} / {disk.get(\"total\",\"?\")} GB')
+    print(f'Uptime:   {uptime}s')
+    print(f'Containers: {running} running / {total - running} stopped')
+except: pass
+" 2>/dev/null
+        fi
+    fi
 }
 
 # ============================================================
@@ -1708,25 +1916,40 @@ _validate_ankfile() {
 # ANK-CORE: status
 # ============================================================
 ank_core_status() {
-    local total=0 running=0 stopped=0
-    for cfg in $(_list_containers); do
-        total=$((total + 1))
-        local status=$(_json_val "$cfg" "status")
-        if [ "$status" = "running" ]; then
-            running=$((running + 1))
-        else
-            stopped=$((stopped + 1))
-        fi
-    done
+    local json=$(_api_get "/api/system/dashboard")
+    if [ -n "$json" ]; then
+        echo "$json" | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    local = d.get('local', {})
+    cluster = d.get('cluster')
+    nodes = d.get('nodes', [])
+    ver = d.get('version', '?')
 
-    local version=$(_json_val "$CONFIG_FILE" "version")
-    local mode="compat"
-    [ -f "$ANK_DIR/mode" ] && mode=$(cat "$ANK_DIR/mode" 2>/dev/null || echo "compat")
+    print(f'ANK Engine v{ver}')
+    print(f'')
+    print(f'--- Local ---')
+    print(f'Containers: {local.get(\"containers_running\",0)} running / {local.get(\"containers_stopped\",0)} stopped')
+    print(f'CPU:        {local.get(\"cpu_cores\",0)} cores @ {local.get(\"cpu_percent\",0)}%')
+    print(f'Stacks:     {local.get(\"stacks\",0)}')
 
-    printf "ANK Engine v%s\n" "$version"
-    printf "Containers: %s running, %s stopped, %s total\n" "$running" "$stopped" "$total"
-    printf "Mode:       %s\n" "$mode"
-    printf "Port:       %s\n" "$ANK_PORT"
+    if cluster:
+        print(f'')
+        print(f'--- Cluster ---')
+        print(f'Nodes:      {len(nodes)} total')
+        print(f'Containers: {cluster.get(\"containers_running\",0)} running / {cluster.get(\"containers_total\",0) - cluster.get(\"containers_running\",0)} stopped ({cluster.get(\"containers_total\",0)} total)')
+        print(f'CPU:        {cluster.get(\"cpu_cores\",0)} cores @ {cluster.get(\"cpu_percent\",0)}% avg')
+        print(f'RAM:        {cluster.get(\"ram_used_gb\",0):.1f} / {cluster.get(\"ram_total_gb\",0):.1f} GB ({cluster.get(\"ram_percent\",0):.0f}% avg)')
+        print(f'Disk:       {cluster.get(\"disk_used_gb\",0):.1f} / {cluster.get(\"disk_total_gb\",0):.1f} GB ({cluster.get(\"disk_percent\",0):.0f}% avg)')
+    else:
+        print(f'')
+        print(f'Cluster:    not configured (single node)')
+except: print('Error reading dashboard')
+" 2>/dev/null
+    else
+        echo "ANK server not responding"
+    fi
 }
 
 # ============================================================
@@ -1833,6 +2056,28 @@ ank_core_info() {
     printf "  %-12s %s available\n" "Images" "$images"
     printf "  %-12s %s\n" "Mode" "$mode"
     echo " ──────────────────────────────────────────────"
+
+    local dash=$(_api_get "/api/system/dashboard")
+    if [ -n "$dash" ]; then
+        echo "$dash" | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    nodes = d.get('nodes', [])
+    if nodes:
+        print(f'')
+        print(f' ── Cluster ({len(nodes)} nodes) ───────────────')
+        for n in nodes:
+            status_icon = '+' if n.get('status') == 'online' else '-'
+            alias = n.get('alias') or n.get('ip', '?')
+            cpu = f\"{n.get('cpu_percent',0):.0f}%\" if n.get('status') == 'online' else '-'
+            ram = f\"{n.get('mem_used_gb',0):.1f}/{n.get('mem_total_gb',0):.1f}GB\" if n.get('status') == 'online' else '-'
+            cont = f\"{n.get('containers_running',0)}/{n.get('containers',0)}\" if n.get('status') == 'online' else '-'
+            print(f'  [{status_icon}] {alias:15s} CPU:{cpu:5s} RAM:{ram:12s} Containers:{cont}')
+        print(f' ──────────────────────────────────────────────')
+except: pass
+" 2>/dev/null
+    fi
 }
 
 # ============================================================
@@ -1884,36 +2129,36 @@ ank_man() {
             echo "═══════════════════════════════════════════════════════════════"
             echo ""
             echo "NAME"
-            echo "    ank ps - List all containers with status, IP, image, and PID."
+            echo "    ank ps - List all containers across all nodes."
             echo ""
             echo "SYNOPSIS"
             echo "    ank ps"
             echo ""
             echo "DESCRIPTION"
-            echo "    Displays a table of all containers managed by ANK. Each row"
-            echo "    shows the container name, current status (running/stopped),"
-            echo "    assigned IP address, image name, and main process ID."
-            echo ""
-            echo "    This is the primary command to monitor your container"
-            echo "    infrastructure at a glance."
+            echo "    Displays a table of ALL containers from the local device AND"
+            echo "    all connected remote nodes. Remote containers are tagged"
+            echo "    with [node_alias] in the last column."
             echo ""
             echo "FIELDS"
             echo "    NAME       Container name (unique identifier)"
-            echo "    STATUS     running | stopped | error"
-            echo "    IP         Container IP on the ank0 bridge (e.g. 10.20.30.3)"
+            echo "    STATUS     running | stopped | building | error"
+            echo "    IP         Container IP on the ank0 bridge"
             echo "    IMAGE      Base image used (e.g. alpine-3.20, nginx-3.20)"
-            echo "    PID        Main process ID (0 if not running)"
+            echo "    PID        Main process ID (- if not running)"
+            echo "    NODE       [alias] for remote containers, blank for local"
             echo ""
             echo "EXAMPLES"
             echo "    ank ps"
-            echo "    NAME                 STATUS       IP               IMAGE"
-            echo "    my-site              running      10.20.30.3       nginx-3.20"
-            echo "    dev-server           stopped      -                python-3.20"
+            echo "    NAME        STATUS      IP              IMAGE        PID    NODE"
+            echo "    my-site     running     10.20.30.3      nginx-3.20   1234"
+            echo "    dev-server  stopped     10.20.30.4      python-3.20  -"
+            echo "    api         running     10.171.0.205    alpine-3.20  5678   [ank-app02]"
             echo ""
             echo "TIPS"
             echo "    - Use 'ank start <name>' to start a stopped container"
             echo "    - Use 'ank logs <name>' to view container logs"
             echo "    - Use 'ank inspect <name>' for detailed info"
+            echo "    - Remote containers are managed automatically via the API"
             echo "═══════════════════════════════════════════════════════════════"
             ;;
         start)
@@ -1922,7 +2167,7 @@ ank_man() {
             echo "═══════════════════════════════════════════════════════════════"
             echo ""
             echo "NAME"
-            echo "    ank start - Start a stopped container."
+            echo "    ank start - Start a stopped container (local or remote)."
             echo ""
             echo "SYNOPSIS"
             echo "    ank start <name>"
@@ -1962,7 +2207,7 @@ ank_man() {
             echo "═══════════════════════════════════════════════════════════════"
             echo ""
             echo "NAME"
-            echo "    ank stop - Stop a running container."
+            echo "    ank stop - Stop a running container (local or remote)."
             echo ""
             echo "SYNOPSIS"
             echo "    ank stop <name>"
@@ -2001,7 +2246,7 @@ ank_man() {
             echo "═══════════════════════════════════════════════════════════════"
             echo ""
             echo "NAME"
-            echo "    ank restart - Restart a container (stop + start)."
+            echo "    ank restart - Restart a container (local or remote, stop + start)."
             echo ""
             echo "SYNOPSIS"
             echo "    ank restart <name>"
@@ -2029,7 +2274,7 @@ ank_man() {
             echo "═══════════════════════════════════════════════════════════════"
             echo ""
             echo "NAME"
-            echo "    ank rm - Delete a container and all its data."
+            echo "    ank rm - Delete a container and all its data (local or remote)."
             echo ""
             echo "SYNOPSIS"
             echo "    ank rm <name>"
@@ -2064,7 +2309,7 @@ ank_man() {
             echo "═══════════════════════════════════════════════════════════════"
             echo ""
             echo "NAME"
-            echo "    ank logs - Display the last lines of container logs."
+            echo "    ank logs - Display the last lines of container logs (local or remote)."
             echo ""
             echo "SYNOPSIS"
             echo "    ank logs <name>"
@@ -2128,7 +2373,7 @@ ank_man() {
             echo "═══════════════════════════════════════════════════════════════"
             echo ""
             echo "NAME"
-            echo "    inspect - Show detailed information about a container."
+            echo "    inspect - Show detailed information about a container (local or remote)."
             echo ""
             echo "SYNOPSIS"
             echo "    ank inspect <name>"
@@ -2158,7 +2403,7 @@ ank_man() {
             echo "═══════════════════════════════════════════════════════════════"
             echo ""
             echo "NAME"
-            echo "    ank images - List all available container images."
+            echo "    ank images - List all available container images across all nodes."
             echo ""
             echo "SYNOPSIS"
             echo "    ank images"

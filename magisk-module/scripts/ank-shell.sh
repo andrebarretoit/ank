@@ -48,6 +48,59 @@ _json_bool() {
 }
 
 # ============================================================
+# HELPER: API GET via curl
+# ============================================================
+_api_get() {
+    local path="$1"
+    curl -s "http://127.0.0.1:${ANK_PORT:-8001}${path}" 2>/dev/null
+}
+
+_api_post() {
+    local path="$1" data="$2"
+    curl -s -X POST -H "Content-Type: application/json" -d "$data" "http://127.0.0.1:${ANK_PORT:-8001}${path}" 2>/dev/null
+}
+
+_api_delete() {
+    local path="$1"
+    curl -s -X DELETE "http://127.0.0.1:${ANK_PORT:-8001}${path}" 2>/dev/null
+}
+
+# ============================================================
+# HELPER: Find which node a container lives on
+# Returns: "local" or node_id
+# ============================================================
+_find_container_node() {
+    local name="$1"
+    local json=$(_api_get "/api/containers/all")
+    [ -z "$json" ] && echo "local" && return
+    echo "$json" | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    for c in data:
+        if c.get('name') == '$name':
+            print(c.get('node', 'local'))
+            sys.exit(0)
+    print('local')
+except: print('local')
+" 2>/dev/null
+}
+
+# ============================================================
+# HELPER: Resolve container node_id to alias
+# ============================================================
+_node_alias() {
+    local node_id="$1"
+    [ "$node_id" = "local" ] && echo "local" && return
+    local fp="$NODES_DIR/${node_id}.json"
+    if [ -f "$fp" ]; then
+        _json_val "$fp" "alias"
+    else
+        echo "$node_id"
+    fi
+}
+
+# ============================================================
 # HELPER: History (index-based)
 # ============================================================
 HIST_FILE="$ANK_DIR/.ank_history"
@@ -313,78 +366,77 @@ _print_row() {
 # ============================================================
 ank_help() {
     cat << 'EOF'
-ANK - Android Konteiner CLI
+ANK - Android Konteiner CLI (Full Cluster Support)
 
 Container commands:
-  ank ps                    List all containers
-  ank start <name>          Start a container
-  ank stop <name>           Stop a container
-  ank restart <name>        Restart a container
-  ank rm <name>             Delete a container
-  ank logs <name>           View container logs
-  ank exec <name> <cmd>     Execute command in container
-  ank inspect <name>        Show container details
+  ank ps                      List all containers (local + remote)
+  ank start <name>            Start a container (auto-detects node)
+  ank stop <name>             Stop a container (auto-detects node)
+  ank restart <name>          Restart a container (auto-detects node)
+  ank rm <name>               Delete a container (auto-detects node)
+  ank logs <name>             Show container logs (local + remote)
+  ank exec <name> <cmd>       Execute command in container
+  ank inspect <name>          Show container details (local + remote)
 
 Image commands:
-  ank images                List available images
-  ank list-images           List available images (alias)
-  ank templates             List deploy templates
-  ank deploy <tpl> <name>   Deploy a template
-  ank pull <version>        Download base image
-  ank build -i <file>       Build image from .ankfile
+  ank images                  List images (all nodes)
+  ank templates               List deploy templates
+  ank deploy <tpl> <name>     Create container from template
+  ank pull [version]          Download Alpine base rootfs
+  ank build -i <file>         Build image from .ankfile
 
 File commands:
-  ank npad <file>           Open text editor (Ankfiles validated, others plain)
-  ank ls                    List files in ank-engine
-  ank copy <src> <dst>      Copy a file
-  ank ren <old> <new>       Rename a file
-  ank erase <file>          Delete a file
+  ank npad <file>             Edit .ankfile (vi-like)
+  ank ls                      List files
+  ank copy <src> <dst>        Copy file
+  ank ren <old> <new>         Rename file
+  ank erase <file>            Delete file
 
 Stack commands:
-  ank stack ls              List all stacks
-  ank stack inspect <name>  Show stack details
-  ank stack create <name> [tpl] [count]  Create a stack
-  ank stack scale <name> <count>         Scale stack
-  ank stack rm <name>       Delete a stack
+  ank stack ls                List stacks
+  ank stack inspect <name>    Show stack details
+  ank stack create <n> [t]    Create stack
+  ank stack scale <n> <c>     Scale stack
+  ank stack rm <name>         Delete stack
 
 Backup commands:
-  ank backup ls             List backup routines
-  ank backup inspect <id>   Show routine details
-  ank backup run <id>       Execute backup
-  ank backup rm <id>        Delete backup routine
+  ank backup ls               List backup routines
+  ank backup inspect <id>     Show routine details
+  ank backup run <id>         Execute backup
+  ank backup rm <id>          Delete routine
 
 Node commands:
-  ank node ls               List remote nodes
-  ank node inspect <id>     Show node details
-  ank node add              Add remote node (interactive)
-  ank node rm <id>          Remove a node
+  ank node ls                 List connected nodes (with status)
+  ank node inspect <id>       Show node details + live stats
+  ank node add                Pair a new remote node
+  ank node rm <id>            Remove a paired node
 
 Diagnostics:
-  ank ping <host> [count]   Ping a host
-  ank traceroute <host>     Trace route to host
-  ank nslookup <host>       DNS lookup
-  ank ip                    Show IP addresses
-  ank ifconfig              Show network interfaces
-  ank route                 Show routing table
-  ank netstat               Show network connections
-  ank ss                    Show socket stats
+  ank ping <host> [count]     Ping a host
+  ank traceroute <host>       Trace route to host
+  ank nslookup <host>         DNS lookup
+  ank ip                      Show IP addresses
+  ank ifconfig                Show network interfaces
+  ank route                   Show routing table
+  ank netstat                 Show network connections
+  ank ss                      Show socket stats
 
 System:
-  ank help                  Show this help
-  ank --version             Show system info (neofetch style)
-  ank history               Show command history
-  ank !{NUM}                Re-execute command from history
-  ank --man <cmd>           Show detailed help for a command
-  ank exit                  Exit ANK shell
+  ank help                    Show this help
+  ank --version               Show version
+  ank history                 Show command history
+  ank !{NUM}                  Re-execute from history
+  ank --man <cmd>             Detailed help for a command
+  ank exit                    Exit ANK shell
 
 ANK-Core commands:
-  ank-core status           Show system status
-  ank-core restart          Restart ANK server
-  ank-core info             Show device info
-  ank-core network          Show network config
-  ank-core clean            Cleanup orphaned resources
-  ank-core logs             Show server logs
-  ank-core --man <cmd>      Show detailed help
+  ank-core status             Cluster status (all nodes)
+  ank-core restart            Restart ANK server
+  ank-core info               Device info + cluster overview
+  ank-core network            Show network config
+  ank-core clean              Cleanup orphaned resources
+  ank-core logs               Show server logs
+  ank-core --man <cmd>        Detailed help
 EOF
 }
 
@@ -409,17 +461,43 @@ ank_ps() {
     _print_row "NAME" "STATUS" "IP" "IMAGE" "PID"
     printf "%s\n" "----------------------------------------------------------------------"
     local found=0
-    for cfg in $(_list_containers); do
-        local name=$(_json_val "$cfg" "name")
-        local status=$(_json_val "$cfg" "status")
-        local ip=$(_json_val "$cfg" "ip_address")
-        local image=$(_json_val "$cfg" "image")
-        local pid=$(_json_num "$cfg" "pid")
-        [ -z "$ip" ] && ip="N/A"
-        [ -z "$pid" ] && pid="-"
-        _print_row "$name" "$status" "$ip" "$image" "$pid"
-        found=1
-    done
+    if command -v curl >/dev/null 2>&1; then
+        local json=$(curl -s "http://127.0.0.1:${ANK_PORT:-8001}/api/containers/all" 2>/dev/null)
+        if [ -n "$json" ] && [ "$json" != "null" ]; then
+            local i=0
+            while true; do
+                local name=$(echo "$json" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d[$i]['name'] if $i<len(d) else '');" 2>/dev/null)
+                [ -z "$name" ] && break
+                local status=$(echo "$json" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d[$i].get('status',''))" 2>/dev/null)
+                local ip=$(echo "$json" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d[$i].get('ip_address','N/A'))" 2>/dev/null)
+                local image=$(echo "$json" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d[$i].get('template_name') or d[$i].get('image',''))" 2>/dev/null)
+                local pid=$(echo "$json" | python3 -c "import sys,json; d=json.load(sys.stdin); p=d[$i].get('pid'); print(p if p else '-')" 2>/dev/null)
+                local node=$(echo "$json" | python3 -c "import sys,json; d=json.load(sys.stdin); n=d[$i].get('node','local'); print('local' if n=='local' else d[$i].get('node_alias',n[:8]))" 2>/dev/null)
+                [ -z "$ip" ] && ip="N/A"
+                [ -z "$pid" ] && pid="-"
+                if [ "$node" != "local" ] && [ -n "$node" ]; then
+                    _print_row "$name" "$status" "$ip" "$image" "$pid" "[$node]"
+                else
+                    _print_row "$name" "$status" "$ip" "$image" "$pid"
+                fi
+                found=1
+                i=$((i + 1))
+            done
+        fi
+    fi
+    if [ "$found" -eq 0 ]; then
+        for cfg in $(_list_containers); do
+            local name=$(_json_val "$cfg" "name")
+            local status=$(_json_val "$cfg" "status")
+            local ip=$(_json_val "$cfg" "ip_address")
+            local image=$(_json_val "$cfg" "image")
+            local pid=$(_json_num "$cfg" "pid")
+            [ -z "$ip" ] && ip="N/A"
+            [ -z "$pid" ] && pid="-"
+            _print_row "$name" "$status" "$ip" "$image" "$pid"
+            found=1
+        done
+    fi
     [ "$found" -eq 0 ] && echo "No containers found."
 }
 
@@ -432,7 +510,14 @@ ank_start() {
         echo "Usage: ank start <name>"
         return 1
     fi
-    sh "$SCRIPTS_DIR/container.sh" start "$name" 2>&1 | tail -20
+    local node=$(_find_container_node "$name")
+    if [ "$node" != "local" ]; then
+        echo "Starting '$name' on node $(_node_alias "$node")..."
+        _api_post "/api/nodes/${node}/containers/${name}/start" "{}"
+        echo "Start command sent"
+    else
+        sh "$SCRIPTS_DIR/container.sh" start "$name" 2>&1 | tail -20
+    fi
 }
 
 # ============================================================
@@ -444,7 +529,14 @@ ank_stop() {
         echo "Usage: ank stop <name>"
         return 1
     fi
-    sh "$SCRIPTS_DIR/container.sh" stop "$name" 2>&1 | tail -5
+    local node=$(_find_container_node "$name")
+    if [ "$node" != "local" ]; then
+        echo "Stopping '$name' on node $(_node_alias "$node")..."
+        _api_post "/api/nodes/${node}/containers/${name}/stop" "{}"
+        echo "Stop command sent"
+    else
+        sh "$SCRIPTS_DIR/container.sh" stop "$name" 2>&1 | tail -5
+    fi
 }
 
 # ============================================================
@@ -456,9 +548,16 @@ ank_restart() {
         echo "Usage: ank restart <name>"
         return 1
     fi
-    sh "$SCRIPTS_DIR/container.sh" stop "$name" >/dev/null 2>&1
-    sleep 1
-    sh "$SCRIPTS_DIR/container.sh" start "$name" 2>&1 | tail -5
+    local node=$(_find_container_node "$name")
+    if [ "$node" != "local" ]; then
+        echo "Restarting '$name' on node $(_node_alias "$node")..."
+        _api_post "/api/nodes/${node}/containers/${name}/restart" "{}"
+        echo "Restart command sent"
+    else
+        sh "$SCRIPTS_DIR/container.sh" stop "$name" >/dev/null 2>&1
+        sleep 1
+        sh "$SCRIPTS_DIR/container.sh" start "$name" 2>&1 | tail -5
+    fi
 }
 
 # ============================================================
@@ -470,7 +569,14 @@ ank_rm() {
         echo "Usage: ank rm <name>"
         return 1
     fi
-    sh "$SCRIPTS_DIR/container.sh" delete "$name" 2>&1 | tail -5
+    local node=$(_find_container_node "$name")
+    if [ "$node" != "local" ]; then
+        echo "Deleting '$name' on node $(_node_alias "$node")..."
+        _api_delete "/api/nodes/${node}/containers/${name}"
+        echo "Delete command sent"
+    else
+        sh "$SCRIPTS_DIR/container.sh" delete "$name" 2>&1 | tail -5
+    fi
 }
 
 # ============================================================
@@ -482,11 +588,31 @@ ank_logs() {
         echo "Usage: ank logs <name>"
         return 1
     fi
-    local logpath="$LOGS_DIR/${name}.log"
-    if [ -f "$logpath" ]; then
-        tail -50 "$logpath"
+    local node=$(_find_container_node "$name")
+    if [ "$node" != "local" ]; then
+        local json=$(_api_get "/api/nodes/${node}/containers/${name}/logs")
+        if [ -n "$json" ]; then
+            echo "$json" | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    logs = d.get('logs', [])
+    if isinstance(logs, list):
+        for l in logs: print(l)
+    else:
+        print(logs)
+except: pass
+" 2>/dev/null
+        else
+            echo "No logs for '$name' on remote node"
+        fi
     else
-        echo "No logs for '$name'"
+        local logpath="$LOGS_DIR/${name}.log"
+        if [ -f "$logpath" ]; then
+            tail -50 "$logpath"
+        else
+            echo "No logs for '$name'"
+        fi
     fi
 }
 
@@ -501,18 +627,35 @@ ank_exec() {
         echo "Usage: ank exec <name> <command>"
         return 1
     fi
-    local config="$CONTAINERS_DIR/$name/config.json"
-    if [ ! -f "$config" ]; then
-        echo "Container '$name' not found"
-        return 1
+    local node=$(_find_container_node "$name")
+    if [ "$node" != "local" ]; then
+        local json=$(_api_post "/api/nodes/${node}/containers/${name}/exec" "{\"command\":\"$cmd\"}")
+        if [ -n "$json" ]; then
+            echo "$json" | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    print(d.get('stdout', ''))
+    if d.get('stderr'): print(d['stderr'], file=sys.stderr)
+except: pass
+" 2>/dev/null
+        else
+            echo "Exec failed on remote node"
+        fi
+    else
+        local config="$CONTAINERS_DIR/$name/config.json"
+        if [ ! -f "$config" ]; then
+            echo "Container '$name' not found"
+            return 1
+        fi
+        local status=$(_json_val "$config" "status")
+        if [ "$status" != "running" ]; then
+            echo "Container '$name' not running"
+            return 1
+        fi
+        local merged="$CONTAINERS_DIR/$name/merged"
+        chroot "$merged" /bin/sh -c "export PATH=/bin:/sbin:/usr/bin:/usr/sbin; hostname $name 2>/dev/null; $cmd"
     fi
-    local status=$(_json_val "$config" "status")
-    if [ "$status" != "running" ]; then
-        echo "Container '$name' not running"
-        return 1
-    fi
-    local merged="$CONTAINERS_DIR/$name/merged"
-    chroot "$merged" /bin/sh -c "export PATH=/bin:/sbin:/usr/bin:/usr/sbin; hostname $name 2>/dev/null; $cmd"
 }
 
 # ============================================================
@@ -524,59 +667,91 @@ ank_inspect() {
         echo "Usage: ank inspect <name>"
         return 1
     fi
-    local config="$CONTAINERS_DIR/$name/config.json"
-    if [ ! -f "$config" ]; then
-        echo "Container '$name' not found"
-        return 1
+    local node=$(_find_container_node "$name")
+    if [ "$node" != "local" ]; then
+        local json=$(_api_get "/api/nodes/${node}/containers/${name}")
+        if [ -n "$json" ] && [ "$json" != "{}" ]; then
+            echo "$json" | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    print(f'Name:       {d.get(\"name\", \"-\")}')
+    print(f'Status:     {d.get(\"status\", \"-\")}')
+    print(f'Node:       {_node_alias(\"$node\")}')
+    print(f'Image:      {d.get(\"template_name\") or d.get(\"image\", \"-\")}')
+    print(f'Mode:       {d.get(\"mode\", \"-\")}')
+    print(f'IP:         {d.get(\"ip_address\", \"N/A\")}')
+    print(f'PID:        {d.get(\"pid\") or \"N/A\"}')
+    r = d.get('resources', {})
+    print(f'Memory:     {r.get(\"memory_limit\", \"N/A\")}')
+    print(f'CPU:        {r.get(\"cpu_limit_percent\", \"N/A\")}%')
+    print(f'Created:    {d.get(\"created_at\", \"?\")}')
+except Exception as e: print(f'Error: {e}')
+" 2>/dev/null
+        else
+            echo "Container '$name' not found on remote node"
+        fi
+    else
+        local config="$CONTAINERS_DIR/$name/config.json"
+        if [ ! -f "$config" ]; then
+            echo "Container '$name' not found"
+            return 1
+        fi
+        local cname=$(_json_val "$config" "name")
+        local status=$(_json_val "$config" "status")
+        local image=$(_json_val "$config" "image")
+        local mode=$(_json_val "$config" "mode")
+        local ip=$(_json_val "$config" "ip_address")
+        local pid=$(_json_num "$config" "pid")
+        local tpl=$(_json_val "$config" "template_name")
+        local autostart=$(_json_bool "$config" "autostart")
+        local mem=$(_json_val "$config" "memory_limit")
+        local cpu=$(_json_num "$config" "cpu_limit_percent")
+        local created=$(_json_val "$config" "created_at")
+        [ -z "$ip" ] && ip="N/A"
+        [ -z "$pid" ] && pid="N/A"
+        [ -z "$tpl" ] && tpl="none"
+        [ -z "$mem" ] && mem="N/A"
+        [ -z "$cpu" ] && cpu="N/A"
+        [ -z "$created" ] && created="?"
+        printf "Name:       %s\n" "$cname"
+        printf "Status:     %s\n" "$status"
+        printf "Image:      %s\n" "$image"
+        printf "Mode:       %s\n" "$mode"
+        printf "IP:         %s\n" "$ip"
+        printf "PID:        %s\n" "$pid"
+        printf "Template:   %s\n" "$tpl"
+        printf "Autostart:  %s\n" "$autostart"
+        printf "Memory:     %s\n" "$mem"
+        printf "CPU:        %s%%\n" "$cpu"
+        printf "Created:    %s\n" "$created"
     fi
-    local name=$(_json_val "$config" "name")
-    local status=$(_json_val "$config" "status")
-    local image=$(_json_val "$config" "image")
-    local mode=$(_json_val "$config" "mode")
-    local ip=$(_json_val "$config" "ip_address")
-    local pid=$(_json_num "$config" "pid")
-    local tpl=$(_json_val "$config" "template_name")
-    local autostart=$(_json_bool "$config" "autostart")
-    local mem=$(_json_val "$config" "memory_limit")
-    local cpu=$(_json_num "$config" "cpu_limit_percent")
-    local created=$(_json_val "$config" "created_at")
-    [ -z "$ip" ] && ip="N/A"
-    [ -z "$pid" ] && pid="N/A"
-    [ -z "$tpl" ] && tpl="none"
-    [ -z "$mem" ] && mem="N/A"
-    [ -z "$cpu" ] && cpu="N/A"
-    [ -z "$created" ] && created="?"
-    printf "Name:       %s\n" "$name"
-    printf "Status:     %s\n" "$status"
-    printf "Image:      %s\n" "$image"
-    printf "Mode:       %s\n" "$mode"
-    printf "IP:         %s\n" "$ip"
-    printf "PID:        %s\n" "$pid"
-    printf "Template:   %s\n" "$tpl"
-    printf "Autostart:  %s\n" "$autostart"
-    printf "Memory:     %s\n" "$mem"
-    printf "CPU:        %s%%\n" "$cpu"
-    printf "Created:    %s\n" "$created"
 }
 
 # ============================================================
 # ANK: images / list-images
 # ============================================================
 ank_images() {
-    if [ ! -d "$IMAGES_DIR" ]; then
+    local json=$(_api_get "/api/images/all")
+    if [ -n "$json" ] && [ "$json" != "[]" ] && [ "$json" != "null" ]; then
+        printf "%-25s %-12s %s\n" "NAME" "SIZE" "NODE"
+        printf "%s\n" "--------------------------------------------------------------"
+        echo "$json" | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    for img in data:
+        name = img.get('name', img.get('id', '?'))
+        size = img.get('size', 0)
+        size_str = f'{size/(1024*1024):.1f} MB' if size and size > 0 else '-'
+        node = img.get('node', 'local')
+        node_str = 'local' if node == 'local' else img.get('node_alias', node[:8])
+        print(f'{name:25s} {size_str:12s} {node_str}')
+except: pass
+" 2>/dev/null
+    else
         echo "No images found."
-        return
     fi
-    local found=0
-    for img in $(ls "$IMAGES_DIR" 2>/dev/null); do
-        [ -d "$IMAGES_DIR/$img" ] || continue
-        local base="$IMAGES_DIR/$img"
-        local has_sh="no"
-        [ -e "$base/bin/sh" ] && has_sh="yes"
-        printf "%-25s bin/sh: %s\n" "$img" "$has_sh"
-        found=1
-    done
-    [ "$found" -eq 0 ] && echo "No images found."
 }
 
 # ============================================================
@@ -625,7 +800,9 @@ ank_deploy() {
             ;;
     esac
     echo "Deploying '$name' from template '$template'..."
-    sh "$SCRIPTS_DIR/container.sh" create "$name" "$image" "" "" "$pkgs"
+    local DEFAULT_PASS=$(_json_val "$CONFIG_FILE" "default_container_password")
+    [ -z "$DEFAULT_PASS" ] && DEFAULT_PASS="ank123"
+    sh "$SCRIPTS_DIR/container.sh" create "$name" "$image" "$DEFAULT_PASS" "" "$pkgs"
 }
 
 # ============================================================
@@ -1031,27 +1208,29 @@ ank_backup_rm() {
 # ANK: node ls
 # ============================================================
 ank_node_ls() {
-    if [ ! -d "$NODES_DIR" ]; then
+    local json=$(_api_get "/api/nodes")
+    if [ -n "$json" ]; then
+        printf "%-15s %-16s %-8s %-10s %-10s %s\n" "ALIAS" "IP" "PORT" "STATUS" "CPU" "RAM"
+        printf "%s\n" "--------------------------------------------------------------------------"
+        echo "$json" | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    nodes = d.get('nodes', d) if isinstance(d, dict) else d
+    if not nodes: print('No nodes found.')
+    for n in nodes:
+        alias = n.get('alias') or n.get('ip', '?')
+        ip = n.get('ip', '?')
+        port = n.get('port', 8001)
+        status = n.get('status', '?')
+        cpu = f\"{n.get('cpu_percent', 0):.0f}%\" if status == 'online' else '-'
+        ram = f\"{n.get('mem_used_gb',0):.1f}/{n.get('mem_total_gb',0):.1f}GB\" if status == 'online' else '-'
+        print(f'{alias:15s} {ip:16s} {port:<8d} {status:10s} {cpu:10s} {ram}')
+except: print('No nodes found.')
+" 2>/dev/null
+    else
         echo "No nodes found."
-        return
     fi
-    printf "%-15s %-20s %-16s %-10s %s\n" "ID" "ALIAS" "IP" "PORT" "STATUS"
-    printf "%s\n" "--------------------------------------------------------------------"
-    local found=0
-    for fp in "$NODES_DIR"/*.json; do
-        [ -f "$fp" ] || continue
-        local id=$(_json_val "$fp" "id")
-        local alias=$(_json_val "$fp" "alias")
-        local ip=$(_json_val "$fp" "ip")
-        local port=$(_json_num "$fp" "port")
-        local status=$(_json_val "$fp" "status")
-        [ -z "$alias" ] && alias="$ip"
-        [ -z "$port" ] && port="8001"
-        [ -z "$status" ] && status="?"
-        printf "%-15s %-20s %-16s %-10s %s\n" "$id" "$alias" "$ip" "$port" "$status"
-        found=1
-    done
-    [ "$found" -eq 0 ] && echo "No nodes found."
 }
 
 # ============================================================
@@ -1068,7 +1247,38 @@ ank_node_inspect() {
         echo "Node '$id' not found"
         return 1
     fi
-    cat "$fp"
+    local alias=$(_json_val "$fp" "alias")
+    local ip=$(_json_val "$fp" "ip")
+    local port=$(_json_num "$fp" "port")
+    local status=$(_json_val "$fp" "status")
+    local node_id=$(_json_val "$fp" "id")
+    echo "Node: ${alias:-$ip}"
+    echo "ID:   $node_id"
+    echo "IP:   $ip"
+    echo "Port: ${port:-8001}"
+    echo "Status: ${status:-?}"
+    echo ""
+    if [ "$status" = "online" ]; then
+        echo "Fetching live status..."
+        local info=$(_api_get "/api/nodes/${node_id}/status")
+        if [ -n "$info" ]; then
+            echo "$info" | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    cpu = d.get('cpu_usage', '-')
+    disk = d.get('disk', {})
+    uptime = d.get('uptime', 0)
+    running = d.get('containers_running', 0)
+    total = d.get('containers_total', 0)
+    print(f'CPU:      {cpu}%')
+    print(f'Disk:     {disk.get(\"used\",\"?\")} / {disk.get(\"total\",\"?\")} GB')
+    print(f'Uptime:   {uptime}s')
+    print(f'Containers: {running} running / {total - running} stopped')
+except: pass
+" 2>/dev/null
+        fi
+    fi
 }
 
 # ============================================================
@@ -1706,25 +1916,40 @@ _validate_ankfile() {
 # ANK-CORE: status
 # ============================================================
 ank_core_status() {
-    local total=0 running=0 stopped=0
-    for cfg in $(_list_containers); do
-        total=$((total + 1))
-        local status=$(_json_val "$cfg" "status")
-        if [ "$status" = "running" ]; then
-            running=$((running + 1))
-        else
-            stopped=$((stopped + 1))
-        fi
-    done
+    local json=$(_api_get "/api/system/dashboard")
+    if [ -n "$json" ]; then
+        echo "$json" | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    local = d.get('local', {})
+    cluster = d.get('cluster')
+    nodes = d.get('nodes', [])
+    ver = d.get('version', '?')
 
-    local version=$(_json_val "$CONFIG_FILE" "version")
-    local mode="compat"
-    [ -f "$ANK_DIR/mode" ] && mode=$(cat "$ANK_DIR/mode" 2>/dev/null || echo "compat")
+    print(f'ANK Engine v{ver}')
+    print(f'')
+    print(f'--- Local ---')
+    print(f'Containers: {local.get(\"containers_running\",0)} running / {local.get(\"containers_stopped\",0)} stopped')
+    print(f'CPU:        {local.get(\"cpu_cores\",0)} cores @ {local.get(\"cpu_percent\",0)}%')
+    print(f'Stacks:     {local.get(\"stacks\",0)}')
 
-    printf "ANK Engine v%s\n" "$version"
-    printf "Containers: %s running, %s stopped, %s total\n" "$running" "$stopped" "$total"
-    printf "Mode:       %s\n" "$mode"
-    printf "Port:       %s\n" "$ANK_PORT"
+    if cluster:
+        print(f'')
+        print(f'--- Cluster ---')
+        print(f'Nodes:      {len(nodes)} total')
+        print(f'Containers: {cluster.get(\"containers_running\",0)} running / {cluster.get(\"containers_total\",0) - cluster.get(\"containers_running\",0)} stopped ({cluster.get(\"containers_total\",0)} total)')
+        print(f'CPU:        {cluster.get(\"cpu_cores\",0)} cores @ {cluster.get(\"cpu_percent\",0)}% avg')
+        print(f'RAM:        {cluster.get(\"ram_used_gb\",0):.1f} / {cluster.get(\"ram_total_gb\",0):.1f} GB ({cluster.get(\"ram_percent\",0):.0f}% avg)')
+        print(f'Disk:       {cluster.get(\"disk_used_gb\",0):.1f} / {cluster.get(\"disk_total_gb\",0):.1f} GB ({cluster.get(\"disk_percent\",0):.0f}% avg)')
+    else:
+        print(f'')
+        print(f'Cluster:    not configured (single node)')
+except: print('Error reading dashboard')
+" 2>/dev/null
+    else
+        echo "ANK server not responding"
+    fi
 }
 
 # ============================================================
@@ -1831,6 +2056,28 @@ ank_core_info() {
     printf "  %-12s %s available\n" "Images" "$images"
     printf "  %-12s %s\n" "Mode" "$mode"
     echo " ──────────────────────────────────────────────"
+
+    local dash=$(_api_get "/api/system/dashboard")
+    if [ -n "$dash" ]; then
+        echo "$dash" | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    nodes = d.get('nodes', [])
+    if nodes:
+        print(f'')
+        print(f' ── Cluster ({len(nodes)} nodes) ───────────────')
+        for n in nodes:
+            status_icon = '+' if n.get('status') == 'online' else '-'
+            alias = n.get('alias') or n.get('ip', '?')
+            cpu = f\"{n.get('cpu_percent',0):.0f}%\" if n.get('status') == 'online' else '-'
+            ram = f\"{n.get('mem_used_gb',0):.1f}/{n.get('mem_total_gb',0):.1f}GB\" if n.get('status') == 'online' else '-'
+            cont = f\"{n.get('containers_running',0)}/{n.get('containers',0)}\" if n.get('status') == 'online' else '-'
+            print(f'  [{status_icon}] {alias:15s} CPU:{cpu:5s} RAM:{ram:12s} Containers:{cont}')
+        print(f' ──────────────────────────────────────────────')
+except: pass
+" 2>/dev/null
+    fi
 }
 
 # ============================================================
@@ -1877,172 +2124,811 @@ ank_man() {
     local cmd="$1"
     case "$cmd" in
         ps)
-            echo "ank ps"
+            echo "═══════════════════════════════════════════════════════════════"
+            echo "  ANK - LIST CONTAINERS (ps)"
+            echo "═══════════════════════════════════════════════════════════════"
             echo ""
-            echo "List all containers with their status, IP, image, and PID."
+            echo "NAME"
+            echo "    ank ps - List all containers across all nodes."
             echo ""
-            echo "Usage: ank ps"
+            echo "SYNOPSIS"
+            echo "    ank ps"
             echo ""
-            echo "Example:"
-            echo "  ank ps"
-            echo "  NAME                 STATUS       IP               IMAGE"
-            echo "  my-site              running      10.20.30.3       alpine-3.20"
+            echo "DESCRIPTION"
+            echo "    Displays a table of ALL containers from the local device AND"
+            echo "    all connected remote nodes. Remote containers are tagged"
+            echo "    with [node_alias] in the last column."
+            echo ""
+            echo "FIELDS"
+            echo "    NAME       Container name (unique identifier)"
+            echo "    STATUS     running | stopped | building | error"
+            echo "    IP         Container IP on the ank0 bridge"
+            echo "    IMAGE      Base image used (e.g. alpine-3.20, nginx-3.20)"
+            echo "    PID        Main process ID (- if not running)"
+            echo "    NODE       [alias] for remote containers, blank for local"
+            echo ""
+            echo "EXAMPLES"
+            echo "    ank ps"
+            echo "    NAME        STATUS      IP              IMAGE        PID    NODE"
+            echo "    my-site     running     10.20.30.3      nginx-3.20   1234"
+            echo "    dev-server  stopped     10.20.30.4      python-3.20  -"
+            echo "    api         running     10.171.0.205    alpine-3.20  5678   [ank-app02]"
+            echo ""
+            echo "TIPS"
+            echo "    - Use 'ank start <name>' to start a stopped container"
+            echo "    - Use 'ank logs <name>' to view container logs"
+            echo "    - Use 'ank inspect <name>' for detailed info"
+            echo "    - Remote containers are managed automatically via the API"
+            echo "═══════════════════════════════════════════════════════════════"
             ;;
         start)
-            echo "ank start <name>"
+            echo "═══════════════════════════════════════════════════════════════"
+            echo "  ANK - START CONTAINER"
+            echo "═══════════════════════════════════════════════════════════════"
             echo ""
-            echo "Start a stopped container."
+            echo "NAME"
+            echo "    ank start - Start a stopped container (local or remote)."
             echo ""
-            echo "Usage: ank start <name>"
+            echo "SYNOPSIS"
+            echo "    ank start <name>"
             echo ""
-            echo "Example:"
-            echo "  ank start my-site"
+            echo "DESCRIPTION"
+            echo "    Starts a previously created or stopped container. The"
+            echo "    container's filesystem is mounted, network is configured,"
+            echo "    and services (sshd, nginx, etc.) are launched."
+            echo ""
+            echo "    On start, ANK will:"
+            echo "    1. Mount the overlay filesystem (merged dir)"
+            echo "    2. Configure network (bridge, iptables, DNS)"
+            echo "    3. Set root password from config.json"
+            echo "    4. Start sshd on the configured port"
+            echo "    5. Mark container as 'running' in config"
+            echo ""
+            echo "OPTIONS"
+            echo "    <name>     Name of the container (from 'ank ps')"
+            echo ""
+            echo "EXAMPLES"
+            echo "    ank start my-site"
+            echo "    ank start dev-server"
+            echo "    # Start multiple containers:"
+            echo "    ank start web && ank start api && ank start db"
+            echo ""
+            echo "EXIT STATUS"
+            echo "    0    Container started successfully"
+            echo "    1    Container not found or already running"
+            echo ""
+            echo "SEE ALSO"
+            echo "    ank stop, ank restart, ank ps"
+            echo "═══════════════════════════════════════════════════════════════"
             ;;
         stop)
-            echo "ank stop <name>"
+            echo "═══════════════════════════════════════════════════════════════"
+            echo "  ANK - STOP CONTAINER"
+            echo "═══════════════════════════════════════════════════════════════"
             echo ""
-            echo "Stop a running container."
+            echo "NAME"
+            echo "    ank stop - Stop a running container (local or remote)."
             echo ""
-            echo "Usage: ank stop <name>"
+            echo "SYNOPSIS"
+            echo "    ank stop <name>"
+            echo ""
+            echo "DESCRIPTION"
+            echo "    Gracefully stops a running container. All processes inside"
+            echo "    the container are terminated, SSH connections are closed,"
+            echo "    and network rules are removed."
+            echo ""
+            echo "    On stop, ANK will:"
+            echo "    1. Kill the container's main process tree (recursive)"
+            echo "    2. Kill all sshd processes on the container's port"
+            echo "    3. Remove iptables rules and network namespace"
+            echo "    4. Unmount overlay filesystems"
+            echo "    5. Mark container as 'stopped' in config"
+            echo ""
+            echo "OPTIONS"
+            echo "    <name>     Name of the container"
+            echo ""
+            echo "EXAMPLES"
+            echo "    ank stop my-site"
+            echo "    # Stop all running containers:"
+            echo "    for c in $(ank ps | awk '/running/{print $1}'); do ank stop $c; done"
+            echo ""
+            echo "EXIT STATUS"
+            echo "    0    Container stopped successfully"
+            echo "    1    Container not found or not running"
+            echo ""
+            echo "SEE ALSO"
+            echo "    ank start, ank restart, ank rm"
+            echo "═══════════════════════════════════════════════════════════════"
             ;;
         restart)
-            echo "ank restart <name>"
+            echo "═══════════════════════════════════════════════════════════════"
+            echo "  ANK - RESTART CONTAINER"
+            echo "═══════════════════════════════════════════════════════════════"
             echo ""
-            echo "Restart a container (stop + start)."
+            echo "NAME"
+            echo "    ank restart - Restart a container (local or remote, stop + start)."
             echo ""
-            echo "Usage: ank restart <name>"
+            echo "SYNOPSIS"
+            echo "    ank restart <name>"
+            echo ""
+            echo "DESCRIPTION"
+            echo "    Convenience command that performs 'ank stop' followed by"
+            echo "    'ank start' on the specified container. Useful when you"
+            echo "    need to reload configuration or apply changes."
+            echo ""
+            echo "OPTIONS"
+            echo "    <name>     Name of the container"
+            echo ""
+            echo "EXAMPLES"
+            echo "    ank restart my-site"
+            echo "    # After editing nginx config inside the container:"
+            echo "    ank exec my-site nginx -s reload"
+            echo ""
+            echo "SEE ALSO"
+            echo "    ank start, ank stop"
+            echo "═══════════════════════════════════════════════════════════════"
             ;;
         rm)
-            echo "ank rm <name>"
+            echo "═══════════════════════════════════════════════════════════════"
+            echo "  ANK - DELETE CONTAINER"
+            echo "═══════════════════════════════════════════════════════════════"
             echo ""
-            echo "Delete a container and its data permanently."
+            echo "NAME"
+            echo "    ank rm - Delete a container and all its data (local or remote)."
             echo ""
-            echo "Usage: ank rm <name>"
+            echo "SYNOPSIS"
+            echo "    ank rm <name>"
+            echo ""
+            echo "DESCRIPTION"
+            echo "    Permanently removes a container. If the container is"
+            echo "    running, it is stopped first. All data in the container"
+            echo "    (filesystem, config, logs) is deleted."
+            echo ""
+            echo "    WARNING: This action is irreversible!"
+            echo ""
+            echo "OPTIONS"
+            echo "    <name>     Name of the container"
+            echo ""
+            echo "EXAMPLES"
+            echo "    ank rm my-site"
+            echo ""
+            echo "    # Force delete (skip confirmation):"
+            echo "    ank rm -f my-site"
+            echo ""
+            echo "EXIT STATUS"
+            echo "    0    Container deleted successfully"
+            echo "    1    Container not found"
+            echo ""
+            echo "SEE ALSO"
+            echo "    ank stop, ank ps"
+            echo "═══════════════════════════════════════════════════════════════"
             ;;
         logs)
-            echo "ank logs <name>"
+            echo "═══════════════════════════════════════════════════════════════"
+            echo "  ANK - VIEW CONTAINER LOGS"
+            echo "═══════════════════════════════════════════════════════════════"
             echo ""
-            echo "View the last 50 lines of container logs."
+            echo "NAME"
+            echo "    ank logs - Display the last lines of container logs (local or remote)."
             echo ""
-            echo "Usage: ank logs <name>"
+            echo "SYNOPSIS"
+            echo "    ank logs <name>"
+            echo ""
+            echo "DESCRIPTION"
+            echo "    Shows the last 50 lines from the container's log file."
+            echo "    Logs include boot messages, service starts, and any"
+            echo "    output from processes inside the container."
+            echo ""
+            echo "OPTIONS"
+            echo "    <name>     Name of the container"
+            echo ""
+            echo "EXAMPLES"
+            echo "    ank logs my-site"
+            echo "    ank logs my-site | tail -20"
+            echo ""
+            echo "TIPS"
+            echo "    - Use 'ank exec <name> <cmd>' to run commands interactively"
+            echo "    - Logs are stored in /ank-engine/logs/<name>.log"
+            echo "═══════════════════════════════════════════════════════════════"
             ;;
         exec)
-            echo "ank exec <name> <command>"
+            echo "═══════════════════════════════════════════════════════════════"
+            echo "  ANK - EXECUTE COMMAND IN CONTAINER"
+            echo "═══════════════════════════════════════════════════════════════"
             echo ""
-            echo "Execute a command inside a running container."
+            echo "NAME"
+            echo "    ank exec - Execute a command inside a running container."
             echo ""
-            echo "Usage: ank exec <name> <command>"
+            echo "SYNOPSIS"
+            echo "    ank exec <name> <command> [args...]"
             echo ""
-            echo "Example:"
-            echo "  ank exec my-site ls /var/www/html"
+            echo "DESCRIPTION"
+            echo "    Runs the specified command inside the container's"
+            echo "    filesystem using chroot. The command runs as root."
+            echo "    Output is displayed directly in the shell."
+            echo ""
+            echo "OPTIONS"
+            echo "    <name>      Name of the container"
+            echo "    <command>   Command to execute"
+            echo "    [args...]   Optional arguments for the command"
+            echo ""
+            echo "EXAMPLES"
+            echo "    ank exec my-site ls /var/www/html"
+            echo "    ank exec my-site cat /etc/nginx/nginx.conf"
+            echo "    ank exec my-site sh -c 'echo hello > /tmp/test'"
+            echo "    ank exec my-site apk update"
+            echo "    ank exec my-site ps aux"
+            echo ""
+            echo "TIPS"
+            echo "    - Use 'ank ssh <name>' for an interactive shell"
+            echo "    - Use quotes around complex commands: ank exec <name> 'cmd arg'"
+            echo ""
+            echo "SEE ALSO"
+            echo "    ank ssh, ank start"
+            echo "═══════════════════════════════════════════════════════════════"
             ;;
         inspect)
-            echo "ank inspect <name>"
+            echo "═══════════════════════════════════════════════════════════════"
+            echo "  ANK - INSPECT CONTAINER"
+            echo "═══════════════════════════════════════════════════════════════"
             echo ""
-            echo "Show detailed information about a container."
+            echo "NAME"
+            echo "    inspect - Show detailed information about a container (local or remote)."
             echo ""
-            echo "Usage: ank inspect <name>"
+            echo "SYNOPSIS"
+            echo "    ank inspect <name>"
+            echo ""
+            echo "DESCRIPTION"
+            echo "    Displays comprehensive details including:"
+            echo "    - Name, status, image, PID"
+            echo "    - IP address and SSH port"
+            echo "    - Creation date and last start time"
+            echo "    - Resource limits (RAM, CPU)"
+            echo "    - Network configuration"
+            echo "    - Root password hint"
+            echo ""
+            echo "OPTIONS"
+            echo "    <name>     Name of the container"
+            echo ""
+            echo "EXAMPLES"
+            echo "    ank inspect my-site"
+            echo ""
+            echo "SEE ALSO"
+            echo "    ank ps"
+            echo "═══════════════════════════════════════════════════════════════"
             ;;
         images|list-images)
-            echo "ank images"
+            echo "═══════════════════════════════════════════════════════════════"
+            echo "  ANK - LIST IMAGES"
+            echo "═══════════════════════════════════════════════════════════════"
             echo ""
-            echo "List all available container images."
+            echo "NAME"
+            echo "    ank images - List all available container images across all nodes."
             echo ""
-            echo "Usage: ank images"
+            echo "SYNOPSIS"
+            echo "    ank images"
+            echo ""
+            echo "DESCRIPTION"
+            echo "    Shows all container images available on this device."
+            echo "    Images are the base filesystems used to create containers."
+            echo "    Each image shows its name, size, and creation date."
+            echo ""
+            echo "EXAMPLES"
+            echo "    ank images"
+            echo "    NAME                SIZE       DATE"
+            echo "    alpine-3.20         128 MB     2025-01-15"
+            echo "    nginx-3.20          156 MB     2025-01-15"
+            echo ""
+            echo "SEE ALSO"
+            echo "    ank pull, ank deploy"
+            echo "═══════════════════════════════════════════════════════════════"
             ;;
         templates)
-            echo "ank templates"
+            echo "═══════════════════════════════════════════════════════════════"
+            echo "  ANK - LIST TEMPLATES"
+            echo "═══════════════════════════════════════════════════════════════"
             echo ""
-            echo "List all deploy templates with their status."
+            echo "NAME"
+            echo "    ank templates - List available deploy templates."
             echo ""
-            echo "Usage: ank templates"
+            echo "SYNOPSIS"
+            echo "    ank templates"
+            echo ""
+            echo "DESCRIPTION"
+            echo "    Shows all pre-configured deployment templates. Templates"
+            echo "    are ready-to-use container configurations with specific"
+            echo "    software pre-installed."
+            echo ""
+            echo "AVAILABLE TEMPLATES"
+            echo "    alpine    Base Alpine 3.20 (minimal, ~128 MB)"
+            echo "    python    Python 3.12 with pip"
+            echo "    nginx     Nginx web server on port 8080"
+            echo "    apache    Apache web server on port 9090"
+            echo "    php       PHP 8.2 with CGI"
+            echo "    node      Node.js 20 with npm"
+            echo ""
+            echo "EXAMPLES"
+            echo "    ank templates"
+            echo "    # Deploy a template:"
+            echo "    ank deploy nginx my-site"
+            echo ""
+            echo "SEE ALSO"
+            echo "    ank deploy, ank images"
+            echo "═══════════════════════════════════════════════════════════════"
             ;;
         deploy)
-            echo "ank deploy <template> <name>"
+            echo "═══════════════════════════════════════════════════════════════"
+            echo "  ANK - DEPLOY CONTAINER FROM TEMPLATE"
+            echo "═══════════════════════════════════════════════════════════════"
             echo ""
-            echo "Deploy a container from a template."
+            echo "NAME"
+            echo "    ank deploy - Create and configure a container from a template."
             echo ""
-            echo "Usage: ank deploy <template> <name>"
+            echo "SYNOPSIS"
+            echo "    ank deploy <template> <name>"
             echo ""
-            echo "Templates: alpine, python, nginx, apache, php, node"
+            echo "DESCRIPTION"
+            echo "    Deploys a new container based on a pre-configured template."
+            echo "    The template determines the base image and packages installed."
+            echo "    A new image is built automatically if it doesn't exist yet."
             echo ""
-            echo "Example:"
-            echo "  ank deploy nginx my-site"
+            echo "    The container is created with the default root password"
+            echo "    configured in Settings (default: ank123)."
+            echo ""
+            echo "OPTIONS"
+            echo "    <template>  Template ID (see 'ank templates' for list)"
+            echo "    <name>      Name for the new container (must be unique)"
+            echo ""
+            echo "TEMPLATES"
+            echo "    alpine    Base Alpine Linux (no extra packages)"
+            echo "    python    Python 3.12 + pip"
+            echo "    nginx     Nginx + curl (port 8080)"
+            echo "    apache    Apache2 + curl (port 9090)"
+            echo "    php       PHP 8.2 + mbstring + json + cgi"
+            echo "    node      Node.js 20 + npm (port 3000)"
+            echo ""
+            echo "EXAMPLES"
+            echo "    ank deploy nginx my-site"
+            echo "    ank deploy python ml-server"
+            echo "    ank deploy node api-backend"
+            echo ""
+            echo "    After deployment:"
+            echo "    ank ps                           # Check status"
+            echo "    ank ssh my-site                  # Connect via SSH"
+            echo "    curl http://10.20.30.x:8080     # Test web server"
+            echo ""
+            echo "EXIT STATUS"
+            echo "    0    Container deployed successfully"
+            echo "    1    Invalid template or deployment failed"
+            echo ""
+            echo "SEE ALSO"
+            echo "    ank templates, ank images, ank pull"
+            echo "═══════════════════════════════════════════════════════════════"
             ;;
         pull)
-            echo "ank pull <version>"
+            echo "═══════════════════════════════════════════════════════════════"
+            echo "  ANK - DOWNLOAD BASE IMAGE"
+            echo "═══════════════════════════════════════════════════════════════"
             echo ""
-            echo "Download the base Alpine image for the specified version."
+            echo "NAME"
+            echo "    ank pull - Download the base Alpine image."
             echo ""
-            echo "Usage: ank pull [version]"
-            echo "  Default version: 3.20"
+            echo "SYNOPSIS"
+            echo "    ank pull [version]"
+            echo ""
+            echo "DESCRIPTION"
+            echo "    Downloads the Alpine Linux rootfs tarball for the specified"
+            echo "    version. This is required before creating containers with"
+            echo "    that version. Default version is 3.20."
+            echo ""
+            echo "OPTIONS"
+            echo "    [version]  Alpine version (default: 3.20)"
+            echo ""
+            echo "EXAMPLES"
+            echo "    ank pull          # Download Alpine 3.20"
+            echo "    ank pull 3.19     # Download Alpine 3.19"
+            echo ""
+            echo "SEE ALSO"
+            echo "    ank images, ank deploy"
+            echo "═══════════════════════════════════════════════════════════════"
             ;;
         stack)
-            echo "ank stack <subcommand>"
+            echo "═══════════════════════════════════════════════════════════════"
+            echo "  ANK - MANAGE CONTAINER STACKS"
+            echo "═══════════════════════════════════════════════════════════════"
             echo ""
-            echo "Manage container stacks with load balancing."
+            echo "NAME"
+            echo "    ank stack - Manage container stacks with load balancing."
             echo ""
-            echo "Subcommands:"
-            echo "  ank stack ls              List all stacks"
-            echo "  ank stack inspect <name>  Show stack details"
-            echo "  ank stack create <name> [template] [count]"
-            echo "  ank stack scale <name> <count>"
-            echo "  ank stack rm <name>"
+            echo "SYNOPSIS"
+            echo "    ank stack <subcommand> [args...]"
+            echo ""
+            echo "DESCRIPTION"
+            echo "    Stacks allow you to run multiple instances of the same"
+            echo "    container template with automatic load balancing via nginx."
+            echo "    Useful for scaling services across multiple replicas."
+            echo ""
+            echo "SUBCOMMANDS"
+            echo "    ank stack ls                  List all stacks"
+            echo "    ank stack create <name> [template] [count]"
+            echo "                                 Create a new stack"
+            echo "    ank stack scale <name> <count>"
+            echo "                                 Scale stack to N replicas"
+            echo "    ank stack rm <name>           Delete a stack"
+            echo "    ank stack inspect <name>      Show stack details"
+            echo ""
+            echo "OPTIONS"
+            echo "    <name>      Stack name (unique identifier)"
+            echo "    <template>  Template to use (default: alpine)"
+            echo "    <count>     Number of replicas (default: 2)"
+            echo ""
+            echo "EXAMPLES"
+            echo "    ank stack create web-frontend nginx 3"
+            echo "    ank stack ls"
+            echo "    ank stack scale web-frontend 5"
+            echo "    ank stack inspect web-frontend"
+            echo "    ank stack rm web-frontend"
+            echo ""
+            echo "SEE ALSO"
+            echo "    ank deploy, ank templates"
+            echo "═══════════════════════════════════════════════════════════════"
             ;;
         backup)
-            echo "ank backup <subcommand>"
+            echo "═══════════════════════════════════════════════════════════════"
+            echo "  ANK - MANAGE BACKUPS"
+            echo "═══════════════════════════════════════════════════════════════"
             echo ""
-            echo "Manage backup routines."
+            echo "NAME"
+            echo "    ank backup - Manage container backup routines."
             echo ""
-            echo "Subcommands:"
-            echo "  ank backup ls             List backup routines"
-            echo "  ank backup inspect <id>   Show routine details"
-            echo "  ank backup run <id>       Execute backup"
-            echo "  ank backup rm <id>        Delete backup routine"
+            echo "SYNOPSIS"
+            echo "    ank backup <subcommand> [args...]"
+            echo ""
+            echo "DESCRIPTION"
+            echo "    Create and manage automated backups for your containers."
+            echo "    Backups save container state and can be restored later."
+            echo ""
+            echo "SUBCOMMANDS"
+            echo "    ank backup ls                 List all backup routines"
+            echo "    ank backup inspect <id>       Show routine details"
+            echo "    ank backup run <id>           Execute backup now"
+            echo "    ank backup rm <id>            Delete backup routine"
+            echo ""
+            echo "EXAMPLES"
+            echo "    ank backup ls"
+            echo "    ank backup run 1"
+            echo ""
+            echo "SEE ALSO"
+            echo "    ank ps"
+            echo "═══════════════════════════════════════════════════════════════"
             ;;
         node)
-            echo "ank node <subcommand>"
+            echo "═══════════════════════════════════════════════════════════════"
+            echo "  ANK - MANAGE REMOTE NODES"
+            echo "═══════════════════════════════════════════════════════════════"
             echo ""
-            echo "Manage remote ANK nodes."
+            echo "NAME"
+            echo "    ank node - Manage remote ANK instances."
             echo ""
-            echo "Subcommands:"
-            echo "  ank node ls               List remote nodes"
-            echo "  ank node inspect <id>     Show node details"
-            echo "  ank node add              Add remote node (interactive)"
-            echo "  ank node rm <id>          Remove a node"
+            echo "SYNOPSIS"
+            echo "    ank node <subcommand> [args...]"
+            echo ""
+            echo "DESCRIPTION"
+            echo "    Manage paired ANK nodes on other devices. This allows"
+            echo "    you to control multiple ANK instances from one panel."
+            echo ""
+            echo "SUBCOMMANDS"
+            echo "    ank node ls                   List all paired nodes"
+            echo "    ank node inspect <id>         Show node details"
+            echo "    ank node add                  Add remote node (interactive)"
+            echo "    ank node rm <id>              Remove a node"
+            echo ""
+            echo "EXAMPLES"
+            echo "    ank node ls"
+            echo "    ank node add"
+            echo "    ank node rm node-001"
+            echo ""
+            echo "SEE ALSO"
+            echo "    ank ps"
+            echo "═══════════════════════════════════════════════════════════════"
             ;;
         npad)
-            echo "ank npad <filename>"
+            echo "═══════════════════════════════════════════════════════════════"
+            echo "  ANK - TEXT EDITOR (npad)"
+            echo "═══════════════════════════════════════════════════════════════"
             echo ""
-            echo "Vi-like text editor. Files saved in /ank-engine/."
-            echo ".ankfile files are validated on save."
+            echo "NAME"
+            echo "    ank npad - Vi-like text editor for .ankfile files."
             echo ""
-            echo "Command mode:"
-            echo "  :w          Save file"
-            echo "  :wq         Save and quit"
-            echo "  :q          Quit (without saving)"
-            echo "  :q!         Quit without saving"
-            echo "  gg          Go to first line"
-            echo "  G           Go to last line"
-            echo "  j           Move down"
-            echo "  k           Move up"
-            echo "  dd          Delete current line"
-            echo "  yy          Yank (copy) current line"
-            echo "  p           Paste yanked line"
-            echo "  x           Delete character"
-            echo "  u           Undo"
-            echo "  i           Enter insert mode"
-            echo "  o           Insert line below"
-            echo "  O           Insert line above"
+            echo "SYNOPSIS"
+            echo "    ank npad <filename>"
             echo ""
-            echo "Insert mode:"
-            echo "  Type text (each line is a new line)"
-            echo "  Ctrl+C      Return to command mode"
-            echo "  Empty line  Insert blank line"
+            echo "DESCRIPTION"
+            echo "    A lightweight vi-like editor for creating and editing"
+            echo "    .ankfile files. Files are saved in /ank-engine/."
+            echo "    .ankfile files are validated on save for syntax errors."
+            echo ""
+            echo "COMMAND MODE (default)"
+            echo "    :w              Save file"
+            echo "    :wq             Save and quit"
+            echo "    :q              Quit (without saving)"
+            echo "    :q!             Quit without saving (discard changes)"
+            echo "    gg              Go to first line"
+            echo "    G               Go to last line"
+            echo "    j               Move down one line"
+            echo "    k               Move up one line"
+            echo "    dd              Delete current line"
+            echo "    yy              Yank (copy) current line"
+            echo "    p               Paste yanked line"
+            echo "    x               Delete character under cursor"
+            echo "    u               Undo last change"
+            echo "    i               Enter insert mode"
+            echo "    o               Insert new line below"
+            echo "    O               Insert new line above"
+            echo ""
+            echo "INSERT MODE"
+            echo "    Type text normally (each line is a new line)"
+            echo "    Press Ctrl+C to return to command mode"
+            echo ""
+            echo "ANKFILE SYNTAX"
+            echo "    FROM <image>           Base image"
+            echo "    PASSWD <password>      Set root password"
+            echo "    RUN <command>          Execute command"
+            echo "    EXPOSE <port>          Expose port"
+            echo "    COPY <src> <dst>       Copy file"
+            echo "    CMD <command>          Default command on start"
+            echo ""
+            echo "EXAMPLES"
+            echo "    ank npad my-app.ankfile"
+            echo "    # Then type your Dockerfile-like instructions"
+            echo ""
+            echo "SEE ALSO"
+            echo "    ank build"
+            echo "═══════════════════════════════════════════════════════════════"
+            ;;
+        ssh)
+            echo "═══════════════════════════════════════════════════════════════"
+            echo "  ANK - SSH INTO CONTAINER"
+            echo "═══════════════════════════════════════════════════════════════"
+            echo ""
+            echo "NAME"
+            echo "    ank ssh - Open an SSH session to a container."
+            echo ""
+            echo "SYNOPSIS"
+            echo "    ank ssh <name>"
+            echo ""
+            echo "DESCRIPTION"
+            echo "    Connects to a running container via SSH. You will be"
+            echo "    logged in as root. The password is the one set during"
+            echo "    container creation (default: ank123)."
+            echo ""
+            echo "OPTIONS"
+            echo "    <name>     Name of the container"
+            echo ""
+            echo "EXAMPLES"
+            echo "    ank ssh my-site"
+            echo "    # Enter password (default: ank123)"
+            echo ""
+            echo "TIPS"
+            echo "    - Use 'ank exec <name> <cmd>' for single commands"
+            echo "    - The SSH port is shown in 'ank inspect <name>'"
+            echo ""
+            echo "SEE ALSO"
+            echo "    ank exec, ank inspect"
+            echo "═══════════════════════════════════════════════════════════════"
+            ;;
+        build)
+            echo "═══════════════════════════════════════════════════════════════"
+            echo "  ANK - BUILD IMAGE FROM ANKFILE"
+            echo "═══════════════════════════════════════════════════════════════"
+            echo ""
+            echo "NAME"
+            echo "    ank build - Build an image from an .ankfile."
+            echo ""
+            echo "SYNOPSIS"
+            echo "    ank build <ankfile>"
+            echo ""
+            echo "DESCRIPTION"
+            echo "    Builds a container image from an .ankfile (similar to"
+            echo "    Dockerfile). The image can then be used to create"
+            echo "    containers."
+            echo ""
+            echo "OPTIONS"
+            echo "    <ankfile>   Path to the .ankfile"
+            echo ""
+            echo "EXAMPLES"
+            echo "    ank build my-app.ankfile"
+            echo ""
+            echo "SEE ALSO"
+            echo "    ank npad, ank images"
+            echo "═══════════════════════════════════════════════════════════════"
+            ;;
+        ls)
+            echo "═══════════════════════════════════════════════════════════════"
+            echo "  ANK - LIST FILES"
+            echo "═══════════════════════════════════════════════════════════════"
+            echo ""
+            echo "NAME"
+            echo "    ank ls - List files in the working directory."
+            echo ""
+            echo "SYNOPSIS"
+            echo "    ank ls [path]"
+            echo ""
+            echo "DESCRIPTION"
+            echo "    Lists files and directories. Default path is"
+            echo "    /ank-engine/ (the working directory)."
+            echo ""
+            echo "OPTIONS"
+            echo "    [path]     Directory to list (default: /ank-engine/)"
+            echo ""
+            echo "EXAMPLES"
+            echo "    ank ls"
+            echo "    ank ls /tmp"
+            echo ""
+            echo "SEE ALSO"
+            echo "    ank copy, ank ren, ank erase"
+            echo "═══════════════════════════════════════════════════════════════"
+            ;;
+        copy|ren|erase)
+            echo "═══════════════════════════════════════════════════════════════"
+            echo "  ANK - FILE OPERATIONS"
+            echo "═══════════════════════════════════════════════════════════════"
+            echo ""
+            echo "NAME"
+            echo "    ank copy - Copy files"
+            echo "    ank ren  - Rename/move files"
+            echo "    ank erase - Delete files"
+            echo ""
+            echo "SYNOPSIS"
+            echo "    ank copy <source> <destination>"
+            echo "    ank ren <old_name> <new_name>"
+            echo "    ank erase <file>"
+            echo ""
+            echo "DESCRIPTION"
+            echo "    File operations within /ank-engine/."
+            echo ""
+            echo "EXAMPLES"
+            echo "    ank copy myfile.txt backup.txt"
+            echo "    ank ren old.txt new.txt"
+            echo "    ank erase tempfile.txt"
+            echo ""
+            echo "SEE ALSO"
+            echo "    ank ls, ank npad"
+            echo "═══════════════════════════════════════════════════════════════"
+            ;;
+        ip|ifconfig|route|netstat|ss|ping|traceroute|nslookup)
+            echo "═══════════════════════════════════════════════════════════════"
+            echo "  ANK - NETWORK DIAGNOSTIC TOOLS"
+            echo "═══════════════════════════════════════════════════════════════"
+            echo ""
+            echo "NAME"
+            echo "    Network diagnostic commands."
+            echo ""
+            echo "SYNOPSIS"
+            echo "    ank ip [args]          Show IP addresses"
+            echo "    ank ifconfig [args]    Show network interfaces"
+            echo "    ank route [args]       Show routing table"
+            echo "    ank netstat [args]     Show network statistics"
+            echo "    ank ss [args]          Show socket statistics"
+            echo "    ank ping <host>        Ping a host"
+            echo "    ank traceroute <host>  Trace route to host"
+            echo "    ank nslookup <host>    DNS lookup"
+            echo ""
+            echo "DESCRIPTION"
+            echo "    These are wrappers around standard network tools."
+            echo "    Use them for diagnosing container networking issues."
+            echo ""
+            echo "EXAMPLES"
+            echo "    ank ip addr"
+            echo "    ank ss -tlnp          # List listening ports"
+            echo "    ank ping 8.8.8.8"
+            echo "    ank nslookup google.com"
+            echo "═══════════════════════════════════════════════════════════════"
+            ;;
+        history)
+            echo "═══════════════════════════════════════════════════════════════"
+            echo "  ANK - COMMAND HISTORY"
+            echo "═══════════════════════════════════════════════════════════════"
+            echo ""
+            echo "NAME"
+            echo "    ank history - Show command history."
+            echo ""
+            echo "SYNOPSIS"
+            echo "    ank history"
+            echo ""
+            echo "DESCRIPTION"
+            echo "    Displays all previously executed commands with indices."
+            echo "    Re-execute a command with !<number>."
+            echo ""
+            echo "EXAMPLES"
+            echo "    ank history"
+            echo "    # Re-execute command 5:"
+            echo "    !5"
+            echo ""
+            echo "SEE ALSO"
+            echo "    ank help"
+            echo "═══════════════════════════════════════════════════════════════"
+            ;;
+        help|--help|-h)
+            echo "═══════════════════════════════════════════════════════════════"
+            echo "  ANK - HELP"
+            echo "═══════════════════════════════════════════════════════════════"
+            echo ""
+            echo "NAME"
+            echo "    ank help - Show available commands."
+            echo ""
+            echo "SYNOPSIS"
+            echo "    ank help"
+            echo ""
+            echo "DESCRIPTION"
+            echo "    Lists all available commands with brief descriptions."
+            echo "    Use 'ank --man <command>' for detailed documentation."
+            echo ""
+            echo "AVAILABLE COMMANDS"
+            echo "    ps                  List all containers"
+            echo "    start <name>        Start a container"
+            echo "    stop <name>         Stop a container"
+            echo "    restart <name>      Restart a container"
+            echo "    rm <name>           Delete a container"
+            echo "    logs <name>         View container logs"
+            echo "    exec <name> <cmd>   Execute command in container"
+            echo "    ssh <name>          SSH into a container"
+            echo "    inspect <name>      Show container details"
+            echo "    images              List available images"
+            echo "    templates           List deploy templates"
+            echo "    deploy <tpl> <name> Deploy container from template"
+            echo "    pull [version]      Download base Alpine image"
+            echo "    build <ankfile>     Build image from .ankfile"
+            echo "    stack <sub>         Manage container stacks"
+            echo "    backup <sub>        Manage backup routines"
+            echo "    node <sub>          Manage remote ANK nodes"
+            echo "    npad <file>         Text editor"
+            echo "    ls [path]           List files"
+            echo "    copy <src> <dst>    Copy files"
+            echo "    ren <old> <new>     Rename files"
+            echo "    erase <file>        Delete files"
+            echo "    history             Command history"
+            echo "    ip/ifconfig/route   Network tools"
+            echo "    exit                Exit ANK shell"
+            echo ""
+            echo "DETAILED HELP"
+            echo "    Use 'ank --man <command>' for full documentation."
+            echo ""
+            echo "EXAMPLES"
+            echo "    ank --man deploy    # Full manual for deploy"
+            echo "    ank --man ssh       # Full manual for SSH"
+            echo "═══════════════════════════════════════════════════════════════"
+            ;;
+        --version|-v)
+            echo "═══════════════════════════════════════════════════════════════"
+            echo "  ANK - VERSION"
+            echo "═══════════════════════════════════════════════════════════════"
+            echo ""
+            echo "NAME"
+            echo "    ank --version - Show ANK version and system info."
+            echo ""
+            echo "SYNOPSIS"
+            echo "    ank --version"
+            echo ""
+            echo "DESCRIPTION"
+            echo "    Displays the ANK engine version, container statistics,"
+            echo "    running mode, and server port."
+            echo ""
+            echo "EXAMPLES"
+            echo "    ank --version"
+            echo "    ANK Engine v2.0.0"
+            echo "    Containers: 3 running, 1 stopped, 4 total"
+            echo "    Mode:       compat"
+            echo "    Port:       8001"
+            echo ""
+            echo "SEE ALSO"
+            echo "    ank-core info"
+            echo "═══════════════════════════════════════════════════════════════"
             ;;
         *)
             echo "No man page for '$cmd'."
             echo "Type 'ank help' for available commands."
+            echo "Type 'ank --man <command>' for detailed documentation."
             ;;
     esac
 }
@@ -2054,50 +2940,312 @@ ank_core_man() {
     local cmd="$1"
     case "$cmd" in
         status)
-            echo "ank-core status"
+            echo "═══════════════════════════════════════════════════════════════"
+            echo "  ANK-CORE - SHOW SYSTEM STATUS"
+            echo "═══════════════════════════════════════════════════════════════"
             echo ""
-            echo "Show ANK engine status including container count."
+            echo "NAME"
+            echo "    ank-core status - Display ANK engine status and statistics."
             echo ""
-            echo "Usage: ank-core status"
+            echo "SYNOPSIS"
+            echo "    ank-core status"
+            echo ""
+            echo "DESCRIPTION"
+            echo "    Shows a comprehensive overview of the ANK engine including:"
+            echo "    - Engine version"
+            echo "    - Container counts (running / stopped / total)"
+            echo "    - Operating mode (compat or isolated)"
+            echo "    - Server port"
+            echo ""
+            echo "OUTPUT"
+            echo "    ANK Engine v2.0.0"
+            echo "    Containers: 3 running, 1 stopped, 4 total"
+            echo "    Mode:       compat"
+            echo "    Port:       8001"
+            echo ""
+            echo "MODES"
+            echo "    compat      Traditional mode (full compatibility)"
+            echo "    isolated    Enhanced isolation (uses PID namespaces)"
+            echo ""
+            echo "EXAMPLES"
+            echo "    ank-core status"
+            echo ""
+            echo "SEE ALSO"
+            echo "    ank-core info, ank ps"
+            echo "═══════════════════════════════════════════════════════════════"
             ;;
         restart)
-            echo "ank-core restart"
+            echo "═══════════════════════════════════════════════════════════════"
+            echo "  ANK-CORE - RESTART SERVER"
+            echo "═══════════════════════════════════════════════════════════════"
             echo ""
-            echo "Restart the ANK server process."
+            echo "NAME"
+            echo "    ank-core restart - Restart the ANK server process."
             echo ""
-            echo "Usage: ank-core restart"
+            echo "SYNOPSIS"
+            echo "    ank-core restart"
+            echo ""
+            echo "DESCRIPTION"
+            echo "    Stops the ANK server and starts it again. Running containers"
+            echo "    remain alive (they are not stopped)."
+            echo ""
+            echo "    Use this command when:"
+            echo "    - You changed server configuration"
+            echo "    - The web panel is not responding"
+            echo "    - After installing/updating the ANK module"
+            echo ""
+            echo "    The restart process:"
+            echo "    1. Kills the existing server process"
+            echo "    2. Waits for cleanup"
+            echo "    3. Starts a fresh server instance"
+            echo ""
+            echo "EXAMPLES"
+            echo "    ank-core restart"
+            echo ""
+            echo "WARNING"
+            echo "    Running containers stay alive but the web panel will be"
+            echo "    briefly unavailable during restart."
+            echo ""
+            echo "SEE ALSO"
+            echo "    ank-core status, ank-core logs"
+            echo "═══════════════════════════════════════════════════════════════"
             ;;
         info)
-            echo "ank-core info"
+            echo "═══════════════════════════════════════════════════════════════"
+            echo "  ANK-CORE - DEVICE INFORMATION"
+            echo "═══════════════════════════════════════════════════════════════"
             echo ""
-            echo "Show device information (model, kernel, memory)."
+            echo "NAME"
+            echo "    ank-core info - Show detailed device information."
             echo ""
-            echo "Usage: ank-core info"
+            echo "SYNOPSIS"
+            echo "    ank-core info"
+            echo ""
+            echo "DESCRIPTION"
+            echo "    Displays comprehensive system information about the host"
+            echo "    device. This includes:"
+            echo ""
+            echo "    DEVICE INFO"
+            echo "    - OS version (Android version)"
+            echo "    - Device model"
+            echo "    - Kernel version"
+            echo "    - CPU model and core count"
+            echo "    - RAM usage (used / total / percentage)"
+            echo "    - Storage usage on /data partition"
+            echo "    - System uptime"
+            echo "    - CPU load average"
+            echo ""
+            echo "    ANK INFO"
+            echo "    - Container count (running / total)"
+            echo "    - Available images"
+            echo "    - Operating mode"
+            echo ""
+            echo "OUTPUT"
+            echo "    ──────────────────────────────────────────────"
+            echo "      OS           14 (arm64)"
+            echo "      Device       SM-G991B"
+            echo "      Kernel       5.10.101-android13-..."
+            echo "      CPU          Qualcomm Snapdragon 888 (8 cores)"
+            echo "      RAM          1240M / 7800M (16%)"
+            echo "      Storage      32G / 128G (25%)"
+            echo "      Uptime       3d 12h 45m"
+            echo "      Load         0.52 0.48 0.45"
+            echo ""
+            echo "      Containers   3 / 4 running"
+            echo "      Images       5 available"
+            echo "      Mode         compat"
+            echo "    ──────────────────────────────────────────────"
+            echo ""
+            echo "EXAMPLES"
+            echo "    ank-core info"
+            echo ""
+            echo "SEE ALSO"
+            echo "    ank-core status, ank-core network"
+            echo "═══════════════════════════════════════════════════════════════"
             ;;
         network)
-            echo "ank-core network"
+            echo "═══════════════════════════════════════════════════════════════"
+            echo "  ANK-CORE - NETWORK CONFIGURATION"
+            echo "═══════════════════════════════════════════════════════════════"
             echo ""
-            echo "Show network configuration."
+            echo "NAME"
+            echo "    ank-core network - Show ANK network configuration."
             echo ""
-            echo "Usage: ank-core network"
+            echo "SYNOPSIS"
+            echo "    ank-core network"
+            echo ""
+            echo "DESCRIPTION"
+            echo "    Displays the virtual network configuration used by containers."
+            echo "    ANK creates an isolated bridge network for containers."
+            echo ""
+            echo "FIELDS"
+            echo "    Bridge     Virtual bridge interface (default: ank0)"
+            echo "    Subnet     Container subnet (default: 10.20.30.0/24)"
+            echo "    Gateway    Gateway IP for containers (default: 10.20.30.1)"
+            echo "    NAT        Network address translation (true/false)"
+            echo ""
+            echo "OUTPUT"
+            echo "    Bridge:     ank0"
+            echo "    Subnet:     10.20.30.0/24"
+            echo "    Gateway:    10.20.30.1"
+            echo "    NAT:        true"
+            echo ""
+            echo "NETWORK ARCHITECTURE"
+            echo "    Containers get IPs in the 10.20.30.x range."
+            echo "    The bridge (ank0) connects containers to the host."
+            echo "    NAT allows containers to access the internet."
+            echo "    Port mapping (npad) enables host access to containers."
+            echo ""
+            echo "EXAMPLES"
+            echo "    ank-core network"
+            echo ""
+            echo "SEE ALSO"
+            echo "    ank-core info, ank-core clean"
+            echo "═══════════════════════════════════════════════════════════════"
             ;;
         clean)
-            echo "ank-core clean"
+            echo "═══════════════════════════════════════════════════════════════"
+            echo "  ANK-CORE - CLEANUP RESOURCES"
+            echo "═══════════════════════════════════════════════════════════════"
             echo ""
-            echo "Cleanup orphaned resources (network namespaces, veths, cgroups)."
+            echo "NAME"
+            echo "    ank-core clean - Clean up orphaned resources."
             echo ""
-            echo "Usage: ank-core clean"
+            echo "SYNOPSIS"
+            echo "    ank-core clean"
+            echo ""
+            echo "DESCRIPTION"
+            echo "    Removes orphaned resources left behind after crashes or"
+            echo "    improper shutdowns. This includes:"
+            echo "    - Orphaned network namespaces"
+            echo "    - Leftover veth interfaces"
+            echo "    - Unused cgroup hierarchies"
+            echo "    - Stale PID files"
+            echo "    - Temporary files"
+            echo ""
+            echo "    Safe to run at any time. Only removes resources not"
+            echo "    currently in use by running containers."
+            echo ""
+            echo "WHEN TO USE"
+            echo "    - After a device crash or forced restart"
+            echo "    - If containers show unexpected network errors"
+            echo "    - If disk usage seems higher than expected"
+            echo "    - As periodic maintenance"
+            echo ""
+            echo "EXAMPLES"
+            echo "    ank-core clean"
+            echo ""
+            echo "SEE ALSO"
+            echo "    ank-core network, ank-core status"
+            echo "═══════════════════════════════════════════════════════════════"
             ;;
         logs)
-            echo "ank-core logs"
+            echo "═══════════════════════════════════════════════════════════════"
+            echo "  ANK-CORE - SERVER LOGS"
+            echo "═══════════════════════════════════════════════════════════════"
             echo ""
-            echo "Show the last 30 lines of server logs."
+            echo "NAME"
+            echo "    ank-core logs - Show ANK server logs."
             echo ""
-            echo "Usage: ank-core logs"
+            echo "SYNOPSIS"
+            echo "    ank-core logs"
+            echo ""
+            echo "DESCRIPTION"
+            echo "    Displays the last 30 lines of the ANK server log file."
+            echo "    The log contains startup messages, API requests, errors,"
+            echo "    and other server events."
+            echo ""
+            echo "LOG LOCATION"
+            echo "    /data/ank/logs/server.log"
+            echo ""
+            echo "TIPS"
+            echo "    - Use 'ank-core logs' to check for startup errors"
+            echo "    - Look for 'ERROR' or 'WARN' messages"
+            echo "    - Logs rotate automatically (oldest entries removed)"
+            echo ""
+            echo "EXAMPLES"
+            echo "    ank-core logs"
+            echo "    ank-core logs | grep ERROR"
+            echo ""
+            echo "SEE ALSO"
+            echo "    ank logs <container>, ank-core status"
+            echo "═══════════════════════════════════════════════════════════════"
+            ;;
+        shell)
+            echo "═══════════════════════════════════════════════════════════════"
+            echo "  ANK-CORE - HOST SHELL"
+            echo "═══════════════════════════════════════════════════════════════"
+            echo ""
+            echo "NAME"
+            echo "    ank-core shell - Open a full host shell."
+            echo ""
+            echo "SYNOPSIS"
+            echo "    ank-core shell"
+            echo ""
+            echo "DESCRIPTION"
+            echo "    Opens an interactive shell with root access to the Android"
+            echo "    host. Commands run directly on the host system."
+            echo ""
+            echo "WARNING"
+            echo "    This gives you ROOT access to the device."
+            echo "    Be very careful with what commands you run."
+            echo "    Mistakes can brick your device."
+            echo ""
+            echo "USE CASES"
+            echo "    - Debugging ANK internals"
+            echo "    - Inspecting host network configuration"
+            echo "    - Checking system-level processes"
+            echo "    - Manual cleanup of stuck resources"
+            echo ""
+            echo "EXAMPLES"
+            echo "    ank-core shell"
+            echo "    # You are now in a root shell on the host"
+            echo "    ls /data/ank/"
+            echo "    ps aux | grep ank"
+            echo ""
+            echo "SEE ALSO"
+            echo "    ank-core logs, ank-core clean"
+            echo "═══════════════════════════════════════════════════════════════"
+            ;;
+        help|--help|-h)
+            echo "═══════════════════════════════════════════════════════════════"
+            echo "  ANK-CORE - HELP"
+            echo "═══════════════════════════════════════════════════════════════"
+            echo ""
+            echo "NAME"
+            echo "    ank-core help - Show available admin commands."
+            echo ""
+            echo "SYNOPSIS"
+            echo "    ank-core --help"
+            echo ""
+            echo "DESCRIPTION"
+            echo "    Lists all available ank-core commands with brief"
+            echo "    descriptions. Use 'ank-core --man <command>' for"
+            echo "    detailed documentation."
+            echo ""
+            echo "AVAILABLE COMMANDS"
+            echo "    ank-core status            Show system status"
+            echo "    ank-core restart           Restart ANK server"
+            echo "    ank-core info              Show device info"
+            echo "    ank-core network           Show network config"
+            echo "    ank-core clean             Cleanup orphaned resources"
+            echo "    ank-core logs              Show server logs"
+            echo "    ank-core shell             Full host shell access"
+            echo "    ank-core --help            Show this help"
+            echo "    ank-core --man <command>   Detailed manual"
+            echo ""
+            echo "DETAILED HELP"
+            echo "    Use 'ank-core --man <command>' for full documentation."
+            echo ""
+            echo "EXAMPLES"
+            echo "    ank-core --man status     # Full manual for status"
+            echo "    ank-core --man info       # Full manual for info"
+            echo "═══════════════════════════════════════════════════════════════"
             ;;
         *)
             echo "No man page for '$cmd'."
             echo "Type 'ank-core --help' for available commands."
+            echo "Type 'ank-core --man <command>' for detailed documentation."
             ;;
     esac
 }
