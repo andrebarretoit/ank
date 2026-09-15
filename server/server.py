@@ -309,6 +309,39 @@ def run_script(script, *args, timeout=60):
     except Exception as e:
         return str(e), 1
 
+def run_script_stream(script, *args, output_list=None, timeout=300):
+    """Run a script line-by-line, appending each line to output_list. Returns return code."""
+    script_path = os.path.join(SCRIPTS_DIR, script)
+    cmd_parts = ["/system/bin/sh", script_path] + list(args)
+    cmd_str = " ".join(f"'{a}'" for a in cmd_parts)
+    try:
+        if os.geteuid() != 0:
+            proc = subprocess.Popen(
+                ["su", "-c", cmd_str],
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True
+            )
+        else:
+            proc = subprocess.Popen(
+                cmd_parts,
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True
+            )
+        for line in iter(proc.stdout.readline, ""):
+            if output_list is not None:
+                output_list.append(line.rstrip("\n"))
+        proc.wait(timeout=timeout)
+        return proc.returncode
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        if output_list is not None:
+            output_list.append("ERROR: Script timed out")
+        return 1
+    except Exception as e:
+        if output_list is not None:
+            output_list.append(f"ERROR: {e}")
+        return 1
+
 def get_container_stats(name):
     cgroup = f"/sys/fs/cgroup/ank/{name}"
     if not os.path.isdir(cgroup):
@@ -2523,24 +2556,21 @@ small{color:#334155}
         _pull_status[version] = {"state": "pulling", "output": [], "error": ""}
         def _do_pull():
             try:
-                output, code = run_script("download-rootfs.sh", version)
-                for line in output.strip().split("\n"):
-                    _pull_status[version]["output"].append(line)
+                dl_out = _pull_status[version]["output"]
+                code = run_script_stream("download-rootfs.sh", version, output_list=dl_out, timeout=300)
                 if code != 0:
                     _pull_status[version]["state"] = "error"
-                    _pull_status[version]["error"] = output
+                    _pull_status[version]["error"] = "\n".join(dl_out)
                     return
                 _pull_status[version]["state"] = "building"
-                _pull_status[version]["output"].append("Building ank-alpinebase (installing openssh, bash, openssl)...")
-                output2, code2 = run_script("container.sh", "build-base", version, timeout=300)
-                for line in output2.strip().split("\n"):
-                    _pull_status[version]["output"].append(line)
+                dl_out.append("Building ank-alpinebase (installing openssh, bash, openssl)...")
+                code2 = run_script_stream("container.sh", "build-base", version, output_list=dl_out, timeout=300)
                 if code2 != 0:
                     _pull_status[version]["state"] = "error"
-                    _pull_status[version]["error"] = output2
+                    _pull_status[version]["error"] = "\n".join(dl_out)
                     return
                 _pull_status[version]["state"] = "done"
-                _pull_status[version]["output"].append(f"Image ank-alpinebase-{version} ready")
+                dl_out.append(f"Image ank-alpinebase-{version} ready")
             except Exception as e:
                 _pull_status[version]["state"] = "error"
                 _pull_status[version]["error"] = str(e)
