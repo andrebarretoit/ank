@@ -1194,7 +1194,7 @@ function showPullModal(defaultVersion) {
                 <button id="pull-go-btn" class="btn btn-primary" style="min-width:80px;"><i class="bi bi-cloud-download"></i> Pull</button>
             </div>
             <div id="pull-status" style="color:#94a3b8;font-size:13px;margin-bottom:8px;"></div>
-            <div style="background:#0f172a;border-radius:8px;padding:12px;height:250px;overflow-y:auto;font-family:monospace;font-size:12px;color:#94a3b8;white-space:pre-wrap;line-height:1.6;" id="pull-log"></div>
+            <div style="background:#0f172a;border-radius:8px;padding:12px;height:250px;overflow-y:auto;font-family:monospace;font-size:10px;color:#94a3b8;white-space:pre-wrap;line-height:1.6;" id="pull-log"></div>
         </div>`;
     document.body.appendChild(overlay);
     const logEl = overlay.querySelector('#pull-log');

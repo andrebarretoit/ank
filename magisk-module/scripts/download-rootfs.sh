@@ -13,10 +13,10 @@ ROOTFS="$IMAGES_DIR/alpine-${VERSION}"
 ARCH=$(uname -m)
 
 case "$ARCH" in
-    aarch64|arm64)  ARCH_NAME="aarch64" ;;
-    armv7*|armhf)   ARCH_NAME="armv7" ;;
-    x86_64)         ARCH_NAME="x86_64" ;;
-    *)              ARCH_NAME="$ARCH" ;;
+    aarch64|arm64)        ARCH_NAME="aarch64" ;;
+    armv7*|armv8*|armhf)  ARCH_NAME="armv7" ;;
+    x86_64)               ARCH_NAME="x86_64" ;;
+    *)                    ARCH_NAME="$ARCH" ;;
 esac
 
 TARBALL="$ANK_DIR/cache/alpine-minirootfs-${VERSION}-${ARCH_NAME}.tar.gz"
