@@ -128,27 +128,19 @@ _chroot_rootfs() {
         [ -x "$c" ] && HOST_CHROOT="$c" && break
     done
 
-    log INFO "Host tools: busybox=${HOST_BUSYBOX:-none} toybox=${HOST_TOYBOX:-none} chroot=${HOST_CHROOT:-none}"
-
     # 1. Host busybox chroot
     if [ -n "$HOST_BUSYBOX" ]; then
-        log INFO "Trying: $HOST_BUSYBOX chroot $ROOTFS /bin/sh -c ..."
         "$HOST_BUSYBOX" chroot "$ROOTFS" /bin/sh -c "$CMD" 2>>"$LOG_FILE" && return 0
-        log WARN "Host busybox chroot failed"
     fi
 
     # 2. Host toybox chroot
     if [ -n "$HOST_TOYBOX" ]; then
-        log INFO "Trying: $HOST_TOYBOX chroot $ROOTFS /bin/sh -c ..."
         "$HOST_TOYBOX" chroot "$ROOTFS" /bin/sh -c "$CMD" 2>>"$LOG_FILE" && return 0
-        log WARN "Host toybox chroot failed"
     fi
 
     # 3. Host chroot (standalone)
     if [ -n "$HOST_CHROOT" ]; then
-        log INFO "Trying: $HOST_CHROOT $ROOTFS /bin/sh -c ..."
         "$HOST_CHROOT" "$ROOTFS" /bin/sh -c "$CMD" 2>>"$LOG_FILE" && return 0
-        log WARN "Host chroot failed"
     fi
 
     # 4. Host musl direct exec (no chroot, runs rootfs binaries via host linker)
@@ -159,21 +151,16 @@ _chroot_rootfs() {
             [ -e "$s" ] || [ -L "$s" ] && { SH="$s"; break; }
         done
         [ -z "$SH" ] && SH="$ROOTFS/bin/sh"
-        log INFO "Trying: musl direct exec $MUSL $SH ..."
         env -i HOME=/root PATH=/sbin:/usr/sbin:/bin:/usr/bin \
             LD_LIBRARY_PATH="$ROOTFS/lib" \
             "$MUSL" "$SH" -c "$CMD" 2>>"$LOG_FILE" && return 0
-        log WARN "Musl direct exec failed"
     fi
 
     # 5. Rootfs busybox chroot (last resort)
     if [ -x "$ROOTFS/bin/busybox" ]; then
-        log INFO "Trying: rootfs busybox chroot ..."
         "$ROOTFS/bin/busybox" chroot "$ROOTFS" /bin/sh -c "$CMD" 2>>"$LOG_FILE" && return 0
-        log WARN "Rootfs busybox chroot failed"
     fi
 
-    log WARN "All chroot methods exhausted"
     return 1
 }
 
