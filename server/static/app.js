@@ -197,11 +197,11 @@ function showApp() {
 /* ═══════ DASHBOARD ═══════ */
 async function loadDashboard() {
   try {
-    const [status, info] = await Promise.all([api('GET', '/status'), api('GET', '/system/info')]);
+    const [status, info, cfg] = await Promise.all([api('GET', '/status'), api('GET', '/system/info'), api('GET', '/config').catch(()=>({}))]);
     animateCounter('stat-running', status.containers_running || 0);
     animateCounter('stat-stopped', status.containers_stopped || 0);
     animateCounter('stat-total', status.containers_total || 0);
-    document.getElementById('dash-device-name').textContent = info.device || 'ANK Device';
+    document.getElementById('dash-device-name').textContent = cfg.node_name || info.device || 'ANK Device';
     document.getElementById('dash-uptime').textContent = 'Uptime: ' + fmtUptime(status.uptime || 0);
     document.getElementById('info-device').textContent = info.device || '-';
     document.getElementById('info-kernel').textContent = info.kernel || '-';
