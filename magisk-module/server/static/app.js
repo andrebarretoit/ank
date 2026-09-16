@@ -658,7 +658,6 @@ async function pollRemoteContainerStatus(nodeId, name, attempt) {
 /* ═══════ IMAGES ═══════ */
 async function loadImages() {
   const el = document.getElementById('images-list');
-  const tplEl = document.getElementById('templates-section');
   if (!el) return;
   el.innerHTML = '<div class="skeleton skeleton-card"></div>';
   try {
@@ -666,59 +665,87 @@ async function loadImages() {
       api('GET', '/images/all').catch(() => []),
       api('GET', '/images/templates').catch(() => null)
     ]);
-    renderImages(Array.isArray(images) ? images : []);
     const templates = tplData?.templates || [];
-    if (tplEl) {
-      let tplHtml = '';
-      if (templates.length) {
-        tplHtml += `<div class="card" style="margin-bottom:16px"><div class="card-header"><h3><i class="bi bi-lightning-charge"></i> Quick Deploy</h3></div><div class="card-body"><p style="font-size:13px;color:var(--text-muted);margin-bottom:12px">One-click containers — pick a template, name it, deploy.</p><div class="templates-grid">${templates.map(t => `<div class="template-card" style="border-left:3px solid ${t.color||'var(--primary)'}" onclick="deployTemplate('${esc(t.id)}')"><div class="template-icon" style="color:${t.color||'var(--primary)'}"><i class="bi ${t.icon||'bi-box-seam'}"></i></div><div class="template-name">${esc(t.name)}</div><div class="template-desc">${esc(t.description||'')}</div><span class="template-badge ${t.base_ready?'ready':'pending'}">${t.base_ready?'Ready':'Pull base first'}</span></div>`).join('')}</div></div></div>`;
-      } else {
-        tplHtml += `<div class="card" style="margin-bottom:16px"><div class="card-header"><h3><i class="bi bi-lightning-charge"></i> Quick Deploy</h3></div><div class="card-body"><p style="font-size:13px;color:var(--text-muted);margin-bottom:12px">One-click containers — pick a template, name it, deploy.</p><div class="empty-state" style="padding:20px"><i class="bi bi-cloud-download" style="font-size:24px;color:var(--text-muted)"></i><p style="margin-top:8px;color:var(--text-muted)">No templates available. Pull an image first.</p></div></div></div>`;
-      }
-      tplHtml += `<div class="card" style="margin-bottom:16px;border:1px solid var(--accent)"><div class="card-header"><h3><i class="bi bi-file-earmark-code"></i> Ankfile Build</h3></div><div class="card-body"><p style="font-size:13px;color:var(--text-muted);margin-bottom:12px">Build custom images from an Ankfile (like Dockerfile).</p><div class="form-group"><label class="form-label">Container Name</label><input type="text" class="form-input" id="ankfile-name" placeholder="my-app" value="ank-build"></div><div class="form-group"><label class="form-label">Ankfile</label><textarea class="ankfile-editor" id="ankfile-content" placeholder="# Example Ankfile&#10;FROM alpine-3.20&#10;PASSWD ank123&#10;RUN apk add --allow-untrusted nginx&#10;EXPOSE 8080">FROM alpine-3.20\nPASSWD ank123\nRUN apk add --allow-untrusted nginx\nRUN mkdir -p /var/www/html\nRUN echo "&lt;h1&gt;Custom ANK Image&lt;/h1&gt;" > /var/www/html/index.html\nEXPOSE 8080</textarea></div><div style="display:flex;gap:8px"><button type="button" class="btn btn-primary" id="ankfile-build-btn"><i class="bi bi-hammer"></i> Build</button><button type="button" class="btn btn-ghost" id="ankfile-example-btn"><i class="bi bi-filetype-json"></i> Load Example</button></div></div></div>`;
-      tplEl.innerHTML = tplHtml;
-      document.getElementById('ankfile-build-btn')?.addEventListener('click', async () => {
-        const content = document.getElementById('ankfile-content')?.value?.trim();
-        const name = document.getElementById('ankfile-name')?.value?.trim() || 'ank-build';
-        if (!content) { toast('Ankfile is empty', 'error'); return; }
-        if (!content.includes('FROM')) { toast('Ankfile must have a FROM instruction', 'error'); return; }
-        try { toast(`Building from Ankfile as "${name}"...`, 'info'); await api('POST', '/images/ankfile', { content, name }); loadContainers(); pollContainerStatus(name, 0); } catch (e) { toast(`Failed: ${e.message}`, 'error'); }
-      });
-      const ANKFILE_EXAMPLE = `FROM alpine-3.20\nPASSWD ank123\nRUN apk add --allow-untrusted curl tar sqlite\nRUN mkdir -p /opt/cloudreve\nRUN curl -L https://github.com/cloudreve/cloudreve/releases/download/4.18.0/cloudreve_4.18.0_linux_armv7.tar.gz | tar xz -C /opt/cloudreve\nEXPOSE 5212\nWORKDIR /opt/cloudreve\nCMD /opt/cloudreve/cloudreve`;
-      document.getElementById('ankfile-example-btn')?.addEventListener('click', () => { document.getElementById('ankfile-content').value = ANKFILE_EXAMPLE; document.getElementById('ankfile-name').value = 'cloudreve'; toast('Example Ankfile loaded', 'info'); });
+    const imgArr = Array.isArray(images) ? images : [];
+    let html = '';
+
+    // Quick Deploy section
+    html += `<div class="img-section"><div class="img-section-header" onclick="this.parentElement.classList.toggle('collapsed')"><i class="bi bi-lightning-charge" style="color:var(--accent)"></i> Quick Deploy <i class="bi bi-chevron-down img-chevron"></i></div><div class="img-section-body">`;
+    if (templates.length) {
+      html += `<div class="templates-grid">${templates.map(t => `<div class="template-card" style="border-left:3px solid ${t.color||'var(--primary)'}" onclick="deployTemplate('${esc(t.id)}','${esc(t.name)}',${t.base_ready})"><div class="template-icon" style="color:${t.color||'var(--primary)'}"><i class="bi ${t.icon||'bi-box-seam'}"></i></div><div class="template-name">${esc(t.name)}</div><div class="template-desc">${esc(t.description||'')}</div><span class="template-badge ${t.base_ready?'ready':'pending'}">${t.base_ready?'Ready':'Pull base first'}</span></div>`).join('')}</div>`;
+    } else {
+      html += `<div class="empty-state" style="padding:16px"><i class="bi bi-cloud-download" style="font-size:24px;color:var(--text-muted)"></i><p style="margin-top:8px;color:var(--text-muted)">No templates available. Pull an Alpine image first.</p></div>`;
     }
+    html += '</div></div>';
+
+    // Ankfile Build section
+    html += `<div class="img-section"><div class="img-section-header" onclick="this.parentElement.classList.toggle('collapsed')"><i class="bi bi-file-earmark-code" style="color:var(--accent)"></i> Ankfile Build <i class="bi bi-chevron-down img-chevron"></i></div><div class="img-section-body"><div class="card" style="border:1px solid var(--accent)"><div class="card-body"><div class="form-group"><label class="form-label">Container Name</label><input type="text" class="form-input" id="ankfile-name" placeholder="my-app" value="ank-build"></div><div class="form-group"><label class="form-label">Ankfile</label><textarea class="ankfile-editor" id="ankfile-content" rows="8" placeholder="# Example Ankfile&#10;FROM alpine-3.20&#10;PASSWD ank123&#10;RUN apk add --allow-untrusted nginx&#10;EXPOSE 8080">FROM alpine-3.20
+PASSWD ank123
+RUN apk add --allow-untrusted nginx
+RUN mkdir -p /var/www/html
+RUN echo "&lt;h1&gt;Custom ANK Image&lt;/h1&gt;" > /var/www/html/index.html
+EXPOSE 8080</textarea></div><div style="display:flex;gap:8px"><button type="button" class="btn btn-primary" id="ankfile-build-btn"><i class="bi bi-hammer"></i> Build</button><button type="button" class="btn btn-ghost" id="ankfile-example-btn"><i class="bi bi-filetype-json"></i> Load Example</button></div></div></div></div></div>`;
+
+    // Images section
+    html += `<div class="img-section"><div class="img-section-header" onclick="this.parentElement.classList.toggle('collapsed')"><i class="bi bi-hdd-stack" style="color:var(--accent)"></i> Ank Images (${imgArr.length}) <i class="bi bi-chevron-down img-chevron"></i></div><div class="img-section-body">`;
+    if (imgArr.length) {
+      html += imgArr.map(img => `<div class="split-list-card" data-id="${esc(img.name)}" onclick="showImageDetail('${esc(img.name)}')"><div class="slc-top"><span class="slc-name"><i class="bi bi-hdd-stack" style="color:var(--accent)"></i>${esc(img.name)}</span><button class="btn btn-danger btn-sm" onclick="event.stopPropagation();deleteImage('${esc(img.name)}')" title="Delete"><i class="bi bi-trash3"></i></button></div><div class="slc-meta"><span>${img.size_human || fmtBytes(img.size||0)}</span><span>${esc(img.version||'')}</span></div></div>`).join('');
+    } else {
+      html += '<div class="empty-state" style="padding:16px"><i class="bi bi-hdd-stack" style="font-size:24px;color:var(--text-muted)"></i><p style="margin-top:8px;color:var(--text-muted)">No images downloaded yet</p></div>';
+    }
+    html += '</div></div>';
+
+    el.innerHTML = html;
+
+    // Bind ankfile buttons
+    document.getElementById('ankfile-build-btn')?.addEventListener('click', async () => {
+      const content = document.getElementById('ankfile-content')?.value?.trim();
+      const name = document.getElementById('ankfile-name')?.value?.trim() || 'ank-build';
+      if (!content) { toast('Ankfile is empty', 'error'); return; }
+      if (!content.includes('FROM')) { toast('Ankfile must have a FROM instruction', 'error'); return; }
+      try { toast(`Building from Ankfile as "${name}"...`, 'info'); await api('POST', '/images/ankfile', { content, name }); loadContainers(); pollContainerStatus(name, 0); } catch (e) { toast(`Failed: ${e.message}`, 'error'); }
+    });
+    document.getElementById('ankfile-example-btn')?.addEventListener('click', () => {
+      document.getElementById('ankfile-content').value = 'FROM alpine-3.20\nPASSWD ank123\nRUN apk add --allow-untrusted curl tar sqlite\nRUN mkdir -p /opt/cloudreve\nRUN curl -L https://github.com/cloudreve/cloudreve/releases/download/4.18.0/cloudreve_4.18.0_linux_armv7.tar.gz | tar xz -C /opt/cloudreve\nEXPOSE 5212\nWORKDIR /opt/cloudreve\nCMD /opt/cloudreve/cloudreve';
+      document.getElementById('ankfile-name').value = 'cloudreve';
+      toast('Example Ankfile loaded', 'info');
+    });
   } catch (e) { el.innerHTML = '<div class="empty-state"><p>Failed to load</p></div>'; }
 }
 
-function renderImages(images) {
-  const el = document.getElementById('images-list');
-  if (!el) return;
-  if (!images.length) { el.innerHTML = '<div class="empty-state"><i class="bi bi-hdd-stack"></i><h3>No images</h3><p>Pull an image to get started</p></div>'; return; }
-  el.innerHTML = images.map(img => {
-    const nodeLabel = img.node_alias || (img.node && img.node !== 'local' ? img.node.slice(0,8) : '');
-    const nodeTag = nodeLabel ? `<span class="badge badge-info" style="font-size:9px">${esc(nodeLabel)}</span>` : '';
-    return `<div class="split-list-card" data-id="${esc(img.id||img.name)}" onclick="showImageDetail('${esc(img.id||img.name)}')">
-      <div class="slc-top"><span class="slc-name"><i class="bi bi-hdd-stack" style="color:var(--accent)"></i>${esc(img.name)}${nodeTag}</span><span class="badge badge-neutral" style="font-size:9px">${esc(img.arch||'')}</span></div>
-      <div class="slc-meta"><span>${img.size_human || fmtBytes(img.size||0)}</span><span>${esc(img.version||'')}</span></div>
-    </div>`;
-  }).join('');
-}
-
-function showImageDetail(id) {
-  document.querySelectorAll('#images-list .split-list-card').forEach(c => c.classList.toggle('selected', c.dataset.id === id));
+function showImageDetail(name) {
+  document.querySelectorAll('#images-list .split-list-card').forEach(c => c.classList.toggle('selected', c.dataset.id === name));
   const el = document.getElementById('image-detail');
   if (!el) return;
   el.innerHTML = `
     <div class="sr-header">
-      <h2><i class="bi bi-hdd-stack" style="color:var(--accent)"></i>${esc(id)}</h2>
+      <h2><i class="bi bi-hdd-stack" style="color:var(--accent)"></i>${esc(name)}</h2>
       <div class="sr-actions">
-        <button class="btn btn-primary btn-sm" onclick="deployTemplate('${esc(id)}')"><i class="bi bi-rocket-takeoff"></i> Deploy</button>
-        <button class="btn btn-danger btn-sm" onclick="deleteImage('${esc(id)}')"><i class="bi bi-trash3"></i></button>
+        <button class="btn btn-primary btn-sm" onclick="deployTemplate('${esc(name)}','${esc(name)}',true)"><i class="bi bi-rocket-takeoff"></i> Deploy</button>
+        <button class="btn btn-danger btn-sm" onclick="deleteImage('${esc(name)}')"><i class="bi bi-trash3"></i></button>
       </div>
     </div>
     <div class="sr-info-grid">
-      <div class="sr-info-item"><div class="sr-label">Name</div><div class="sr-value">${esc(id)}</div></div>
+      <div class="sr-info-item"><div class="sr-label">Name</div><div class="sr-value">${esc(name)}</div></div>
     </div>`;
+}
+
+function showTemplateDetail(id, name, color, icon, desc, baseReady) {
+  document.querySelectorAll('#images-list .template-card').forEach(c => c.classList.toggle('selected', c.dataset.id === id));
+  const el = document.getElementById('image-detail');
+  if (!el) return;
+  el.innerHTML = `
+    <div class="sr-header">
+      <h2><i class="bi ${icon||'bi-box-seam'}" style="color:${color||'var(--primary)'}"></i>${esc(name)}</h2>
+      <div class="sr-actions">
+        <button class="btn btn-primary btn-sm" onclick="deployTemplate('${esc(id)}','${esc(name)}',${baseReady})"><i class="bi bi-rocket-takeoff"></i> Deploy</button>
+      </div>
+    </div>
+    <div class="sr-info-grid">
+      <div class="sr-info-item"><div class="sr-label">Template</div><div class="sr-value">${esc(name)}</div></div>
+      <div class="sr-info-item"><div class="sr-label">Status</div><div class="sr-value"><span class="template-badge ${baseReady?'ready':'pending'}">${baseReady?'Ready':'Pull base first'}</span></div></div>
+    </div>
+    <div style="margin-top:12px;color:var(--text-secondary);font-size:13px">${esc(desc||'No description')}</div>`;
 }
 
 async function pullImage() {
@@ -729,11 +756,12 @@ async function pullImage() {
   try { toast('Pulling image...', 'info'); await api('POST', '/images/pull', { version: result.version }); toast('Image pulled', 'success'); loadImages(); } catch (e) { toast(`Failed: ${e.message}`, 'error'); }
 }
 
-async function deployTemplate(id) {
+async function deployTemplate(id, name, baseReady) {
+  if (baseReady === false) { toast('Download the Alpine base image first (Pull Alpine)', 'warning'); return; }
   let defaultPass = 'ank123';
   try { const cfg = await api('GET', '/config'); if (cfg?.default_container_password) defaultPass = cfg.default_container_password; } catch(e) {}
   const fields = [
-    { id: 'tpl-name', label: 'Container name:', type: 'text', value: id.toLowerCase().replace(/[^a-z0-9-]/g,'-') },
+    { id: 'tpl-name', label: 'Container name:', type: 'text', value: (name||id).toLowerCase().replace(/[^a-z0-9-]/g,'-') },
     { id: 'tpl-pass', label: 'Root password:', type: 'password', value: defaultPass }
   ];
   let onlineNodes = [];
@@ -743,7 +771,7 @@ async function deployTemplate(id) {
     onlineNodes.forEach(n => { opts += `<option value="${esc(n.id)}">${esc(n.alias || n.ip)}</option>`; });
     fields.push({ id: 'tpl-target-node', label: 'Target node:', type: 'select', options: opts });
   }
-  const result = await customModal('Deploy Template', fields);
+  const result = await customModal('Deploy ' + (name||id), fields);
   if (!result) return;
   const containerName = result['tpl-name'];
   const rootPass = result['tpl-pass'];
@@ -1673,13 +1701,39 @@ function startRefreshTimer() {
 
 /* ═══════ CREATE CONTAINER ═══════ */
 document.getElementById('btn-create-container')?.addEventListener('click', async () => {
-  let templates = [];
-  try { const t = await api('GET', '/images/templates'); templates = t.templates || []; } catch(e) {}
   const sel = document.getElementById('container-image');
   if (sel) {
-    const tplOpts = templates.map(t => `<option value="template:${esc(t.id)}">${esc(t.name)}${t.base_ready?'':' (Pull base first)'}</option>`).join('');
-    sel.innerHTML = tplOpts || '<option value="">No templates</option>';
+    let options = '';
+    // Fetch images for dropdown
+    try {
+      const images = await api('GET', '/images/all');
+      if (Array.isArray(images) && images.length) {
+        options += '<optgroup label="--- Images ---">';
+        images.forEach(i => { options += `<option value="${esc(i.name)}">${esc(i.name)}${i.complete ? ' (complete)' : ''}</option>`; });
+        options += '</optgroup>';
+      }
+    } catch(e) {}
+    // Hardcoded templates (like FUNCIONAL)
+    options += `<optgroup label="--- Templates ---">
+      <option value="template:python">Python 3.12 (Alpine + Python)</option>
+      <option value="template:nginx">Nginx Static (Web server :8080)</option>
+      <option value="template:apache">Apache Static (Web server :9090)</option>
+      <option value="template:php">PHP 8.2 (Alpine + PHP :8000)</option>
+      <option value="template:node">Node.js 20 (Alpine + Node :3000)</option>
+    </optgroup>`;
+    sel.innerHTML = options || '<option value="">No images available</option>';
   }
+  // Populate node selector
+  try {
+    const d = await api('GET', '/system/dashboard');
+    const nodes = (d.nodes || []).filter(n => n.status === 'online');
+    const nodeSel = document.getElementById('container-target-node');
+    if (nodeSel && nodes.length) {
+      let nodeOpts = '<option value="local">Local</option>';
+      nodes.forEach(n => { nodeOpts += `<option value="${esc(n.id)}">${esc(n.alias || n.ip)}</option>`; });
+      nodeSel.innerHTML = nodeOpts;
+    }
+  } catch(e) {}
   document.getElementById('create-modal-overlay').classList.add('active');
 });
 
@@ -1739,34 +1793,34 @@ async function loadNotchPreview(page) {
     if (page === 'containers') {
       const c = await api('GET', '/containers/all');
       if (!c.length) { html += '<div class="np-empty">No containers</div>'; }
-      else { html += c.slice(0, 12).map(x => {
+      else { html += c.map(x => {
         const color = x.status === 'running' ? 'var(--success)' : x.status === 'building' ? 'var(--warning)' : 'var(--text-muted)';
         return `<div class="np-row"><span class="dot" style="background:${color}"></span><span class="np-name">${esc(x.name)}</span><span class="badge badge-neutral" style="font-size:9px">${x.status}</span></div>`;
-      }).join(''); if (c.length > 12) html += `<div class="np-empty">+${c.length - 12} more</div>`; }
+      }).join(''); }
     } else if (page === 'images') {
       const [img, tpl] = await Promise.all([api('GET', '/images/all').catch(()=>[]), api('GET', '/images/templates').catch(()=>({templates:[]}))]);
       if (tpl.templates?.length) {
-        html += `<div style="margin-bottom:8px;font-size:11px;font-weight:600;color:var(--text-muted);text-transform:uppercase">Templates</div>`;
-        html += tpl.templates.slice(0,5).map(t => `<div class="np-row"><i class="bi ${t.icon||'bi-box-seam'}" style="color:${t.color||'var(--primary)'};font-size:12px"></i><span class="np-name">${esc(t.name)}</span><span class="text-muted text-sm">${t.base_ready?'Ready':'Pull'}</span></div>`).join('');
+        html += `<div style="margin-bottom:8px;font-size:11px;font-weight:600;color:var(--text-muted);text-transform:uppercase">Quick Deploy</div>`;
+        html += tpl.templates.map(t => `<div class="np-row"><i class="bi ${t.icon||'bi-box-seam'}" style="color:${t.color||'var(--primary)'};font-size:12px"></i><span class="np-name">${esc(t.name)}</span><span class="template-badge ${t.base_ready?'ready':'pending'}" style="font-size:9px">${t.base_ready?'Ready':'Pull'}</span></div>`).join('');
       }
       if (img.length) {
-        html += `<div style="margin:8px 0 8px;font-size:11px;font-weight:600;color:var(--text-muted);text-transform:uppercase">Images (${img.length})</div>`;
-        html += img.slice(0,5).map(x => `<div class="np-row"><i class="bi bi-hdd-stack" style="color:var(--accent);font-size:12px"></i><span class="np-name">${esc(x.name)}</span><span class="text-muted text-sm">${x.size_human||''}</span></div>`).join('');
+        html += `<div style="margin:12px 0 8px;font-size:11px;font-weight:600;color:var(--text-muted);text-transform:uppercase">Ank Images (${img.length})</div>`;
+        html += img.map(x => `<div class="np-row"><i class="bi bi-hdd-stack" style="color:var(--accent);font-size:12px"></i><span class="np-name">${esc(x.name)}</span><span class="text-muted text-sm">${x.size_human||''}</span></div>`).join('');
       }
       if (!img.length && !tpl.templates?.length) html += '<div class="np-empty">No images</div>';
     } else if (page === 'nodes') {
       const d = await api('GET', '/nodes').catch(()=>({nodes:[]}));
       const nodes = d.nodes || [];
       if (!nodes.length) { html += '<div class="np-empty">No nodes</div>'; }
-      else { html += nodes.slice(0, 8).map(n => {
+      else { html += nodes.map(n => {
         const color = n.status === 'online' ? 'var(--success)' : 'var(--danger)';
-        return `<div class="np-row"><span class="dot" style="background:${color}"></span><span class="np-name">${esc(n.alias||n.ip)}</span><span class="text-muted text-sm">${n.status} · CPU ${Math.round(n.cpu_percent||0)}%</span></div>`;
+        return `<div class="np-row"><span class="dot" style="background:${color}"></span><span class="np-name">${esc(n.alias||n.ip)}</span><span class="text-muted text-sm">${n.status} · CPU ${Math.round(n.cpu_percent||0)}% · RAM ${(n.mem_used_gb||0).toFixed(1)}GB · ${(n.containers_total||0)} containers</span></div>`;
       }).join(''); }
     } else if (page === 'stacks') {
       const d = await api('GET', '/stacks/all').catch(()=>({stacks:[]}));
       const stacks = d.stacks || [];
       if (!stacks.length) { html += '<div class="np-empty">No stacks</div>'; }
-      else { html += stacks.slice(0, 8).map(s => {
+      else { html += stacks.map(s => {
         const running = (s.containers||[]).filter(c=>c.status==='running').length;
         const total = (s.containers||[]).length;
         return `<div class="np-row"><i class="bi bi-layers" style="color:var(--accent);font-size:12px"></i><span class="np-name">${esc(s.name)}</span><span class="text-muted text-sm">${running}/${total} · LB ${s.port||s.lb_port||'-'}</span></div>`;
@@ -1774,26 +1828,54 @@ async function loadNotchPreview(page) {
     } else if (page === 'networks') {
       const nets = await api('GET', '/networks').catch(()=>[]);
       if (!nets.length) { html += '<div class="np-empty">No networks</div>'; }
-      else { html += nets.slice(0, 5).map(n => `<div class="np-row"><i class="bi bi-globe2" style="color:var(--accent);font-size:12px"></i><span class="np-name">${esc(n.name)}</span><span class="text-muted text-sm">${n.subnet||''} GW:${n.gateway||''}</span></div>`).join(''); }
+      else { html += nets.map(n => `<div class="np-row"><i class="bi bi-globe2" style="color:var(--accent);font-size:12px"></i><span class="np-name">${esc(n.name)}</span><span class="text-muted text-sm">${n.mode} · ${n.subnet||''} GW:${n.gateway||''} · NAT:${n.nat?'On':'Off'} · ${(n.containers?.length||0)} containers</span></div>`).join(''); }
     } else if (page === 'dashboard') {
-      const st = await api('GET', '/status').catch(()=>({}));
+      const [st, info] = await Promise.all([api('GET', '/status').catch(()=>({})), api('GET', '/system/info').catch(()=>({}))]);
+      const cpuPct = info.cpu_usage != null ? Math.round(info.cpu_usage) : 0;
+      const memT = info.memory?.total_kb || 0;
+      const memA = info.memory?.available_kb || 0;
+      const memPct = memT > 0 ? Math.round((memT-memA)/memT*100) : 0;
+      html += `<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px">`;
       html += `<div class="np-row"><span class="dot" style="background:var(--success)"></span><span class="np-name">Running</span><span>${st.containers_running||0}</span></div>`;
       html += `<div class="np-row"><span class="dot" style="background:var(--danger)"></span><span class="np-name">Stopped</span><span>${st.containers_stopped||0}</span></div>`;
-      html += `<div class="np-row"><span class="dot" style="background:var(--primary)"></span><span class="np-name">Total</span><span>${st.containers_total||0}</span></div>`;
+      html += `<div class="np-row"><span class="dot" style="background:var(--primary)"></span><span class="np-name">CPU</span><span>${cpuPct}%</span></div>`;
+      html += `<div class="np-row"><span class="dot" style="background:var(--success)"></span><span class="np-name">RAM</span><span>${memPct}%</span></div>`;
+      html += `</div>`;
+      html += `<div style="margin-bottom:8px;font-size:11px;font-weight:600;color:var(--text-muted);text-transform:uppercase">Device</div>`;
+      html += `<div class="np-row"><i class="bi bi-phone" style="color:var(--primary);font-size:12px"></i><span class="np-name">${esc(info.device||'-')}</span><span class="text-muted text-sm">Kernel: ${esc(info.kernel||'-')}</span></div>`;
+      const bat = info.battery;
+      if (bat != null && bat >= 0) html += `<div class="np-row"><i class="bi bi-battery-half" style="color:var(--success);font-size:12px"></i><span class="np-name">Battery</span><span>${bat}%</span></div>`;
+      const containers = await api('GET', '/containers/all').catch(()=>[]);
+      if (containers.length) {
+        html += `<div style="margin:12px 0 8px;font-size:11px;font-weight:600;color:var(--text-muted);text-transform:uppercase">Containers (${containers.length})</div>`;
+        html += containers.slice(0, 8).map(x => {
+          const color = x.status === 'running' ? 'var(--success)' : x.status === 'building' ? 'var(--warning)' : 'var(--text-muted)';
+          return `<div class="np-row"><span class="dot" style="background:${color}"></span><span class="np-name">${esc(x.name)}</span><span class="badge badge-neutral" style="font-size:9px">${x.status}</span></div>`;
+        }).join('');
+        if (containers.length > 8) html += `<div class="np-empty">+${containers.length - 8} more</div>`;
+      }
     } else if (page === 'settings') {
-      html += `<div class="np-row"><i class="bi bi-person-gear" style="color:var(--text-muted);font-size:12px"></i><span class="np-name">Account</span></div>`;
-      html += `<div class="np-row"><i class="bi bi-server" style="color:var(--text-muted);font-size:12px"></i><span class="np-name">Server</span></div>`;
-      html += `<div class="np-row"><i class="bi bi-diagram-3" style="color:var(--text-muted);font-size:12px"></i><span class="np-name">Remote & SSH</span></div>`;
-      html += `<div class="np-row"><i class="bi bi-exclamation-triangle" style="color:var(--danger);font-size:12px"></i><span class="np-name" style="color:var(--danger)">Danger Zone</span></div>`;
+      html += `<div class="np-row"><i class="bi bi-person-gear" style="color:var(--text-muted);font-size:12px"></i><span class="np-name">Account</span><span class="text-muted text-sm">Change password</span></div>`;
+      html += `<div class="np-row"><i class="bi bi-server" style="color:var(--text-muted);font-size:12px"></i><span class="np-name">Server</span><span class="text-muted text-sm">Bind, refresh, autostart</span></div>`;
+      html += `<div class="np-row"><i class="bi bi-diagram-3" style="color:var(--text-muted);font-size:12px"></i><span class="np-name">Remote & SSH</span><span class="text-muted text-sm">Management, port</span></div>`;
+      html += `<div class="np-row"><i class="bi bi-info-circle" style="color:var(--text-muted);font-size:12px"></i><span class="np-name">About</span><span class="text-muted text-sm">Cache, storage</span></div>`;
+      html += `<div class="np-row"><i class="bi bi-exclamation-triangle" style="color:var(--danger);font-size:12px"></i><span class="np-name" style="color:var(--danger)">Danger Zone</span><span class="text-muted text-sm">Restart, uninstall</span></div>`;
     } else if (page === 'logs') {
-      html += `<div class="np-row"><i class="bi bi-terminal" style="color:var(--text-muted);font-size:12px"></i><span class="np-name">Live log viewer</span><span class="text-muted text-sm">Auto-refresh</span></div>`;
+      html += `<div class="np-row"><i class="bi bi-terminal" style="color:var(--text-muted);font-size:12px"></i><span class="np-name">Live Log Viewer</span><span class="text-muted text-sm">Colorize · Pause · Filter</span></div>`;
+      html += `<div class="np-row"><i class="bi bi-funnel" style="color:var(--text-muted);font-size:12px"></i><span class="np-name">Filter: All / Info / Warn / Error</span></div>`;
+      html += `<div class="np-row"><i class="bi bi-arrow-clockwise" style="color:var(--text-muted);font-size:12px"></i><span class="np-name">Auto-refresh every 3s</span></div>`;
     } else if (page === 'shell') {
-      html += `<div class="np-row"><i class="bi bi-terminal" style="color:var(--text-muted);font-size:12px"></i><span class="np-name">Core Shell</span><span class="text-muted text-sm">Click to open</span></div>`;
+      html += `<div class="np-row"><i class="bi bi-terminal" style="color:var(--text-muted);font-size:12px"></i><span class="np-name">Core Shell</span><span class="text-muted text-sm">WebSocket terminal</span></div>`;
+      html += `<div class="np-row"><i class="bi bi-hdd-network" style="color:var(--text-muted);font-size:12px"></i><span class="np-name">Select node (local + remotos)</span></div>`;
     } else if (page === 'backups') {
       const d = await api('GET', '/backups').catch(()=>({routines:[]}));
       const r = d.routines || [];
       if (!r.length) { html += '<div class="np-empty">No backups</div>'; }
-      else { html += r.slice(0, 5).map(b => `<div class="np-row"><i class="bi bi-cloud-arrow-up" style="color:var(--accent);font-size:12px"></i><span class="np-name">${esc(b.name)}</span><span class="text-muted text-sm">${b.schedule||''}</span></div>`).join(''); }
+      else { html += r.map(b => {
+        const lastRun = b.last_run ? new Date(b.last_run).toLocaleString() : 'Never';
+        const statusColor = b.last_status === 'success' ? 'var(--success)' : b.last_status === 'failed' ? 'var(--danger)' : 'var(--text-muted)';
+        return `<div class="np-row"><i class="bi bi-cloud-arrow-up" style="color:var(--accent);font-size:12px"></i><span class="np-name">${esc(b.name)}</span><span class="text-muted text-sm">${b.schedule||'-'} · Retention: ${b.retention||30}d · Last: ${lastRun}</span><span style="width:6px;height:6px;border-radius:50%;background:${statusColor};flex-shrink:0"></span></div>`;
+      }).join(''); }
     }
   } catch(e) { html += `<div class="np-empty">Failed to load</div>`; }
   return html;

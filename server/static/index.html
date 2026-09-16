@@ -141,11 +141,11 @@
             <div class="dash-device-item"><div class="ddi-icon yellow"><i class="bi bi-wifi"></i></div><div><div class="ddi-label">Subnet</div><div class="ddi-value font-mono" id="info-subnet">-</div></div></div>
           </div>
         </div>
-        <div class="dash-section">
+        <div class="dash-section dash-section-full">
           <div class="dash-section-header"><h3><i class="bi bi-box-seam"></i> Containers</h3><button class="btn btn-secondary btn-sm" onclick="navigateTo('containers')">View All</button></div>
           <div class="dash-containers-list" id="dashboard-containers"><div class="skeleton skeleton-card"></div></div>
         </div>
-        <div class="dash-section" id="cluster-card" style="display:none">
+        <div class="dash-section dash-section-full" id="cluster-card" style="display:none">
           <div class="dash-section-header"><h3><i class="bi bi-hdd-network"></i> Cluster</h3><button class="btn btn-secondary btn-sm" onclick="navigateTo('nodes')">View All</button></div>
           <div class="dash-cluster-list" id="cluster-info"></div>
         </div>
@@ -175,16 +175,17 @@
       <div class="page-header">
         <div class="ph-left"><div class="ph-icon">ANK</div><h1>Images</h1></div>
         <div class="header-actions">
-          <button class="btn btn-primary btn-sm" id="btn-pull-image"><i class="bi bi-cloud-download"></i> Pull</button>
+          <button class="btn btn-primary btn-sm" id="btn-pull-image"><i class="bi bi-cloud-download"></i> Pull Alpine</button>
           <button class="btn btn-secondary btn-sm" onclick="loadImages()"><i class="bi bi-arrow-clockwise"></i></button>
           <button class="btn-logout" onclick="logout()"><i class="bi bi-box-arrow-right"></i> Logout</button>
         </div>
       </div>
-      <div id="templates-section" class="mb-24"></div>
       <div class="split-layout">
-        <div class="split-left" id="images-list"><div class="skeleton skeleton-card"></div></div>
+        <div class="split-left" id="images-list">
+          <div class="skeleton skeleton-card"></div>
+        </div>
         <div class="split-right" id="image-detail">
-          <div class="split-right-empty"><div><i class="bi bi-hdd-stack"></i><p>Select an image to view details</p></div></div>
+          <div class="split-right-empty"><div><i class="bi bi-hdd-stack"></i><p>Select an image or template to view details</p></div></div>
         </div>
       </div>
     </div>
