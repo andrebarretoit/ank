@@ -191,50 +191,136 @@ function logout() {
 function showApp() {
   document.getElementById('login-screen').style.display = 'none';
   document.getElementById('app').classList.remove('hidden');
-  loadDashboard();
+  loadAll();
 }
 
-/* ═══════ DASHBOARD ═══════ */
-async function loadDashboard() {
+/* ═══════ LOAD ALL ═══════ */
+async function loadAll() {
   try {
-    const [status, info] = await Promise.all([api('GET', '/status'), api('GET', '/system/info')]);
+    const [containers, images, status, info] = await Promise.all([
+      api('GET', '/containers/all').catch(() => []),
+      api('GET', '/images/all').catch(() => []),
+      api('GET', '/status').catch(() => ({})),
+      api('GET', '/system/info').catch(() => ({}))
+    ]);
     animateCounter('stat-running', status.containers_running || 0);
     animateCounter('stat-stopped', status.containers_stopped || 0);
     animateCounter('stat-total', status.containers_total || 0);
-    document.getElementById('dash-device-name').textContent = info.device || 'ANK Device';
-    document.getElementById('dash-uptime').textContent = 'Uptime: ' + fmtUptime(status.uptime || 0);
+    document.getElementById('dash-uptime').textContent = 'uptime ' + fmtUptime(status.uptime || 0);
+
+    const cpuPct = info.cpu_usage != null ? Math.round(info.cpu_usage) : 0;
+    document.getElementById('gauge-cpu-text').textContent = cpuPct + '%';
+    document.getElementById('gauge-cpu').style.width = cpuPct + '%';
+    document.getElementById('cpu-cores').textContent = (info.cpu_cores || 0) > 0 ? info.cpu_cores + ' cores' : '';
+    pushSpark('cpu', cpuPct);
+    renderSparkline('spark-cpu', sparkHistory.cpu);
+
+    const memT = info.memory?.total_kb || 0;
+    const memA = info.memory?.available_kb || 0;
+    const memUsed = memT - memA;
+    const memPct = memT > 0 ? Math.round(memUsed / memT * 100) : 0;
+    document.getElementById('gauge-ram-text').textContent = memPct + '%';
+    document.getElementById('gauge-ram').style.width = memPct + '%';
+    document.getElementById('ram-detail').textContent = memT > 0 ? `${fmtBytes(memUsed * 1024)} / ${fmtBytes(memT * 1024)}` : '';
+    pushSpark('ram', memPct);
+    renderSparkline('spark-ram', sparkHistory.ram);
+
+    const disk = status.disk || {};
+    const diskTotal = disk.total || 0;
+    const diskUsedNum = disk.used_num || 0;
+    const diskPct = diskTotal > 0 ? Math.round(diskUsedNum / diskTotal * 100) : 0;
+    document.getElementById('gauge-disk-text').textContent = diskPct + '%';
+    document.getElementById('gauge-disk').style.width = diskPct + '%';
+    document.getElementById('disk-detail').textContent = diskTotal > 0 ? `${disk.used || '-'} / ${diskTotal} GB` : '';
+    pushSpark('disk', diskPct);
+    renderSparkline('spark-disk', sparkHistory.disk);
+
+    // Identity
+    const cfg = await api('GET', '/config').catch(()=>({}));
+    document.getElementById('dash-device-name').textContent = cfg.node_name || info.device || 'ANK Device';
     document.getElementById('info-device').textContent = info.device || '-';
-    document.getElementById('info-kernel').textContent = info.kernel || '-';
+    document.getElementById('info-kernel').textContent = (info.device || '-') + ' \u00b7 ANK node';
+    document.getElementById('info-kernel-val').textContent = info.kernel || '-';
     const bat = info.battery;
     document.getElementById('info-battery').textContent = (bat != null && bat >= 0) ? bat + '%' : '-';
     document.getElementById('info-subnet').textContent = (info.network?.subnet || '-') + '/24';
+
+    renderDashboardContainers();
+    renderDashboardNodes();
+    cachedImages = Array.isArray(images) ? images : [];
+    startRefreshTimer();
+  } catch (e) { console.error('loadAll failed:', e); }
+}
+
+/* ═══════ DASHBOARD ═══════ */
+let sparkHistory = { cpu: [], ram: [], disk: [] };
+const SPARK_MAX = 10;
+
+function pushSpark(key, val) {
+  sparkHistory[key].push(val);
+  if (sparkHistory[key].length > SPARK_MAX) sparkHistory[key].shift();
+}
+
+function renderSparkline(id, data) {
+  const el = document.getElementById(id);
+  if (!el || !data.length) return;
+  const step = 64 / (SPARK_MAX - 1);
+  const points = data.map((v, i) => `${i * step},${22 - (v / 100 * 20)}`).join(' ');
+  el.setAttribute('points', points);
+}
+
+async function loadDashboard() {
+  try {
+    const [status, info, cfg] = await Promise.all([api('GET', '/status'), api('GET', '/system/info'), api('GET', '/config').catch(()=>({}))]);
+    animateCounter('stat-running', status.containers_running || 0);
+    animateCounter('stat-stopped', status.containers_stopped || 0);
+    animateCounter('stat-total', status.containers_total || 0);
+    document.getElementById('dash-device-name').textContent = cfg.node_name || info.device || 'ANK Device';
+    document.getElementById('dash-uptime').textContent = 'uptime ' + fmtUptime(status.uptime || 0);
+
+    // Identity card
+    document.getElementById('info-device').textContent = info.device || '-';
+    document.getElementById('info-kernel').textContent = (info.device || '-') + ' \u00b7 ANK node';
+    document.getElementById('info-kernel-val').textContent = info.kernel || '-';
+    const bat = info.battery;
+    document.getElementById('info-battery').textContent = (bat != null && bat >= 0) ? bat + '%' : '-';
+    document.getElementById('info-subnet').textContent = (info.network?.subnet || '-') + '/24';
+
+    // CPU
     const cpuPct = info.cpu_usage != null ? Math.round(info.cpu_usage) : 0;
     document.getElementById('cpu-cores').textContent = (info.cpu_cores || 0) > 0 ? info.cpu_cores + ' cores' : '';
+    document.getElementById('gauge-cpu-text').textContent = cpuPct + '%';
+    document.getElementById('gauge-cpu').style.width = cpuPct + '%';
+    pushSpark('cpu', cpuPct);
+    renderSparkline('spark-cpu', sparkHistory.cpu);
+
+    // RAM
     const memT = info.memory?.total_kb || 0;
     const memA = info.memory?.available_kb || 0;
     const memUsed = memT - memA;
     const memPct = memT > 0 ? Math.round(memUsed / memT * 100) : 0;
     document.getElementById('ram-detail').textContent = memT > 0 ? `${fmtBytes(memUsed * 1024)} / ${fmtBytes(memT * 1024)}` : '';
+    document.getElementById('gauge-ram-text').textContent = memPct + '%';
+    document.getElementById('gauge-ram').style.width = memPct + '%';
+    pushSpark('ram', memPct);
+    renderSparkline('spark-ram', sparkHistory.ram);
+
+    // Disk
     const disk = status.disk || {};
     const diskTotal = disk.total || 0;
     const diskUsedNum = disk.used_num || 0;
     const diskPct = diskTotal > 0 ? Math.round(diskUsedNum / diskTotal * 100) : 0;
     document.getElementById('disk-detail').textContent = diskTotal > 0 ? `${disk.used || '-'} / ${diskTotal} GB` : '';
-    setGaugeDash('gauge-cpu', cpuPct, 'gauge-cpu-text', 175.9);
-    setGaugeDash('gauge-ram', memPct, 'gauge-ram-text', 175.9);
-    setGaugeDash('gauge-disk', diskPct, 'gauge-disk-text', 175.9);
+    document.getElementById('gauge-disk-text').textContent = diskPct + '%';
+    document.getElementById('gauge-disk').style.width = diskPct + '%';
+    pushSpark('disk', diskPct);
+    renderSparkline('spark-disk', sparkHistory.disk);
+
     renderDashboardContainers();
     renderDashboardNodes();
   } catch (e) { console.error('Dashboard load failed:', e); }
 }
 
-function setGaugeDash(id, pct, textId, circ) {
-  const circle = document.getElementById(id);
-  const text = document.getElementById(textId);
-  if (!circle || !text) return;
-  circle.style.strokeDashoffset = circ - (circ * pct / 100);
-  text.textContent = pct + '%';
-}
 
 function animateCounter(id, target) {
   const el = document.getElementById(id);
@@ -255,17 +341,22 @@ async function renderDashboardContainers() {
   if (!el) return;
   try {
     const containers = await api('GET', '/containers/all');
-    if (!containers || !containers.length) { el.innerHTML = '<div class="empty-state" style="padding:30px"><p>No containers yet</p></div>'; return; }
-    el.innerHTML = containers.slice(0, 8).map(c => {
+    if (!containers || !containers.length) { el.innerHTML = '<div class="empty-state" style="padding:30px"><i class="bi bi-box-seam"></i> No containers yet</div>'; return; }
+    el.innerHTML = containers.map(c => {
       const s = c.status;
-      const color = s === 'running' ? 'var(--success)' : s === 'building' ? 'var(--warning)' : 'var(--text-muted)';
-      return `<div class="dash-container-row" onclick="navigateTo('containers');setTimeout(()=>showContainerDetail('${esc(c.name)}','${c.node||'local'}'),100)">
-        <span class="dcr-dot" style="background:${color}"></span>
-        <span class="dcr-name">${esc(c.name)}</span>
-        <span class="badge badge-neutral" style="font-size:9px">${s}</span>
+      const statusClass = s === 'running' ? 'running' : s === 'building' ? 'building' : s === 'failed' ? 'failed' : 'stopped';
+      const img = c.template_name || c.image || '-';
+      const ports = (c.port_mappings || []).map(p => p.host_port).filter(Boolean).join(', ');
+      const sshHint = (c.ssh_port && s === 'running') ? `SSH :${c.ssh_port}` : '';
+      return `<div class="cbox ${statusClass}" onclick="navigateTo('containers');setTimeout(()=>showContainerDetail('${esc(c.name)}','${c.node||'local'}'),100)">
+        <div class="cbox-top"><span class="dot"></span><span class="nm">${esc(c.name)}</span><span class="st">${s}</span></div>
+        <div class="cbox-img">${esc(img)}</div>
+        <div class="cbox-meta">
+          <span><i class="bi bi-hdd-network"></i> ${ports || '\u2014'}</span>
+          <span><i class="bi bi-terminal"></i> ${sshHint || '\u2014'}</span>
+        </div>
       </div>`;
     }).join('');
-    if (containers.length > 8) el.innerHTML += `<div style="text-align:center;padding:8px;font-size:11px;color:var(--text-muted)">+${containers.length-8} more</div>`;
   } catch (e) { el.innerHTML = '<div class="empty-state" style="padding:20px"><p>Failed to load</p></div>'; }
 }
 
@@ -277,12 +368,53 @@ async function renderDashboardNodes() {
     const dashboard = await api('GET', '/system/dashboard');
     if (!dashboard.is_manager || !dashboard.nodes || !dashboard.nodes.length) { card.style.display = 'none'; return; }
     card.style.display = '';
-    info.innerHTML = dashboard.nodes.map(n => {
+    const nodes = dashboard.nodes;
+    let totalCpu = 0, totalMemUsed = 0, totalMemTotal = 0, totalDiskUsed = 0, totalDiskTotal = 0, totalContainers = 0, onlineCount = 0;
+    nodes.forEach(n => {
+      if (n.status === 'online') {
+        onlineCount++;
+        totalCpu += n.cpu_percent || 0;
+        totalMemUsed += n.mem_used_gb || 0;
+        totalMemTotal += n.mem_total_gb || 0;
+        totalDiskUsed += n.disk_used || 0;
+        totalDiskTotal += n.disk_total || 0;
+        totalContainers += n.containers_total || 0;
+      }
+    });
+    const avgCpu = onlineCount > 0 ? Math.round(totalCpu / onlineCount) : 0;
+    const memPct = totalMemTotal > 0 ? Math.round(totalMemUsed / totalMemTotal * 100) : 0;
+    const diskPct = totalDiskTotal > 0 ? Math.round(totalDiskUsed / totalDiskTotal * 100) : 0;
+
+    const clusterStatsHtml = `<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px">
+      <div class="dash-cluster-stat"><div class="dcs-label">CPU Avg</div><div class="dcs-value">${avgCpu}%</div></div>
+      <div class="dash-cluster-stat"><div class="dcs-label">Memory</div><div class="dcs-value">${totalMemUsed.toFixed(1)}/${totalMemTotal.toFixed(1)}GB</div></div>
+      <div class="dash-cluster-stat"><div class="dcs-label">Disk</div><div class="dcs-value">${totalDiskUsed.toFixed(0)}/${totalDiskTotal.toFixed(0)}GB</div></div>
+      <div class="dash-cluster-stat"><div class="dcs-label">Containers</div><div class="dcs-value">${totalContainers}</div></div>
+    </div>`;
+
+    const modeBadge = document.getElementById('mode-badge');
+    const modeNotice = document.getElementById('mode-notice');
+    if (modeBadge && dashboard.mode) {
+      modeBadge.textContent = dashboard.mode;
+      modeBadge.style.display = '';
+    }
+    if (modeNotice && dashboard.mode) {
+      const notices = {
+        shared_host: 'No namespace isolation. Containers share host network and PID.',
+        shared_network: 'PID namespace + overlay active. Host networking.',
+        isolated: ''
+      };
+      const msg = notices[dashboard.mode] || '';
+      if (msg) { modeNotice.textContent = msg; modeNotice.style.display = ''; }
+      else { modeNotice.style.display = 'none'; }
+    }
+
+    info.innerHTML = clusterStatsHtml + nodes.map(n => {
       const color = n.status === 'online' ? 'var(--success)' : 'var(--danger)';
       return `<div class="dash-cluster-row">
         <span class="dcl-dot" style="background:${color}"></span>
         <span class="dcl-name">${esc(n.alias||n.ip)}</span>
-        <span class="dcl-stats">CPU ${Math.round(n.cpu_percent||0)}% · RAM ${(n.mem_used_gb||0).toFixed(1)}/${(n.mem_total_gb||0).toFixed(1)}GB</span>
+        <span class="dcl-stats">CPU ${Math.round(n.cpu_percent||0)}% · RAM ${(n.mem_used_gb||0).toFixed(1)}/${(n.mem_total_gb||0).toFixed(1)}GB · ${(n.containers_total||0)} ctrs</span>
       </div>`;
     }).join('');
   } catch (e) { card.style.display = 'none'; }
@@ -292,7 +424,9 @@ async function renderDashboardNodes() {
 async function loadContainers() {
   const el = document.getElementById('containers-list');
   if (!el) return;
-  el.innerHTML = '<div class="skeleton skeleton-card"></div>';
+  if (!el.children.length || el.querySelector('.empty-state') || el.querySelector('.skeleton')) {
+    el.innerHTML = '<div class="skeleton skeleton-card"></div>';
+  }
   try {
     const containers = await api('GET', '/containers/all');
     renderContainers(Array.isArray(containers) ? containers : [], 'all');
@@ -307,11 +441,19 @@ function renderContainers(containers, nodeId) {
     const name = c.name || '';
     const node = c.node || 'local';
     const s = c.status;
-    const bc = s === 'running' ? 'badge-success' : s === 'building' ? 'badge-warning' : s === 'failed' ? 'badge-danger' : 'badge-neutral';
+    const bc = getStatusBadgeClass(s);
+    const isRunning = s === 'running';
+    const isBuilding = s === 'building';
+    const isFailed = s === 'failed';
+    const isTransient = isBuilding || isFailed || s === 'starting' || s === 'stopping';
     const nodeTag = node !== 'local' ? `<span class="badge badge-info" style="font-size:9px">${esc(c.node_alias||node.slice(0,6))}</span>` : '';
     const mem = c.stats && c.stats.memory_bytes ? fmtBytes(c.stats.memory_bytes) : '';
+    const startDisabled = isRunning || isBuilding || isFailed;
+    const stopDisabled = !isRunning;
+    const restartDisabled = isTransient;
+    const deleteDisabled = isRunning || isBuilding;
     return `<div class="split-list-card" data-name="${esc(name)}" onclick="showContainerDetail('${esc(name)}','${node}')">
-      <div class="slc-top"><span class="slc-name"><i class="bi bi-box-seam" style="color:var(--accent)"></i>${esc(name)}${nodeTag}</span><span class="badge ${bc}" style="font-size:10px">${s}</span></div>
+      <div class="slc-top"><span class="slc-name"><i class="bi bi-box-seam" style="color:var(--accent)"></i>${esc(name)}${nodeTag}</span><span class="badge ${bc}" style="font-size:10px">${getStatusLabel(s)}</span></div>
       <div class="slc-meta"><span><i class="bi bi-image"></i> ${esc(c.template_name||c.image||'-')}</span><span><i class="bi bi-globe2"></i> ${esc(c.ip_address||'N/A')}</span>${mem?`<span>${mem}</span>`:''}</div>
     </div>`;
   }).join('');
@@ -323,6 +465,7 @@ let detailLogTimer = null;
 
 async function showContainerDetail(name, nodeId) {
   if (detailLogTimer) { clearInterval(detailLogTimer); detailLogTimer = null; }
+  closeContainerTerminal();
   selectedContainerName = name;
   document.querySelectorAll('#containers-list .split-list-card').forEach(c => c.classList.toggle('selected', c.dataset.name === name));
   const el = document.getElementById('container-detail');
@@ -340,7 +483,7 @@ async function showContainerDetail(name, nodeId) {
     currentContainer = c;
     currentContainer._nodeId = nodeId || 'local';
     const s = c.status;
-    const bc = s === 'running' ? 'badge-success' : s === 'building' ? 'badge-warning' : s === 'failed' ? 'badge-danger' : 'badge-neutral';
+    const isRunning = s === 'running';
     const isBuilding = s === 'building';
     const isFailed = s === 'failed';
     const isTransient = isBuilding || isFailed || s === 'starting' || s === 'stopping';
@@ -350,16 +493,17 @@ async function showContainerDetail(name, nodeId) {
 
     el.innerHTML = `
       <div class="sr-header">
-        <h2><i class="bi bi-box-seam" style="color:var(--accent)"></i>${esc(c.name)} <span class="badge ${bc}" style="font-size:11px">${s}</span></h2>
+        <h2><i class="bi bi-box-seam" style="color:var(--accent)"></i>${esc(c.name)} <span class="badge ${getStatusBadgeClass(s)}" style="font-size:11px">${getStatusLabel(s)}</span></h2>
         <div class="sr-actions">
           ${isRemote ? `
             ${s==='running'||s==='starting'?`<button class="btn btn-secondary btn-sm" onclick="remoteContainerAction('${nodeId}','${esc(name)}','stop')"><i class="bi bi-stop-fill"></i> Stop</button>`:`<button class="btn btn-success btn-sm" onclick="remoteContainerAction('${nodeId}','${esc(name)}','start')"><i class="bi bi-play-fill"></i> Start</button>`}
             <button class="btn btn-primary btn-sm" onclick="remoteContainerAction('${nodeId}','${esc(name)}','restart')"><i class="bi bi-arrow-repeat"></i></button>
             <button class="btn btn-danger btn-sm" onclick="remoteDeleteContainer('${nodeId}','${esc(name)}')"><i class="bi bi-trash3"></i></button>
           ` : `
-            ${s==='running'||s==='starting'?`<button class="btn btn-secondary btn-sm" id="detail-stop" onclick="stopContainer('${esc(name)}')"><i class="bi bi-stop-fill"></i> Stop</button>`:`<button class="btn btn-success btn-sm" id="detail-start" onclick="startContainer('${esc(name)}')"><i class="bi bi-play-fill"></i> Start</button>`}
-            <button class="btn btn-primary btn-sm" id="detail-restart" onclick="restartContainer('${esc(name)}')"><i class="bi bi-arrow-repeat"></i></button>
-            <button class="btn btn-danger btn-sm" id="detail-delete" onclick="deleteContainer('${esc(name)}')"><i class="bi bi-trash3"></i></button>
+            <button class="btn btn-success btn-sm" id="detail-start" onclick="startContainer('${esc(name)}')" ${(isRunning||s==='starting')?'disabled':''}><i class="bi bi-play-fill"></i> Start</button>
+            <button class="btn btn-secondary btn-sm" id="detail-stop" onclick="stopContainer('${esc(name)}')" ${(!isRunning)?'disabled':''}><i class="bi bi-stop-fill"></i> Stop</button>
+            <button class="btn btn-primary btn-sm" id="detail-restart" onclick="restartContainer('${esc(name)}')" ${isTransient?'disabled':''}><i class="bi bi-arrow-repeat"></i></button>
+            <button class="btn btn-danger btn-sm" id="detail-delete" onclick="deleteContainer('${esc(name)}')" ${(isRunning||isBuilding)?'disabled':''}><i class="bi bi-trash3"></i></button>
           `}
         </div>
       </div>
@@ -369,6 +513,7 @@ async function showContainerDetail(name, nodeId) {
         <div class="detail-tab" data-dtab="terminal"><i class="bi bi-terminal"></i> Terminal</div>
         <div class="detail-tab" data-dtab="files"><i class="bi bi-folder2-open"></i> Files</div>
         <div class="detail-tab" data-dtab="network"><i class="bi bi-hdd-network"></i> Networks</div>
+        <div class="detail-tab" data-dtab="backup"><i class="bi bi-cloud-arrow-up"></i> Backup</div>
         <div class="detail-tab" data-dtab="settings"><i class="bi bi-gear"></i> Settings</div>
         <div class="detail-tab" data-dtab="services"><i class="bi bi-cpu"></i> Services</div>
       </div>
@@ -445,6 +590,25 @@ async function showContainerDetail(name, nodeId) {
         </form>
       </div>
 
+      <div class="detail-tab-content" id="dtab-backup">
+        <form id="detail-backup-form">
+          <div class="settings-section">
+            <div class="settings-section-title"><i class="bi bi-cloud-arrow-up"></i> Create Backup Routine</div>
+            <div class="form-group"><label class="form-label">Source Path</label><input type="text" class="form-input" id="detail-backup-source" placeholder="/data" value="/data"></div>
+            <div class="form-group"><label class="form-label">Remote Host (SSH)</label><input type="text" class="form-input" id="detail-backup-host" placeholder="192.168.1.100"></div>
+            <div class="form-row">
+              <div class="form-group"><label class="form-label">Remote Path</label><input type="text" class="form-input" id="detail-backup-rpath" value="/backups/ank"></div>
+              <div class="form-group"><label class="form-label">SSH Password</label><input type="password" class="form-input" id="detail-backup-pass" placeholder="ssh password"></div>
+            </div>
+            <div class="form-row">
+              <div class="form-group"><label class="form-label">Schedule (cron)</label><input type="text" class="form-input" id="detail-backup-cron" placeholder="0 2 * * *" value="0 2 * * *"></div>
+              <div class="form-group"><label class="form-label">Retention (days)</label><input type="number" class="form-input" id="detail-backup-retention" value="30" min="1"></div>
+            </div>
+          </div>
+          <button type="submit" class="btn btn-primary"><i class="bi bi-cloud-arrow-up"></i> Create Backup Routine</button>
+        </form>
+      </div>
+
       <div class="detail-tab-content" id="dtab-settings">
         <form id="detail-settings-form">
           <div class="settings-section">
@@ -502,6 +666,7 @@ async function showContainerDetail(name, nodeId) {
         el.querySelectorAll('.detail-tab-content').forEach(t => t.classList.remove('active'));
         tab.classList.add('active');
         document.getElementById(`dtab-${tab.dataset.dtab}`).classList.add('active');
+        if (tab.dataset.dtab !== 'terminal') closeContainerTerminal();
         if (tab.dataset.dtab === 'terminal' && currentContainer) initContainerTerminal();
         if (tab.dataset.dtab === 'files' && currentContainer) { fileContainerName = currentContainer.name; fileCurrentPath = '/'; closeEditor(); loadFiles(); }
         if (tab.dataset.dtab === 'services' && currentContainer) loadTaskManager();
@@ -593,6 +758,26 @@ async function showContainerDetail(name, nodeId) {
     document.getElementById('file-btn-upload')?.addEventListener('click', () => document.getElementById('file-upload-input')?.click());
     document.getElementById('file-upload-input')?.addEventListener('change', (e) => { uploadToContainer(e.target.files); e.target.value = ''; });
 
+    // Backup form handler
+    document.getElementById('detail-backup-form')?.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      if (!currentContainer) return;
+      const routineName = `${currentContainer.name}-backup`;
+      try {
+        await api('POST', '/backups', {
+          name: routineName,
+          source: document.getElementById('detail-backup-source')?.value || '/data',
+          remote_host: document.getElementById('detail-backup-host')?.value || '',
+          remote_path: document.getElementById('detail-backup-rpath')?.value || '/backups/ank',
+          ssh_user: 'root',
+          ssh_pass: document.getElementById('detail-backup-pass')?.value || '',
+          schedule: document.getElementById('detail-backup-cron')?.value || '0 2 * * *',
+          retention: parseInt(document.getElementById('detail-backup-retention')?.value || '30')
+        });
+        toast(`Backup routine "${routineName}" created`, 'success');
+      } catch (e) { toast(`Failed: ${e.message}`, 'error'); }
+    });
+
     // Start log polling for running containers
     if (!isRemote && s === 'running') {
       detailLogTimer = setInterval(async () => {
@@ -603,6 +788,25 @@ async function showContainerDetail(name, nodeId) {
           const el = document.getElementById('detail-log-output');
           if (el) el.textContent = logText || 'No logs available';
         } catch (e) { clearInterval(detailLogTimer); detailLogTimer = null; }
+      }, 3000);
+    }
+
+    // Build-in-polling: auto-refresh detail when container is building
+    if (!isRemote && isBuilding) {
+      let pollAttempt = 0;
+      const pollBuilding = setInterval(async () => {
+        pollAttempt++;
+        if (pollAttempt > 60) { clearInterval(pollBuilding); return; }
+        try {
+          const updated = await api('GET', `/containers/${name}`);
+          if (updated.status !== 'building' && updated.status !== 'starting') {
+            clearInterval(pollBuilding);
+            showContainerDetail(name, nodeId);
+            loadContainers();
+          } else {
+            updateContainerBadge(name, updated.status);
+          }
+        } catch(e) {}
       }, 3000);
     }
   } catch (e) { el.innerHTML = `<div style="color:var(--danger);padding:20px;text-align:center"><i class="bi bi-exclamation-triangle"></i> ${esc(e.message)}</div>`; }
@@ -629,19 +833,107 @@ function removePort(idx) {
 async function startContainer(name) { setContainerLoading(name,'start'); try { await api('POST',`/containers/${name}/start`); toast(`Starting "${name}"...`,'info'); pollContainerStatus(name,0); } catch(e) { toast(`Failed: ${e.message}`,'error'); clearContainerLoading(name); } }
 async function stopContainer(name) { setContainerLoading(name,'stop'); try { await api('POST',`/containers/${name}/stop`); toast(`Stopping "${name}"...`,'info'); pollContainerStatus(name,0); } catch(e) { toast(`Failed: ${e.message}`,'error'); clearContainerLoading(name); } }
 async function restartContainer(name) { setContainerLoading(name,'restart'); try { await api('POST',`/containers/${name}/restart`); toast(`Restarting "${name}"...`,'info'); pollContainerStatus(name,0); } catch(e) { toast(`Failed: ${e.message}`,'error'); clearContainerLoading(name); } }
-async function deleteContainer(name) { const ok = await confirmAction('Delete Container',`Delete "${name}"? This cannot be undone.`); if (!ok) return; try { await api('DELETE',`/containers/${name}`); if(detailLogTimer){clearInterval(detailLogTimer);detailLogTimer=null;} currentContainer=null; toast(`Deleted "${name}"`,'success'); loadContainers(); document.getElementById('container-detail').innerHTML='<div class="split-right-empty"><div><i class="bi bi-box-seam"></i><p>Select a container to manage</p></div></div>'; } catch(e) { toast(`Failed: ${e.message}`,'error'); } }
+async function deleteContainer(name) { const ok = await confirmAction('Delete Container',`Delete "${name}"? This cannot be undone.`); if (!ok) return; try { await api('DELETE',`/containers/${name}`); if(detailLogTimer){clearInterval(detailLogTimer);detailLogTimer=null;} closeContainerTerminal(); currentContainer=null; toast(`Deleted "${name}"`,'success'); loadContainers(); document.getElementById('container-detail').innerHTML='<div class="split-right-empty"><div><i class="bi bi-box-seam"></i><p>Select a container to manage</p></div></div>'; } catch(e) { toast(`Failed: ${e.message}`,'error'); } }
 
 let containerBusy = {};
-function setContainerLoading(name, action) { containerBusy[name] = action; }
-function clearContainerLoading(name) { delete containerBusy[name]; pollContainerStatus(name, 0); }
+
+function setContainerLoading(name, action) {
+  containerBusy[name] = action;
+  const label = { start: 'Starting...', stop: 'Stopping...', restart: 'Restarting...', delete: 'Deleting...' }[action] || 'Loading...';
+  document.querySelectorAll(`#containers-list .split-list-card[data-name="${CSS.escape(name)}"] button`).forEach(b => b.disabled = true);
+  document.querySelectorAll(`#containers-list .split-list-card[data-name="${CSS.escape(name)}"] .badge`).forEach(b => { b.className = 'badge badge-warning'; b.textContent = label; });
+  if (currentContainer && currentContainer.name === name) {
+    ['detail-start','detail-stop','detail-restart','detail-delete'].forEach(id => { const b = document.getElementById(id); if (b) b.disabled = true; });
+    const detailBadge = document.querySelector('#container-detail .sr-header .badge');
+    if (detailBadge) { detailBadge.className = 'badge badge-warning'; detailBadge.textContent = label; }
+  }
+}
+
+function clearContainerLoading(name) {
+  delete containerBusy[name];
+  pollContainerStatus(name, 0);
+}
+
+function getStatusBadgeClass(status) {
+  const map = {
+    running: 'badge-success',
+    running_degraded_ssh: 'badge-warning',
+    running_degraded_ankd: 'badge-warning',
+    starting: 'badge-info',
+    building: 'badge-warning',
+    stopping: 'badge-info',
+    stopped: 'badge-neutral',
+    failed: 'badge-danger',
+    deleting: 'badge-danger'
+  };
+  return map[status] || 'badge-neutral';
+}
+
+function getStatusLabel(status) {
+  const map = {
+    running: 'running',
+    running_degraded_ssh: 'degraded',
+    running_degraded_ankd: 'degraded',
+    building: 'building',
+    starting: 'starting',
+    stopping: 'stopping',
+    stopped: 'stopped',
+    failed: 'failed',
+    deleting: 'deleting'
+  };
+  return map[status] || status;
+}
+
+function updateContainerBadge(name, status) {
+  document.querySelectorAll(`#containers-list .split-list-card[data-name="${CSS.escape(name)}"] .badge`).forEach(b => {
+    b.className = `badge ${getStatusBadgeClass(status)}`;
+    b.textContent = getStatusLabel(status);
+  });
+  document.querySelectorAll(`#dashboard-containers .cbox`).forEach(box => {
+    if (box.querySelector('.nm')?.textContent === name) {
+      const dot = box.querySelector('.dot');
+      const st = box.querySelector('.st');
+      box.className = `cbox ${status === 'running' ? 'running' : status === 'building' ? 'building' : status === 'failed' ? 'failed' : 'stopped'}`;
+      if (st) st.textContent = status;
+    }
+  });
+  if (currentContainer && currentContainer.name === name) {
+    const detailBadge = document.querySelector('#container-detail .sr-header .badge');
+    if (detailBadge) { detailBadge.className = `badge ${getStatusBadgeClass(status)}`; detailBadge.textContent = getStatusLabel(status); }
+    updateDetailButtons(name, status);
+  }
+}
+
+function updateDetailButtons(name, status) {
+  const isRunning = status === 'running';
+  const isBuilding = status === 'building';
+  const isFailed = status === 'failed';
+  const isTransient = isBuilding || isFailed || status === 'starting' || status === 'stopping';
+  const startBtn = document.getElementById('detail-start');
+  const stopBtn = document.getElementById('detail-stop');
+  const restartBtn = document.getElementById('detail-restart');
+  const deleteBtn = document.getElementById('detail-delete');
+  if (startBtn) startBtn.disabled = isRunning || status === 'starting';
+  if (stopBtn) stopBtn.disabled = !isRunning && status !== 'running';
+  if (restartBtn) restartBtn.disabled = isTransient;
+  if (deleteBtn) deleteBtn.disabled = isRunning || isBuilding;
+}
 
 async function pollContainerStatus(name, attempt) {
   if (attempt > 30) { loadContainers(); return; }
   try {
     const c = await api('GET', `/containers/${name}`);
+    updateContainerBadge(name, c.status);
     if (c.status === 'building' || c.status === 'starting' || c.status === 'stopping') {
       setTimeout(() => pollContainerStatus(name, attempt + 1), 2000);
-    } else { loadContainers(); }
+    } else {
+      clearContainerLoading(name);
+      loadContainers();
+      if (currentContainer && currentContainer.name === name) {
+        currentContainer = c;
+        updateDetailButtons(name, c.status);
+      }
+    }
   } catch (e) { loadContainers(); }
 }
 
@@ -653,6 +945,55 @@ async function pollRemoteContainerStatus(nodeId, name, attempt) {
       setTimeout(() => pollRemoteContainerStatus(nodeId, name, attempt + 1), 3000);
     } else { loadContainers(); }
   } catch (e) { setTimeout(() => pollRemoteContainerStatus(nodeId, name, attempt + 1), 3000); }
+}
+
+/* ═══════ APK FAILURE MODAL ═══════ */
+function showApkFailureModal(name, failedPackages, log) {
+  const host = location.hostname || 'localhost';
+  const sshCmd = currentContainer?.ssh_port ? `ssh root@${host} -p ${currentContainer.ssh_port}` : '';
+  openModal('Package Installation Failed', `
+    <div style="text-align:center;margin-bottom:16px">
+      <i class="bi bi-exclamation-triangle" style="font-size:48px;color:var(--warning)"></i>
+      <h3 style="margin:12px 0 4px">Build Partially Failed</h3>
+      <p style="color:var(--text-secondary);font-size:13px">Container <strong>${esc(name)}</strong> was created but packages failed to install.</p>
+    </div>
+    <div class="settings-section">
+      <div class="settings-section-title"><i class="bi bi-list-check"></i> Failed Packages</div>
+      <pre style="font-size:12px;background:rgba(10,15,30,0.4);padding:10px;border-radius:6px;max-height:120px;overflow:auto;margin:0">${esc(failedPackages)}</pre>
+    </div>
+    ${sshCmd ? `<div class="settings-section">
+      <div class="settings-section-title"><i class="bi bi-terminal"></i> Manual Install</div>
+      <div class="ssh-hint"><code class="ssh-hint-cmd">${esc(sshCmd)}</code><button class="btn btn-sm btn-ghost" onclick="copyText('${esc(sshCmd)}');toast('Copied!','success')"><i class="bi bi-clipboard"></i></button></div>
+      <p style="font-size:12px;color:var(--text-muted);margin-top:8px">Run inside container: <code>apk add --allow-untrusted ${esc(failedPackages)}</code></p>
+    </div>` : ''}
+    <div style="display:flex;gap:8px;justify-content:center;margin-top:16px">
+      <button class="btn btn-danger" onclick="closeModal();deleteContainer('${esc(name)}')"><i class="bi bi-trash3"></i> Cancel & Remove</button>
+      <button class="btn btn-primary" onclick="closeModal()"><i class="bi bi-play-fill"></i> Continue Build</button>
+    </div>
+  `);
+}
+
+/* ═══════ CONTAINER TERMINAL CLEANUP ═══════ */
+function closeContainerTerminal() {
+  if (xtermWs) { try { xtermWs.close(); } catch(e){} xtermWs = null; }
+  if (xtermTerminal) { try { xtermTerminal.dispose(); } catch(e){} xtermTerminal = null; }
+  if (detailLogTimer) { clearInterval(detailLogTimer); detailLogTimer = null; }
+}
+
+/* ═══════ IMAGE TRANSFER ═══════ */
+async function transferImage(imageName) {
+  let nodes = [];
+  try { const d = await api('GET', '/system/dashboard'); nodes = (d.nodes || []).filter(n => n.status === 'online'); } catch(e) {}
+  if (!nodes.length) { toast('No online nodes available', 'warning'); return; }
+  const result = await customModal('Transfer Image', [
+    { id: 'target', label: 'Target Node', type: 'select', options: nodes.map(n => `<option value="${esc(n.id)}">${esc(n.alias || n.ip)}</option>`).join('') }
+  ]);
+  if (!result) return;
+  try {
+    toast(`Transferring "${imageName}" to node...`, 'info');
+    await api('POST', `/nodes/${encodeURIComponent(result.target)}/images/transfer`, { image: imageName });
+    toast('Image transferred successfully', 'success');
+  } catch (e) { toast(`Transfer failed: ${e.message}`, 'error'); }
 }
 
 /* ═══════ IMAGES ═══════ */
@@ -672,6 +1013,23 @@ async function loadImages() {
   } catch (e) { console.error('Images load failed:', e); }
 }
 
+function handleAnkFile(file) {
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    const content = e.target.result;
+    const ta = document.getElementById('ankfile-content');
+    if (ta) {
+      ta.value = content;
+      toast(`Loaded ${file.name} (${content.length} bytes)`, 'success');
+      const nameInput = document.getElementById('ankfile-name');
+      if (nameInput && !nameInput.value) {
+        nameInput.value = file.name.replace(/\.ank$/i, '').replace(/[^a-zA-Z0-9_-]/g, '-');
+      }
+    }
+  };
+  reader.readAsText(file);
+}
+
 function showImageSection(section) {
   document.querySelectorAll('#images-list .split-list-card').forEach(c => c.classList.toggle('selected', c.dataset.section === section));
   const el = document.getElementById('image-detail');
@@ -684,7 +1042,16 @@ function showImageSection(section) {
       el.innerHTML = `<div class="sr-header"><h2><i class="bi bi-lightning-charge" style="color:var(--accent)"></i> Quick Deploy</h2></div><div class="empty-state" style="padding:40px"><i class="bi bi-cloud-download" style="font-size:32px;color:var(--text-muted)"></i><p style="margin-top:8px;color:var(--text-muted)">No templates available.<br>Pull an Alpine image first.</p></div>`;
     }
   } else if (section === 'ankfile') {
-    el.innerHTML = `<div class="sr-header"><h2><i class="bi bi-file-earmark-code" style="color:var(--accent)"></i> Ankfile Build</h2></div><p style="font-size:13px;color:var(--text-muted);margin-bottom:16px">Build custom images from an Ankfile (like Dockerfile).</p><div class="card" style="border:1px solid var(--accent)"><div class="card-body"><div class="form-group"><label class="form-label">Container Name</label><input type="text" class="form-input" id="ankfile-name" placeholder="my-app" value="ank-build"></div><div class="form-group"><label class="form-label">Ankfile</label><textarea class="ankfile-editor" id="ankfile-content" rows="10" placeholder="# FROM alpine-3.20&#10;PASSWD ank123&#10;RUN apk add nginx">FROM alpine-3.20\nPASSWD ank123\nRUN apk add --allow-untrusted nginx\nRUN mkdir -p /var/www/html\nRUN echo "&lt;h1&gt;Custom ANK Image&lt;/h1&gt;" > /var/www/html/index.html\nEXPOSE 8080</textarea></div><div style="display:flex;gap:8px"><button type="button" class="btn btn-primary" id="ankfile-build-btn"><i class="bi bi-hammer"></i> Build</button><button type="button" class="btn btn-ghost" id="ankfile-example-btn"><i class="bi bi-filetype-json"></i> Load Example</button></div></div></div>`;
+    el.innerHTML = `<div class="sr-header"><h2><i class="bi bi-file-earmark-code" style="color:var(--accent)"></i> Ankfile Build</h2></div><p style="font-size:13px;color:var(--text-muted);margin-bottom:16px">Build custom images from an Ankfile (like Dockerfile).</p><div class="card" style="border:1px solid var(--accent)"><div class="card-body"><div class="form-group"><label class="form-label">Container Name</label><input type="text" class="form-input" id="ankfile-name" placeholder="my-app" value="ank-build"></div><div class="form-group"><label class="form-label">Ankfile</label><textarea class="ankfile-editor" id="ankfile-content" rows="10" placeholder="# FROM alpine-3.20&#10;PASSWD ank123&#10;RUN apk add nginx">FROM alpine-3.20\nPASSWD ank123\nRUN apk add --allow-untrusted nginx\nRUN mkdir -p /var/www/html\nRUN echo "&lt;h1&gt;Custom ANK Image&lt;/h1&gt;" > /var/www/html/index.html\nEXPOSE 8080</textarea></div><div style="display:flex;gap:8px"><button type="button" class="btn btn-primary" id="ankfile-build-btn"><i class="bi bi-hammer"></i> Build</button><button type="button" class="btn btn-ghost" id="ankfile-example-btn"><i class="bi bi-filetype-json"></i> Load Example</button></div></div></div><div class="card" style="border:1px dashed var(--border);margin-top:12px"><div class="card-body" id="ank-drop-zone" style="text-align:center;padding:24px;cursor:pointer;transition:background 0.2s"><i class="bi bi-cloud-arrow-up" style="font-size:28px;color:var(--accent);display:block;margin-bottom:8px"></i><p style="font-size:13px;color:var(--text-muted);margin:0">Drag & drop a <code>.ank</code> file here</p><p style="font-size:11px;color:var(--text-muted);margin:4px 0 0">or click to browse</p><input type="file" id="ank-file-input" accept=".ank,.txt" style="display:none"></div></div>`;
+    document.getElementById('ank-drop-zone')?.addEventListener('click', () => document.getElementById('ank-file-input')?.click());
+    const dz = document.getElementById('ank-drop-zone');
+    const fi = document.getElementById('ank-file-input');
+    if (dz && fi) {
+      dz.addEventListener('dragover', e => { e.preventDefault(); dz.style.background = 'var(--bg-hover)'; });
+      dz.addEventListener('dragleave', () => { dz.style.background = ''; });
+      dz.addEventListener('drop', e => { e.preventDefault(); dz.style.background = ''; if (e.dataTransfer.files.length) handleAnkFile(e.dataTransfer.files[0]); });
+      fi.addEventListener('change', () => { if (fi.files.length) handleAnkFile(fi.files[0]); fi.value = ''; });
+    }
     document.getElementById('ankfile-build-btn')?.addEventListener('click', async () => {
       const content = document.getElementById('ankfile-content')?.value?.trim();
       const name = document.getElementById('ankfile-name')?.value?.trim() || 'ank-build';
@@ -806,9 +1173,12 @@ async function loadNodes() {
       const label = n.status === 'online' ? 'Online' : n.status === 'pending' ? 'Pending' : 'Offline';
       const isOnline = n.status === 'online';
       const roleTag = n.role === 'manager' ? '<span class="badge badge-info" style="font-size:10px">MANAGER</span>' : '';
+      const diskInfo = isOnline && n.disk_total ? `<span>Disk ${n.disk_used||0}/${n.disk_total}GB</span>` : '';
+      const uptimeInfo = isOnline && n.uptime_seconds ? `<span>Up ${fmtUptime(n.uptime_seconds)}</span>` : '';
+      const managedBy = n.managed_by ? `<span style="color:var(--text-muted)">by ${esc(n.managed_by)}</span>` : '';
       return `<div class="split-list-card" data-id="${esc(n.id)}" onclick="showNodeDetail('${esc(n.id)}','${esc(n.alias||n.ip)}','${esc(n.status)}')">
-        <div class="slc-top"><span class="slc-name"><i class="bi bi-hdd-network" style="color:var(--primary)"></i>${esc(n.alias||n.ip)}${roleTag}</span><span class="badge ${n.status==='online'?'badge-success':n.status==='pending'?'badge-warning':'badge-danger'}" style="font-size:10px">${label}</span></div>
-        <div class="slc-meta"><span>CPU ${isOnline?Math.round(n.cpu_percent||0)+'%':'-'}</span><span>RAM ${isOnline?(n.mem_used_gb||0).toFixed(1)+'GB':'-'}</span><span>${isOnline?(n.containers_total||0):'-'} containers</span></div>
+        <div class="slc-top"><span class="slc-name"><i class="bi bi-hdd-network" style="color:var(--primary)"></i>${esc(n.alias||n.ip)}${roleTag}</span><div style="display:flex;align-items:center;gap:6px"><span class="badge ${n.status==='online'?'badge-success':n.status==='pending'?'badge-warning':'badge-danger'}" style="font-size:10px">${label}</span>${isOnline?`<button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();refreshNode('${esc(n.id)}')" title="Refresh"><i class="bi bi-arrow-clockwise"></i></button>`:''}</div></div>
+        <div class="slc-meta"><span>CPU ${isOnline?Math.round(n.cpu_percent||0)+'%':'-'}</span><span>RAM ${isOnline?(n.mem_used_gb||0).toFixed(1)+'GB':'-'}</span>${diskInfo}${uptimeInfo}<span>${isOnline?(n.containers_total||0):'-'} containers</span>${managedBy}</div>
       </div>`;
     }).join('');
     updateNodeSelectors(nodes);
@@ -859,9 +1229,9 @@ async function showNodeDetail(nodeId, name, status) {
       <div style="margin-bottom:12px"><h4 style="margin-bottom:8px;font-size:13px;color:var(--text-muted)"><i class="bi bi-terminal"></i> Kernel</h4><code style="font-size:12px;background:rgba(10,15,30,0.4);padding:6px 10px;border-radius:6px;display:block">${esc(kernel)}</code></div>
       <div style="font-size:12px;font-weight:600;color:var(--text-secondary);margin-bottom:10px">Containers (${contArr.length})</div>
       ${contArr.length ? contArr.map(c => {
-        const sc = c.status==='running'?'badge-success':c.status==='building'?'badge-warning':'badge-neutral';
+        const sc = getStatusBadgeClass(c.status);
         return `<div style="display:flex;align-items:center;justify-content:space-between;padding:8px 12px;border:1px solid var(--border);border-radius:8px;margin-bottom:6px">
-          <span style="font-size:13px">${esc(c.name)} <span class="badge ${sc}" style="font-size:9px">${c.status}</span></span>
+          <span style="font-size:13px">${esc(c.name)} <span class="badge ${sc}" style="font-size:9px">${getStatusLabel(c.status)}</span></span>
           <div style="display:flex;gap:4px">
             ${c.status==='running'?`<button class="btn btn-icon btn-ghost sm" onclick="remoteContainerAction('${nodeId}','${esc(c.name)}','stop')"><i class="bi bi-stop-fill"></i></button>`:`<button class="btn btn-icon btn-ghost sm" onclick="remoteContainerAction('${nodeId}','${esc(c.name)}','start')"><i class="bi bi-play-fill"></i></button>`}
             <button class="btn btn-icon btn-ghost sm" onclick="remoteDeleteContainer('${nodeId}','${esc(c.name)}')"><i class="bi bi-trash3"></i></button>
@@ -908,17 +1278,22 @@ async function revokeManager() {
   try { await api('DELETE', '/nodes/manager'); toast('Manager access revoked', 'success'); loadNodes(); } catch(e) { toast(`Failed: ${e.message}`, 'error'); }
 }
 
+async function refreshNode(id) {
+  try { toast('Refreshing node...', 'info'); await api('POST', `/nodes/${encodeURIComponent(id)}/refresh`); loadNodes(); toast('Node refreshed', 'success'); } catch(e) { toast(`Failed: ${e.message}`, 'error'); }
+}
+
 document.getElementById('btn-add-node')?.addEventListener('click', sendPairingRequest);
 
 async function sendPairingRequest() {
   const result = await customModal('Add Node', [
     { id: 'ip', label: 'Panel IP', type: 'text' },
     { id: 'port', label: 'Port', type: 'text', value: '8001' },
+    { id: 'user', label: 'Username', type: 'text', value: 'admin' },
     { id: 'password', label: 'Password', type: 'text' },
     { id: 'alias', label: 'Alias', type: 'text' }
   ]);
   if (!result) return;
-  try { await api('POST', '/nodes/pairing/send', { ip: result.ip, port: parseInt(result.port), password: result.password, alias: result.alias }); toast('Pairing request sent', 'success'); loadNodes(); } catch(e) { toast(`Failed: ${e.message}`, 'error'); }
+  try { await api('POST', '/nodes/pairing/send', { ip: result.ip, port: parseInt(result.port), user: result.user || 'admin', password: result.password, alias: result.alias }); toast('Pairing request sent', 'success'); loadNodes(); } catch(e) { toast(`Failed: ${e.message}`, 'error'); }
 }
 
 async function remoteContainerAction(nodeId, name, action) {
@@ -964,7 +1339,7 @@ async function loadStacks() {
     el.innerHTML = stacks.map(s => {
       const running = (s.containers||[]).filter(c => c.status==='running').length;
       const total = (s.containers||[]).length;
-      const bc = running===total&&total>0 ? 'badge-success' : running>0 ? 'badge-warning' : 'badge-danger';
+      const bc = running===total&&total>0 ? 'badge-success' : running>0 ? 'badge-warning' : total>0 ? 'badge-danger' : 'badge-neutral';
       const tpl = s.template === 'ankfile' ? '<i class="bi bi-filetype-json"></i> Ankfile' : esc(s.template||s.image||'');
       const lbPort = s.port || s.lb_port || '-';
       return `<div class="split-list-card" data-name="${esc(s.name)}" onclick="showStackDetail('${esc(s.name)}')">
@@ -1001,9 +1376,9 @@ function showStackDetail(name) {
       </div>
       <div style="font-size:12px;font-weight:600;color:var(--text-secondary);margin-bottom:10px">Containers</div>
       ${(s.containers||[]).map(c => {
-        const sc = c.status==='running'?'badge-success':c.status==='building'?'badge-warning':'badge-neutral';
+        const sc = getStatusBadgeClass(c.status);
         return `<div style="display:flex;align-items:center;justify-content:space-between;padding:8px 12px;border:1px solid var(--border);border-radius:8px;margin-bottom:6px">
-          <span style="font-size:13px">${esc(c.name)} <span class="badge ${sc}" style="font-size:9px">${c.status}</span></span>
+          <span style="font-size:13px">${esc(c.name)} <span class="badge ${sc}" style="font-size:9px">${getStatusLabel(c.status)}</span></span>
         </div>`;
       }).join('') || '<div style="text-align:center;padding:16px;color:var(--text-muted);font-size:12px">No containers</div>'}`;
   }).catch(e => { el.innerHTML = `<div style="color:var(--danger);padding:20px">${esc(e.message)}</div>`; });
@@ -1177,82 +1552,156 @@ document.getElementById('network-form')?.addEventListener('submit', async (e) =>
 });
 
 /* ═══════ SETTINGS ═══════ */
-async function loadSettings() {
-  try {
-    const cfg = await api('GET', '/config');
+let settingsConfig = {};
+let settingsInfo = {};
+
+function showSettingsSection(section) {
+  document.querySelectorAll('#settings-sidebar .split-list-card').forEach(n => {
+    n.classList.toggle('selected', n.dataset.section === section);
+  });
+  const el = document.getElementById('settings-content');
+  if (!el) return;
+  const cfg = settingsConfig;
+  const info = settingsInfo;
+  const sshPortDisplay = cfg.ssh_port || 2200;
+
+  if (section === 'account') {
+    el.innerHTML = `<div class="card"><div class="card-header"><h3><i class="bi bi-person-gear"></i> Account</h3></div><div class="card-body">
+      <form id="password-form">
+        <div class="form-group"><label class="form-label">Current Password</label><input type="password" class="form-input" id="current-password" required></div>
+        <div class="form-group"><label class="form-label">Username</label><input type="text" class="form-input" id="new-username" autocomplete="off"></div>
+        <div class="form-group"><label class="form-label">New Password</label><input type="password" class="form-input" id="new-password" minlength="6"></div>
+        <button type="submit" class="btn btn-primary"><i class="bi bi-check-lg"></i> Save</button>
+      </form>
+    </div></div>`;
+    document.getElementById('password-form')?.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      try {
+        await api('POST', '/auth/password', {
+          current_password: document.getElementById('current-password').value,
+          username: document.getElementById('new-username').value || undefined,
+          new_password: document.getElementById('new-password').value || undefined
+        });
+        toast('Credentials updated', 'success');
+        const newPass = document.getElementById('new-password').value;
+        const newUser = document.getElementById('new-username').value;
+        if (newPass) {
+          const user = newUser || loginUsername.value;
+          const loginRes = await fetch(`${API}/auth/login`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json', 'X-ANK-Client': 'ank-panel' },
+            body: JSON.stringify({ username: user, password: newPass })
+          });
+          const loginData = await loginRes.json();
+          if (loginData.token) { ankToken = loginData.token; localStorage.setItem('ank_token', ankToken); }
+        }
+        document.getElementById('password-form').reset();
+      } catch (e) { toast(`Failed: ${e.message}`, 'error'); }
+    });
+  } else if (section === 'server') {
+    el.innerHTML = `<div class="card"><div class="card-header"><h3><i class="bi bi-server"></i> Server</h3></div><div class="card-body">
+      <form id="panel-settings-form">
+        <div class="form-group"><label class="form-label">Node Name</label><input type="text" class="form-input" id="setting-node-name" placeholder="e.g. ank-prod01" maxlength="30"><small class="form-hint">Identifies this server in the sidebar and on remote nodes</small></div>
+        <div class="form-row">
+          <div class="form-group"><label class="form-label">Bind Address</label><select class="form-select" id="setting-bind"><option value="0.0.0.0">0.0.0.0 (all)</option><option value="127.0.0.1">127.0.0.1</option></select></div>
+          <div class="form-group"><label class="form-label">Auto-Refresh</label><select class="form-select" id="setting-refresh"><option value="5">5s</option><option value="10" selected>10s</option><option value="30">30s</option><option value="60">60s</option><option value="0">Off</option></select></div>
+        </div>
+        <div class="form-group"><label class="checkbox-label" style="display:flex;align-items:center;gap:8px;cursor:pointer"><input type="checkbox" id="setting-autostart" style="width:18px;height:18px;accent-color:var(--accent)"><i class="bi bi-power" style="color:var(--accent)"></i> Start server on device boot</label></div>
+        <div class="form-group"><label class="form-label">Default Container Password</label><input type="password" class="form-input" id="setting-default-pass" placeholder="ank123" minlength="4"><small class="form-hint">Used when creating containers without specifying a password</small></div>
+        <button type="submit" class="btn btn-primary"><i class="bi bi-check-lg"></i> Save</button>
+      </form>
+    </div></div>`;
     document.getElementById('setting-bind').value = cfg.bind_address || '0.0.0.0';
     document.getElementById('setting-refresh').value = cfg.refresh_interval != null ? cfg.refresh_interval : 10;
-    refreshSeconds = parseInt(cfg.refresh_interval != null ? cfg.refresh_interval : localStorage.getItem('ank_refresh') || '10');
-    localStorage.setItem('ank_refresh', refreshSeconds);
-    const autostartEl = document.getElementById('setting-autostart');
-    if (autostartEl) autostartEl.checked = cfg.autostart_on_boot !== false;
-    const nodeNameEl = document.getElementById('setting-node-name');
-    if (nodeNameEl) nodeNameEl.value = cfg.node_name || '';
+    document.getElementById('setting-autostart').checked = cfg.autostart_on_boot !== false;
+    document.getElementById('setting-node-name').value = cfg.node_name || '';
+    document.getElementById('setting-default-pass').value = cfg.default_container_password || '';
+    document.getElementById('panel-settings-form')?.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      try {
+        await api('POST', '/config', {
+          bind_address: document.getElementById('setting-bind').value,
+          refresh_interval: parseInt(document.getElementById('setting-refresh').value),
+          autostart_on_boot: document.getElementById('setting-autostart').checked,
+          node_name: document.getElementById('setting-node-name')?.value?.trim() || '',
+          default_container_password: document.getElementById('setting-default-pass')?.value?.trim() || ''
+        });
+        refreshSeconds = parseInt(document.getElementById('setting-refresh').value);
+        localStorage.setItem('ank_refresh', refreshSeconds);
+        startRefreshTimer();
+        toast('Server settings saved', 'success');
+      } catch (e) { toast(`Failed: ${e.message}`, 'error'); }
+    });
+    document.getElementById('restart-device-btn')?.addEventListener('click', async () => {
+      const ok = await confirmAction('Restart Device', 'This will reboot the Android device. Continue?');
+      if (!ok) return;
+      document.body.innerHTML = '<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;background:var(--bg-primary);color:var(--text-primary);font-family:system-ui"><i class="bi bi-arrow-clockwise spin" style="font-size:48px;color:var(--accent);margin-bottom:16px"></i><h2>Device Rebooting...</h2><p style="color:var(--text-secondary);margin-top:8px">Please wait for the device to come back online.</p></div>';
+      try { await api('POST', '/system/restart-device'); } catch(e) {}
+    });
+    document.getElementById('restart-server-btn')?.addEventListener('click', async () => {
+      const ok = await confirmAction('Restart Server', 'Restart the ANK server?');
+      if (!ok) return;
+      try { await api('POST', '/system/restart-server'); toast('Restarting...', 'success'); } catch(e) { toast(`Failed: ${e.message}`, 'error'); }
+    });
+    document.getElementById('uninstall-btn')?.addEventListener('click', async () => {
+      const ok = await confirmAction('Uninstall ANK', 'This will PERMANENTLY delete ALL containers, images, data, and ANK itself. This cannot be undone!');
+      if (!ok) return;
+      try { await api('POST', '/system/uninstall'); toast('Uninstalling...', 'info'); } catch(e) { toast(`Failed: ${e.message}`, 'error'); }
+    });
+  } else if (section === 'remote') {
+    el.innerHTML = `<div class="card"><div class="card-header"><h3><i class="bi bi-diagram-3"></i> Remote Management & SSH</h3></div><div class="card-body">
+      <div class="form-group"><label class="checkbox-label" style="display:flex;align-items:center;gap:8px;cursor:pointer"><input type="checkbox" id="setting-remote-mgmt" style="width:18px;height:18px;accent-color:var(--accent)"><i class="bi bi-diagram-3" style="color:var(--accent)"></i> Enable Remote Management</label><small class="form-hint">Allow other ANK instances to pair with this node</small></div>
+      <div class="form-group" id="manager-ip-group" style="display:none"><label class="form-label">Manager IP / Range</label><input type="text" class="form-input" id="setting-manager-ip" placeholder="192.168.0.0/24 or 0.0.0.0" maxlength="30"><small class="form-hint">Single IP, CIDR range, or 0.0.0.0 (any)</small></div>
+      <hr style="border-color:var(--border);margin:12px 0">
+      <div class="form-group"><label class="checkbox-label" style="display:flex;align-items:center;gap:8px;cursor:pointer"><input type="checkbox" id="setting-ssh-enabled" checked style="width:18px;height:18px;accent-color:var(--accent)"><i class="bi bi-terminal" style="color:var(--accent)"></i> Enable SSH (Android host)</label><small class="form-hint">SSH server on port <span id="setting-ssh-port-display">${sshPortDisplay}</span> — same password as this panel</small></div>
+      <div class="form-group"><label class="form-label">SSH Port</label><input type="number" class="form-input" id="setting-ssh-port" value="${cfg.ssh_port || 2200}" min="1024" max="65535"></div>
+      <button type="button" class="btn btn-primary" onclick="saveRemoteSSHSettings()"><i class="bi bi-check-lg"></i> Save</button>
+    </div></div>`;
     const remoteMgmtEl = document.getElementById('setting-remote-mgmt');
-    if (remoteMgmtEl) remoteMgmtEl.checked = cfg.enable_remote_management === true;
-    const managerIpEl = document.getElementById('setting-manager-ip');
-    if (managerIpEl) managerIpEl.value = cfg.manager_ip || '';
-    const defaultPassEl = document.getElementById('setting-default-pass');
-    if (defaultPassEl) defaultPassEl.value = cfg.default_container_password || '';
-    const sshEnabledEl = document.getElementById('setting-ssh-enabled');
-    if (sshEnabledEl) sshEnabledEl.checked = cfg.ssh_enabled !== false;
-    const sshPortEl = document.getElementById('setting-ssh-port');
-    if (sshPortEl) sshPortEl.value = cfg.ssh_port || 2200;
-    const sshPortDisplay = document.getElementById('setting-ssh-port-display');
-    if (sshPortDisplay) sshPortDisplay.textContent = cfg.ssh_port || 2200;
-    const mipGroup = document.getElementById('manager-ip-group');
-    if (mipGroup) mipGroup.style.display = remoteMgmtEl?.checked ? 'block' : 'none';
-    if (remoteMgmtEl) remoteMgmtEl.addEventListener('change', () => { document.getElementById('manager-ip-group').style.display = remoteMgmtEl.checked ? 'block' : 'none'; });
-  } catch(e) {}
-  try {
-    const info = await api('GET', '/system/info');
-    document.getElementById('info-rootfs').textContent = info.rootfs_size || '-';
-    document.getElementById('info-containers-size').textContent = info.containers_size || '-';
-    document.getElementById('info-total-size').textContent = info.total_size || '-';
-    document.getElementById('info-device-free').textContent = info.device_free || '-';
-  } catch(e) {}
+    remoteMgmtEl.checked = cfg.enable_remote_management === true;
+    document.getElementById('setting-manager-ip').value = cfg.manager_ip || '';
+    document.getElementById('setting-ssh-enabled').checked = cfg.ssh_enabled !== false;
+    document.getElementById('manager-ip-group').style.display = remoteMgmtEl.checked ? 'block' : 'none';
+    remoteMgmtEl.addEventListener('change', () => { document.getElementById('manager-ip-group').style.display = remoteMgmtEl.checked ? 'block' : 'none'; });
+  } else if (section === 'cache') {
+    el.innerHTML = `<div class="card"><div class="card-header"><h3><i class="bi bi-database"></i> Cache</h3></div><div class="card-body">
+      <div class="info-grid">
+        <div class="info-item"><span class="info-label">Rootfs Size</span><span id="info-rootfs">${info.rootfs_size||'-'}</span></div>
+        <div class="info-item"><span class="info-label">Containers Data</span><span id="info-containers-size">${info.containers_size||'-'}</span></div>
+        <div class="info-item"><span class="info-label">Total Used</span><span id="info-total-size">${info.total_size||'-'}</span></div>
+        <div class="info-item"><span class="info-label">Device Free</span><span id="info-device-free">${info.device_free||'-'}</span></div>
+      </div>
+    </div></div>`;
+  } else if (section === 'about') {
+    el.innerHTML = `<div class="card"><div class="card-header"><h3><i class="bi bi-info-circle"></i> About</h3></div><div class="card-body">
+      <div class="info-grid">
+        <div class="info-item"><span class="info-label">Version</span><span>2.0.0</span></div>
+        <div class="info-item"><span class="info-label">Panel Port</span><span>8001</span></div>
+        <div class="info-item" style="grid-column:span 2"><span class="info-label">Credentials</span><span style="font-size:11px">/sdcard/AndroidKonteiner/CREDENCIAIS.txt</span></div>
+      </div>
+      <hr style="border-color:var(--border);margin:16px 0">
+      <div style="text-align:center;padding:12px 0">
+        <p style="font-size:14px;font-weight:600;color:var(--text);margin-bottom:4px">Powered by <span style="color:var(--accent)">ANDREBARRETOIT</span></p>
+        <p style="font-size:12px;color:var(--text-secondary);margin-bottom:12px">Android Konteiner Platform</p>
+        <div style="display:flex;gap:12px;justify-content:center">
+          <a href="https://linkedin.com/in/andrebarretoit" target="_blank" class="btn btn-ghost btn-sm"><i class="bi bi-linkedin"></i> LinkedIn</a>
+          <a href="https://andrebarretoit.com" target="_blank" class="btn btn-ghost btn-sm"><i class="bi bi-globe"></i> Portfolio</a>
+        </div>
+      </div>
+    </div></div>`;
+  }
 }
 
-document.getElementById('password-form')?.addEventListener('submit', async (e) => {
-  e.preventDefault();
+async function loadSettings() {
   try {
-    await api('POST', '/auth/password', {
-      current_password: document.getElementById('current-password').value,
-      username: document.getElementById('new-username').value || undefined,
-      new_password: document.getElementById('new-password').value || undefined
-    });
-    toast('Credentials updated', 'success');
-    const newPass = document.getElementById('new-password').value;
-    const newUser = document.getElementById('new-username').value;
-    if (newPass) {
-      const user = newUser || loginUsername.value;
-      const loginRes = await fetch(`${API}/auth/login`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json', 'X-ANK-Client': 'ank-panel' },
-        body: JSON.stringify({ username: user, password: newPass })
-      });
-      const loginData = await loginRes.json();
-      if (loginData.token) { ankToken = loginData.token; localStorage.setItem('ank_token', ankToken); }
-    }
-    document.getElementById('password-form').reset();
-  } catch (e) { toast(`Failed: ${e.message}`, 'error'); }
-});
-
-document.getElementById('panel-settings-form')?.addEventListener('submit', async (e) => {
-  e.preventDefault();
+    settingsConfig = await api('GET', '/config');
+  } catch(e) { settingsConfig = {}; }
   try {
-    await api('POST', '/config', {
-      bind_address: document.getElementById('setting-bind').value,
-      refresh_interval: parseInt(document.getElementById('setting-refresh').value),
-      autostart_on_boot: document.getElementById('setting-autostart').checked,
-      node_name: document.getElementById('setting-node-name')?.value?.trim() || '',
-      default_container_password: document.getElementById('setting-default-pass')?.value?.trim() || ''
-    });
-    refreshSeconds = parseInt(document.getElementById('setting-refresh').value);
-    localStorage.setItem('ank_refresh', refreshSeconds);
-    startRefreshTimer();
-    toast('Server settings saved', 'success');
-  } catch (e) { toast(`Failed: ${e.message}`, 'error'); }
-});
+    settingsInfo = await api('GET', '/system/info');
+  } catch(e) { settingsInfo = {}; }
+  refreshSeconds = parseInt(settingsConfig.refresh_interval != null ? settingsConfig.refresh_interval : localStorage.getItem('ank_refresh') || '10');
+  localStorage.setItem('ank_refresh', refreshSeconds);
+  showSettingsSection('account');
+}
 
 async function saveRemoteSSHSettings() {
   try {
@@ -1265,26 +1714,6 @@ async function saveRemoteSSHSettings() {
     toast('Settings saved', 'success');
   } catch (e) { toast(`Failed: ${e.message}`, 'error'); }
 }
-
-document.getElementById('restart-device-btn')?.addEventListener('click', async () => {
-  const ok = await confirmAction('Restart Device', 'This will reboot the Android device. Continue?');
-  if (!ok) return;
-  try { toast('Rebooting device...', 'warning'); await api('POST', '/system/restart-device'); } catch(e) {}
-});
-
-document.getElementById('restart-server-btn')?.addEventListener('click', async () => {
-  const ok = await confirmAction('Restart Server', 'Restart the ANK server?');
-  if (!ok) return;
-  try { await api('POST', '/system/restart-server'); } catch(e) {}
-  toast('Server restarting...', 'info');
-  setTimeout(() => { window.location.reload(); }, 5000);
-});
-
-document.getElementById('uninstall-btn')?.addEventListener('click', async () => {
-  const ok = await confirmAction('Uninstall ANK', 'This will PERMANENTLY delete ALL containers, images, configs. This cannot be undone.');
-  if (!ok) return;
-  try { toast('Uninstalling ANK...', 'warning'); await api('POST', '/system/uninstall'); } catch(e) {}
-});
 
 /* ═══════ SHELL ═══════ */
 let coreTerminal = null;
@@ -1304,8 +1733,7 @@ function initCoreTerminal() {
   try {
     coreTerminal = new Terminal({ cursorBlink: true, fontSize: 14, fontFamily: "'Cascadia Code','Fira Code',monospace", theme: { background: '#0a0d12', foreground: '#d3d9e3', cursor: '#58a6ff' }, scrollback: 5000 });
     coreTerminal.open(el);
-    coreTerminal.writeln('\x1b[1;36m  ANK Core Shell\x1b[0m');
-    coreTerminal.writeln('\x1b[90m  Connecting...\x1b[0m\r\n');
+    coreTerminal.writeln('\x1b[1;36m  ANK \x1b[1;32m●\x1b[0m \x1b[1;36mAndroid Konteiner\x1b[0m\r\n');
     coreTerminal.focus();
     connectCoreWs();
     const resize = () => { const rect = el.getBoundingClientRect(); const cols = Math.floor(rect.width/8.4); const rows = Math.floor(rect.height/18); if (cols>0&&rows>0) { coreTerminal.resize(cols,rows); if (coreWs&&coreWs.readyState===WebSocket.OPEN) coreWs.send(JSON.stringify({type:'resize',cols,rows})); } };
@@ -1533,25 +1961,53 @@ async function loadTaskManager() {
   if (!el) return;
   el.innerHTML = '<div class="empty-state">Loading services...</div>';
   try {
-    const data = await api('GET', `/containers/${currentContainer.name}/services`);
+    const [data, health] = await Promise.all([
+      api('GET', `/containers/${currentContainer.name}/services`),
+      api('GET', `/containers/${currentContainer.name}/health`).catch(() => null)
+    ]);
     const services = data.services || [];
-    if (services.length === 0) { el.innerHTML = '<div class="empty-state" style="padding:20px"><p style="color:var(--text-muted)">No services configured</p></div>'; return; }
-    el.innerHTML = services.map(svc => {
-      const isRunning = svc.status === 'running';
+    const containerStatus = currentContainer.status || 'stopped';
+    const isRunning = containerStatus === 'running';
+    const isBuilding = containerStatus === 'building';
+    const canManage = isRunning && !isBuilding;
+
+    // Health status banner
+    let healthBanner = '';
+    if (health && health.status) {
+      if (health.status === 'running') {
+        healthBanner = `<div style="padding:8px 12px;border-radius:var(--radius-sm);background:var(--success-dim);margin-bottom:12px;font-size:12px;display:flex;align-items:center;gap:12px"><i class="bi bi-check-circle-fill" style="color:var(--success)"></i><span style="color:var(--success)">Container healthy</span></div>`;
+      } else if (health.status === 'stopped') {
+        healthBanner = `<div style="padding:8px 12px;border-radius:var(--radius-sm);background:var(--danger-dim);margin-bottom:12px;font-size:12px;display:flex;align-items:center;gap:12px"><i class="bi bi-x-circle-fill" style="color:var(--danger)"></i><span style="color:var(--danger)">Container stopped</span></div>`;
+      } else {
+        const sshOk = health.ssh_alive ? '<span style="color:var(--success)">SSH OK</span>' : '<span style="color:var(--danger)">SSH Down</span>';
+        const ankdOk = health.ankd_alive ? '<span style="color:var(--success)">Ankd OK</span>' : '<span style="color:var(--warning)">Ankd N/A</span>';
+        healthBanner = `<div style="padding:8px 12px;border-radius:var(--radius-sm);background:var(--warning-dim);margin-bottom:12px;font-size:12px;display:flex;align-items:center;gap:12px"><i class="bi bi-exclamation-triangle" style="color:var(--warning)"></i><span>Degraded: ${sshOk} | ${ankdOk}</span></div>`;
+      }
+    }
+
+    if (services.length === 0) {
+      el.innerHTML = healthBanner + '<div class="empty-state" style="padding:20px"><p style="color:var(--text-muted)">No services configured</p></div>';
+      return;
+    }
+    el.innerHTML = healthBanner + services.map(svc => {
+      const isSvcRunning = svc.status === 'running';
       return `<div class="service-item">
         <div class="service-info">
-          <div class="service-dot ${isRunning?'running':'stopped'}"></div>
-          <div><div class="service-name">${esc(svc.name)} ${svc.enabled?'<span style="color:var(--success);font-size:11px">ON</span>':'<span style="color:var(--text-muted);font-size:11px">OFF</span>'}</div><div class="service-cmd">${esc(svc.cmd||'no command')}</div></div>
+          <div class="service-dot ${isSvcRunning?'running':'stopped'}"></div>
+          <div>
+            <div class="service-name">${esc(svc.name)} ${svc.enabled?'<span style="color:var(--success);font-size:11px">ON</span>':'<span style="color:var(--text-muted);font-size:11px">OFF</span>'}</div>
+            <div class="service-cmd">${esc(svc.cmd||'no command')}</div>
+          </div>
         </div>
         <div class="service-actions">
           <button class="btn btn-sm btn-ghost" onclick="taskManagerViewLog('${esc(svc.name)}')" title="View Log"><i class="bi bi-journal-text"></i></button>
-          ${isRunning
-            ? `<button class="btn btn-sm btn-secondary" onclick="taskManagerServiceAction('${esc(svc.name)}','stop')" title="Stop"><i class="bi bi-stop-fill"></i></button>
-               <button class="btn btn-sm btn-ghost" onclick="taskManagerServiceAction('${esc(svc.name)}','restart')" title="Restart"><i class="bi bi-arrow-clockwise"></i></button>`
-            : `<button class="btn btn-sm btn-success" onclick="taskManagerServiceAction('${esc(svc.name)}','start')" title="Start"><i class="bi bi-play-fill"></i></button>`
+          ${isSvcRunning
+            ? `<button class="btn btn-sm btn-secondary" onclick="taskManagerServiceAction('${esc(svc.name)}','stop')" title="Stop" ${!canManage?'disabled':''}><i class="bi bi-stop-fill"></i></button>
+               <button class="btn btn-sm btn-ghost" onclick="taskManagerServiceAction('${esc(svc.name)}','restart')" title="Restart" ${!canManage?'disabled':''}><i class="bi bi-arrow-clockwise"></i></button>`
+            : `<button class="btn btn-sm btn-success" onclick="taskManagerServiceAction('${esc(svc.name)}','start')" title="Start" ${!canManage?'disabled':''}><i class="bi bi-play-fill"></i></button>`
           }
-          <button class="btn btn-sm btn-ghost" onclick="taskManagerServiceAction('${esc(svc.name)}','${svc.enabled?'disable':'enable'}')" title="${svc.enabled?'Disable':'Enable'}"><i class="bi bi-${svc.enabled?'pause':'play'}-circle"></i></button>
-          <button class="btn btn-sm btn-ghost" onclick="taskManagerServiceAction('${esc(svc.name)}','delete')" title="Delete" style="color:var(--danger)"><i class="bi bi-trash3"></i></button>
+          <button class="btn btn-sm btn-ghost" onclick="taskManagerServiceAction('${esc(svc.name)}','${svc.enabled?'disable':'enable'}')" title="${svc.enabled?'Disable':'Enable'}" ${!canManage?'disabled':''}><i class="bi bi-${svc.enabled?'pause':'play'}-circle"></i></button>
+          <button class="btn btn-sm btn-ghost" onclick="taskManagerServiceAction('${esc(svc.name)}','delete')" title="Delete" style="color:var(--danger)" ${!canManage?'disabled':''}><i class="bi bi-trash3"></i></button>
         </div>
       </div>`;
     }).join('');
@@ -1658,17 +2114,78 @@ document.getElementById('log-filter')?.addEventListener('change', () => { logsOf
 /* ═══════ REFRESH TIMER ═══════ */
 let refreshSeconds = parseInt(localStorage.getItem('ank_refresh') || '15');
 let refreshTimer = null;
+let refreshCycle = 0;
 
 function startRefreshTimer() {
   if (refreshTimer) clearInterval(refreshTimer);
   if (refreshSeconds <= 0) return;
   refreshTimer = setInterval(async () => {
     if (!isLoggedIn || document.getElementById('app').classList.contains('hidden') || document.hidden) return;
+    refreshCycle++;
     try {
-      const status = await api('GET', '/status');
-      animateCounter('stat-running', status.containers_running || 0);
-      animateCounter('stat-stopped', status.containers_stopped || 0);
-      animateCounter('stat-total', status.containers_total || 0);
+      const activePage = document.querySelector('.page.active');
+      if (!activePage) return;
+      const pageId = activePage.id;
+
+      if (pageId === 'page-dashboard') {
+        const [status, info] = await Promise.all([api('GET', '/status'), api('GET', '/system/info')]);
+        animateCounter('stat-running', status.containers_running || 0);
+        animateCounter('stat-stopped', status.containers_stopped || 0);
+        animateCounter('stat-total', status.containers_total || 0);
+        document.getElementById('dash-uptime').textContent = 'uptime ' + fmtUptime(status.uptime || 0);
+        const cpuPct = info.cpu_usage != null ? Math.round(info.cpu_usage) : 0;
+        document.getElementById('gauge-cpu-text').textContent = cpuPct + '%';
+        document.getElementById('gauge-cpu').style.width = cpuPct + '%';
+        pushSpark('cpu', cpuPct);
+        renderSparkline('spark-cpu', sparkHistory.cpu);
+        const memT = info.memory?.total_kb || 0;
+        const memA = info.memory?.available_kb || 0;
+        const memPct = memT > 0 ? Math.round((memT - memA) / memT * 100) : 0;
+        document.getElementById('gauge-ram-text').textContent = memPct + '%';
+        document.getElementById('gauge-ram').style.width = memPct + '%';
+        document.getElementById('ram-detail').textContent = memT > 0 ? `${fmtBytes((memT-memA) * 1024)} / ${fmtBytes(memT * 1024)}` : '';
+        pushSpark('ram', memPct);
+        renderSparkline('spark-ram', sparkHistory.ram);
+        const disk = status.disk || {};
+        const diskTotal = disk.total || 0;
+        const diskUsedNum = disk.used_num || 0;
+        const diskPct = diskTotal > 0 ? Math.round(diskUsedNum / diskTotal * 100) : 0;
+        document.getElementById('gauge-disk-text').textContent = diskPct + '%';
+        document.getElementById('gauge-disk').style.width = diskPct + '%';
+        document.getElementById('disk-detail').textContent = diskTotal > 0 ? `${disk.used || '-'} / ${diskTotal} GB` : '';
+        pushSpark('disk', diskPct);
+        renderSparkline('spark-disk', sparkHistory.disk);
+        renderDashboardContainers();
+        renderDashboardNodes();
+      } else if (pageId === 'page-containers') {
+        await loadContainers();
+        if (selectedContainerName) {
+          document.querySelectorAll('#containers-list .split-list-card').forEach(c => c.classList.toggle('selected', c.dataset.name === selectedContainerName));
+        }
+        if (currentContainer) {
+          try {
+            const updated = await api('GET', `/containers/${currentContainer.name}`);
+            if (updated) {
+              currentContainer = updated;
+              updateContainerBadge(currentContainer.name, updated.status);
+              updateDetailButtons(currentContainer.name, updated.status);
+            }
+          } catch(e) {}
+        }
+      } else if (pageId === 'page-images') {
+        const sel = document.querySelector('#images-list .split-list-card.selected');
+        const activeSection = sel ? sel.dataset.section : 'quick-deploy';
+        await loadImages();
+        showImageSection(activeSection);
+      } else if (pageId === 'page-nodes') {
+        loadNodes();
+      } else if (pageId === 'page-stacks') {
+        loadStacks();
+      } else if (pageId === 'page-backups') {
+        loadBackups();
+      } else if (pageId === 'page-networks') {
+        loadNetworks();
+      }
     } catch(e) {}
   }, refreshSeconds * 1000);
 }
@@ -1768,27 +2285,28 @@ async function loadNotchPreview(page) {
       const c = await api('GET', '/containers/all');
       if (!c.length) { html += '<div class="np-empty">No containers</div>'; }
       else { html += c.map(x => {
-        const color = x.status === 'running' ? 'var(--success)' : x.status === 'building' ? 'var(--warning)' : 'var(--text-muted)';
-        return `<div class="np-row"><span class="dot" style="background:${color}"></span><span class="np-name">${esc(x.name)}</span><span class="badge badge-neutral" style="font-size:9px">${x.status}</span></div>`;
+        const color = x.status === 'running' ? 'var(--success)' : x.status === 'building' ? 'var(--warning)' : x.status === 'failed' ? 'var(--danger)' : 'var(--text-muted)';
+        return `<div class="np-row" onclick="notchPreviewHide();navigateTo('containers');setTimeout(()=>showContainerDetail('${esc(x.name)}','${x.node||'local'}'),100)" style="cursor:pointer"><span class="dot" style="background:${color}"></span><span class="np-name">${esc(x.name)}</span><span class="badge ${getStatusBadgeClass(x.status)}" style="font-size:9px">${getStatusLabel(x.status)}</span></div>`;
       }).join(''); }
     } else if (page === 'images') {
-      const [img, tpl] = await Promise.all([api('GET', '/images/all').catch(()=>[]), api('GET', '/images/templates').catch(()=>({templates:[]}))]);
-      if (tpl.templates?.length) {
+      const [img, tpl] = await Promise.all([api('GET', '/images/all').catch(()=>[]), api('GET', '/images/templates').catch(()=>[])]);
+      const templates = Array.isArray(tpl) ? tpl : (tpl.templates || []);
+      if (templates.length) {
         html += `<div style="margin-bottom:8px;font-size:11px;font-weight:600;color:var(--text-muted);text-transform:uppercase">Quick Deploy</div>`;
-        html += tpl.templates.map(t => `<div class="np-row"><i class="bi ${t.icon||'bi-box-seam'}" style="color:${t.color||'var(--primary)'};font-size:12px"></i><span class="np-name">${esc(t.name)}</span><span class="template-badge ${t.base_ready?'ready':'pending'}" style="font-size:9px">${t.base_ready?'Ready':'Pull'}</span></div>`).join('');
+        html += templates.map(t => `<div class="np-row" onclick="notchPreviewHide();navigateTo('images')" style="cursor:pointer"><i class="bi ${t.icon||'bi-box-seam'}" style="color:${t.color||'var(--primary)'};font-size:12px"></i><span class="np-name">${esc(t.name)}</span><span class="template-badge ${t.base_ready?'ready':'pending'}" style="font-size:9px">${t.base_ready?'Ready':'Pull'}</span></div>`).join('');
       }
       if (img.length) {
         html += `<div style="margin:12px 0 8px;font-size:11px;font-weight:600;color:var(--text-muted);text-transform:uppercase">Ank Images (${img.length})</div>`;
-        html += img.map(x => `<div class="np-row"><i class="bi bi-hdd-stack" style="color:var(--accent);font-size:12px"></i><span class="np-name">${esc(x.name)}</span><span class="text-muted text-sm">${x.size_human||''}</span></div>`).join('');
+        html += img.map(x => `<div class="np-row" onclick="notchPreviewHide();navigateTo('images')" style="cursor:pointer"><i class="bi bi-hdd-stack" style="color:var(--accent);font-size:12px"></i><span class="np-name">${esc(x.name)}</span><span class="text-muted text-sm">${x.size_human||''}</span></div>`).join('');
       }
-      if (!img.length && !tpl.templates?.length) html += '<div class="np-empty">No images</div>';
+      if (!img.length && !templates.length) html += '<div class="np-empty">No images</div>';
     } else if (page === 'nodes') {
       const d = await api('GET', '/nodes').catch(()=>({nodes:[]}));
       const nodes = d.nodes || [];
       if (!nodes.length) { html += '<div class="np-empty">No nodes</div>'; }
       else { html += nodes.map(n => {
         const color = n.status === 'online' ? 'var(--success)' : 'var(--danger)';
-        return `<div class="np-row"><span class="dot" style="background:${color}"></span><span class="np-name">${esc(n.alias||n.ip)}</span><span class="text-muted text-sm">${n.status} · CPU ${Math.round(n.cpu_percent||0)}% · RAM ${(n.mem_used_gb||0).toFixed(1)}GB · ${(n.containers_total||0)} containers</span></div>`;
+        return `<div class="np-row" onclick="notchPreviewHide();navigateTo('nodes');setTimeout(()=>showNodeDetail('${esc(n.id)}','','${n.status}'),100)" style="cursor:pointer"><span class="dot" style="background:${color}"></span><span class="np-name">${esc(n.alias||n.ip)}</span><span class="text-muted text-sm">${n.status} · CPU ${Math.round(n.cpu_percent||0)}% · RAM ${(n.mem_used_gb||0).toFixed(1)}GB · ${(n.containers_total||0)} containers</span></div>`;
       }).join(''); }
     } else if (page === 'stacks') {
       const d = await api('GET', '/stacks/all').catch(()=>({stacks:[]}));
@@ -1797,12 +2315,12 @@ async function loadNotchPreview(page) {
       else { html += stacks.map(s => {
         const running = (s.containers||[]).filter(c=>c.status==='running').length;
         const total = (s.containers||[]).length;
-        return `<div class="np-row"><i class="bi bi-layers" style="color:var(--accent);font-size:12px"></i><span class="np-name">${esc(s.name)}</span><span class="text-muted text-sm">${running}/${total} · LB ${s.port||s.lb_port||'-'}</span></div>`;
+        return `<div class="np-row" onclick="notchPreviewHide();navigateTo('stacks')" style="cursor:pointer"><i class="bi bi-layers" style="color:var(--accent);font-size:12px"></i><span class="np-name">${esc(s.name)}</span><span class="text-muted text-sm">${running}/${total} · LB ${s.port||s.lb_port||'-'}</span></div>`;
       }).join(''); }
     } else if (page === 'networks') {
       const nets = await api('GET', '/networks').catch(()=>[]);
       if (!nets.length) { html += '<div class="np-empty">No networks</div>'; }
-      else { html += nets.map(n => `<div class="np-row"><i class="bi bi-globe2" style="color:var(--accent);font-size:12px"></i><span class="np-name">${esc(n.name)}</span><span class="text-muted text-sm">${n.mode} · ${n.subnet||''} GW:${n.gateway||''} · NAT:${n.nat?'On':'Off'} · ${(n.containers?.length||0)} containers</span></div>`).join(''); }
+      else { html += nets.map(n => `<div class="np-row" onclick="notchPreviewHide();navigateTo('networks')" style="cursor:pointer"><i class="bi bi-globe2" style="color:var(--accent);font-size:12px"></i><span class="np-name">${esc(n.name)}</span><span class="text-muted text-sm">${n.mode} · ${n.subnet||''} GW:${n.gateway||''} · NAT:${n.nat?'On':'Off'} · ${(n.containers?.length||0)} containers</span></div>`).join(''); }
     } else if (page === 'dashboard') {
       const [st, info] = await Promise.all([api('GET', '/status').catch(()=>({})), api('GET', '/system/info').catch(()=>({}))]);
       const cpuPct = info.cpu_usage != null ? Math.round(info.cpu_usage) : 0;
@@ -1822,25 +2340,21 @@ async function loadNotchPreview(page) {
       const containers = await api('GET', '/containers/all').catch(()=>[]);
       if (containers.length) {
         html += `<div style="margin:12px 0 8px;font-size:11px;font-weight:600;color:var(--text-muted);text-transform:uppercase">Containers (${containers.length})</div>`;
-        html += containers.slice(0, 8).map(x => {
-          const color = x.status === 'running' ? 'var(--success)' : x.status === 'building' ? 'var(--warning)' : 'var(--text-muted)';
-          return `<div class="np-row"><span class="dot" style="background:${color}"></span><span class="np-name">${esc(x.name)}</span><span class="badge badge-neutral" style="font-size:9px">${x.status}</span></div>`;
+        html += containers.map(x => {
+          const color = x.status === 'running' ? 'var(--success)' : x.status === 'building' ? 'var(--warning)' : x.status === 'failed' ? 'var(--danger)' : 'var(--text-muted)';
+          return `<div class="np-row" onclick="notchPreviewHide();navigateTo('containers');setTimeout(()=>showContainerDetail('${esc(x.name)}','${x.node||'local'}'),100)" style="cursor:pointer"><span class="dot" style="background:${color}"></span><span class="np-name">${esc(x.name)}</span><span class="badge ${getStatusBadgeClass(x.status)}" style="font-size:9px">${getStatusLabel(x.status)}</span></div>`;
         }).join('');
-        if (containers.length > 8) html += `<div class="np-empty">+${containers.length - 8} more</div>`;
       }
     } else if (page === 'settings') {
-      html += `<div class="np-row"><i class="bi bi-person-gear" style="color:var(--text-muted);font-size:12px"></i><span class="np-name">Account</span><span class="text-muted text-sm">Change password</span></div>`;
-      html += `<div class="np-row"><i class="bi bi-server" style="color:var(--text-muted);font-size:12px"></i><span class="np-name">Server</span><span class="text-muted text-sm">Bind, refresh, autostart</span></div>`;
-      html += `<div class="np-row"><i class="bi bi-diagram-3" style="color:var(--text-muted);font-size:12px"></i><span class="np-name">Remote & SSH</span><span class="text-muted text-sm">Management, port</span></div>`;
-      html += `<div class="np-row"><i class="bi bi-info-circle" style="color:var(--text-muted);font-size:12px"></i><span class="np-name">About</span><span class="text-muted text-sm">Cache, storage</span></div>`;
-      html += `<div class="np-row"><i class="bi bi-exclamation-triangle" style="color:var(--danger);font-size:12px"></i><span class="np-name" style="color:var(--danger)">Danger Zone</span><span class="text-muted text-sm">Restart, uninstall</span></div>`;
+      html += `<div class="np-row" onclick="notchPreviewHide();navigateTo('settings');setTimeout(()=>showSettingsSection('account'),100)" style="cursor:pointer"><i class="bi bi-person-gear" style="color:var(--text-muted);font-size:12px"></i><span class="np-name">Account</span><span class="text-muted text-sm">Change password</span></div>`;
+      html += `<div class="np-row" onclick="notchPreviewHide();navigateTo('settings');setTimeout(()=>showSettingsSection('server'),100)" style="cursor:pointer"><i class="bi bi-server" style="color:var(--text-muted);font-size:12px"></i><span class="np-name">Server</span><span class="text-muted text-sm">Bind, refresh, autostart</span></div>`;
+      html += `<div class="np-row" onclick="notchPreviewHide();navigateTo('settings');setTimeout(()=>showSettingsSection('remote'),100)" style="cursor:pointer"><i class="bi bi-diagram-3" style="color:var(--text-muted);font-size:12px"></i><span class="np-name">Remote & SSH</span><span class="text-muted text-sm">Management, port</span></div>`;
+      html += `<div class="np-row" onclick="notchPreviewHide();navigateTo('settings');setTimeout(()=>showSettingsSection('about'),100)" style="cursor:pointer"><i class="bi bi-info-circle" style="color:var(--text-muted);font-size:12px"></i><span class="np-name">About</span><span class="text-muted text-sm">Cache, storage</span></div>`;
+      html += `<div class="np-row" onclick="notchPreviewHide();navigateTo('settings');setTimeout(()=>showSettingsSection('danger'),100)" style="cursor:pointer"><i class="bi bi-exclamation-triangle" style="color:var(--danger);font-size:12px"></i><span class="np-name" style="color:var(--danger)">Danger Zone</span><span class="text-muted text-sm">Restart, uninstall</span></div>`;
     } else if (page === 'logs') {
-      html += `<div class="np-row"><i class="bi bi-terminal" style="color:var(--text-muted);font-size:12px"></i><span class="np-name">Live Log Viewer</span><span class="text-muted text-sm">Colorize · Pause · Filter</span></div>`;
-      html += `<div class="np-row"><i class="bi bi-funnel" style="color:var(--text-muted);font-size:12px"></i><span class="np-name">Filter: All / Info / Warn / Error</span></div>`;
-      html += `<div class="np-row"><i class="bi bi-arrow-clockwise" style="color:var(--text-muted);font-size:12px"></i><span class="np-name">Auto-refresh every 3s</span></div>`;
+      html += `<div class="np-row" onclick="notchPreviewHide();navigateTo('logs')" style="cursor:pointer"><i class="bi bi-terminal" style="color:var(--text-muted);font-size:12px"></i><span class="np-name">Live Log Viewer</span><span class="text-muted text-sm">Colorize · Pause · Filter</span></div>`;
     } else if (page === 'shell') {
-      html += `<div class="np-row"><i class="bi bi-terminal" style="color:var(--text-muted);font-size:12px"></i><span class="np-name">Core Shell</span><span class="text-muted text-sm">WebSocket terminal</span></div>`;
-      html += `<div class="np-row"><i class="bi bi-hdd-network" style="color:var(--text-muted);font-size:12px"></i><span class="np-name">Select node (local + remotos)</span></div>`;
+      html += `<div class="np-row" onclick="notchPreviewHide();navigateTo('shell')" style="cursor:pointer"><i class="bi bi-terminal" style="color:var(--text-muted);font-size:12px"></i><span class="np-name">Core Shell</span><span class="text-muted text-sm">WebSocket terminal</span></div>`;
     } else if (page === 'backups') {
       const d = await api('GET', '/backups').catch(()=>({routines:[]}));
       const r = d.routines || [];
@@ -1848,7 +2362,7 @@ async function loadNotchPreview(page) {
       else { html += r.map(b => {
         const lastRun = b.last_run ? new Date(b.last_run).toLocaleString() : 'Never';
         const statusColor = b.last_status === 'success' ? 'var(--success)' : b.last_status === 'failed' ? 'var(--danger)' : 'var(--text-muted)';
-        return `<div class="np-row"><i class="bi bi-cloud-arrow-up" style="color:var(--accent);font-size:12px"></i><span class="np-name">${esc(b.name)}</span><span class="text-muted text-sm">${b.schedule||'-'} · Retention: ${b.retention||30}d · Last: ${lastRun}</span><span style="width:6px;height:6px;border-radius:50%;background:${statusColor};flex-shrink:0"></span></div>`;
+        return `<div class="np-row" onclick="notchPreviewHide();navigateTo('backups')" style="cursor:pointer"><i class="bi bi-cloud-arrow-up" style="color:var(--accent);font-size:12px"></i><span class="np-name">${esc(b.name)}</span><span class="text-muted text-sm">${b.schedule||'-'} · Retention: ${b.retention||30}d · Last: ${lastRun}</span><span style="width:6px;height:6px;border-radius:50%;background:${statusColor};flex-shrink:0"></span></div>`;
       }).join(''); }
     }
   } catch(e) { html += `<div class="np-empty">Failed to load</div>`; }
@@ -1896,5 +2410,14 @@ function openFooterModal() {
   `);
 }
 
+/* ═══════ THEME TOGGLE ═══════ */
+function getTheme() { return localStorage.getItem('ank_theme') || document.documentElement.getAttribute('data-theme') || 'dark'; }
+function setTheme(theme) { document.documentElement.setAttribute('data-theme', theme); localStorage.setItem('ank_theme', theme); document.querySelector('meta[name="theme-color"]')?.setAttribute('content', theme === 'dark' ? '#0a0d12' : '#ffffff'); }
+function toggleTheme() { setTheme(getTheme() === 'dark' ? 'light' : 'dark'); }
+
 /* ═══════ INIT ═══════ */
 if (isLoggedIn) { showApp(); detectWsProtocol().then(() => startRefreshTimer()); }
+// Theme toggle listeners
+document.getElementById('theme-toggle-login')?.addEventListener('click', toggleTheme);
+document.getElementById('theme-toggle-mobile')?.addEventListener('click', toggleTheme);
+document.getElementById('theme-toggle-desktop')?.addEventListener('click', toggleTheme);

@@ -296,12 +296,17 @@ if [ "$SSH_ENABLED" = "1" ] && [ -f "$ROOTFS/usr/sbin/sshd" ]; then
             log "Password set via shadow (openssl)"
         fi
     fi
-    # Generate host keys if missing
-    [ ! -f "$ROOTFS/etc/ssh/ssh_host_rsa_key" ] && \
-        chroot "$ROOTFS" /usr/bin/ssh-keygen -A 2>/dev/null || true
-    # Ensure /dev/null exists inside chroot for sshd
+    # Generate host keys if missing (needs /dev/urandom + /proc)
+    mkdir -p "$ROOTFS/dev" 2>/dev/null
     [ -e "$ROOTFS/dev/null" ] || mknod "$ROOTFS/dev/null" c 1 3 2>/dev/null
-    chmod 666 "$ROOTFS/dev/null" 2>/dev/null
+    [ -e "$ROOTFS/dev/urandom" ] || mknod "$ROOTFS/dev/urandom" c 1 9 2>/dev/null
+    [ -e "$ROOTFS/dev/random" ] || mknod "$ROOTFS/dev/random" c 1 8 2>/dev/null
+    chmod 666 "$ROOTFS/dev/null" "$ROOTFS/dev/urandom" "$ROOTFS/dev/random" 2>/dev/null
+    # Ensure /proc is mounted (ssh-keygen needs it)
+    mountpoint -q "$ROOTFS/proc" 2>/dev/null || mount -t proc proc "$ROOTFS/proc" 2>/dev/null
+    [ ! -f "$ROOTFS/etc/ssh/ssh_host_rsa_key" ] && \
+        chroot "$ROOTFS" /usr/bin/ssh-keygen -A 2>&1 || true
+    umount "$ROOTFS/proc" 2>/dev/null
 
     # Start sshd (no -D: sshd daemonizes itself via fork, survives parent exit)
     nohup chroot "$ROOTFS" /usr/sbin/sshd \
@@ -310,6 +315,7 @@ if [ "$SSH_ENABLED" = "1" ] && [ -f "$ROOTFS/usr/sbin/sshd" ]; then
         -o "PasswordAuthentication=yes" \
         -o "PermitRootLogin=yes" \
         -o "ChallengeResponseAuthentication=no" \
+        -o "UsePAM=no" \
         </dev/null >/dev/null 2>&1 &
     SSHD_PID=$!
     sleep 2
@@ -317,6 +323,7 @@ if [ "$SSH_ENABLED" = "1" ] && [ -f "$ROOTFS/usr/sbin/sshd" ]; then
         log "sshd started on port $SSH_PORT (PID: $SSHD_PID)"
     else
         log "ERROR: sshd failed to start on port $SSH_PORT"
+        chroot "$ROOTFS" /usr/sbin/sshd -p "$SSH_PORT" -t 2>&1 | head -5 | while read -r line; do log "  sshd: $line"; done || true
     fi
 else
     log "sshd disabled or sshd not found"

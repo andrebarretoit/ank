@@ -50,19 +50,54 @@ _json_bool() {
 # ============================================================
 # HELPER: API GET via curl
 # ============================================================
+_ank_login() {
+    local user=$(_json_val "$CONFIG_FILE" "username")
+    local pass=$(_json_val "$CONFIG_FILE" "password")
+    [ -z "$user" ] && user="ank"
+    [ -z "$pass" ] && pass="ank123"
+    local resp=$(curl -s -X POST -H "Content-Type: application/json" \
+        -d "{\"username\":\"$user\",\"password\":\"$pass\"}" \
+        "http://127.0.0.1:${ANK_PORT:-8001}/api/auth/login" 2>/dev/null)
+    ANK_TOKEN=$(echo "$resp" | python3 -c "import sys,json; print(json.load(sys.stdin).get('token',''))" 2>/dev/null)
+    [ -n "$ANK_TOKEN" ] && return 0 || return 1
+}
+
+_ensure_token() {
+    [ -n "$ANK_TOKEN" ] && return 0
+    _ank_login 2>/dev/null
+}
+
+ANK_TOKEN=""
+_ank_login 2>/dev/null
+
 _api_get() {
     local path="$1"
-    curl -s "http://127.0.0.1:${ANK_PORT:-8001}${path}" 2>/dev/null
+    _ensure_token
+    if [ -n "$ANK_TOKEN" ]; then
+        curl -s -H "Authorization: Bearer $ANK_TOKEN" "http://127.0.0.1:${ANK_PORT:-8001}${path}" 2>/dev/null
+    else
+        curl -s "http://127.0.0.1:${ANK_PORT:-8001}${path}" 2>/dev/null
+    fi
 }
 
 _api_post() {
     local path="$1" data="$2"
-    curl -s -X POST -H "Content-Type: application/json" -d "$data" "http://127.0.0.1:${ANK_PORT:-8001}${path}" 2>/dev/null
+    _ensure_token
+    if [ -n "$ANK_TOKEN" ]; then
+        curl -s -X POST -H "Content-Type: application/json" -H "Authorization: Bearer $ANK_TOKEN" -d "$data" "http://127.0.0.1:${ANK_PORT:-8001}${path}" 2>/dev/null
+    else
+        curl -s -X POST -H "Content-Type: application/json" -d "$data" "http://127.0.0.1:${ANK_PORT:-8001}${path}" 2>/dev/null
+    fi
 }
 
 _api_delete() {
     local path="$1"
-    curl -s -X DELETE "http://127.0.0.1:${ANK_PORT:-8001}${path}" 2>/dev/null
+    _ensure_token
+    if [ -n "$ANK_TOKEN" ]; then
+        curl -s -X DELETE -H "Authorization: Bearer $ANK_TOKEN" "http://127.0.0.1:${ANK_PORT:-8001}${path}" 2>/dev/null
+    else
+        curl -s -X DELETE "http://127.0.0.1:${ANK_PORT:-8001}${path}" 2>/dev/null
+    fi
 }
 
 # ============================================================
@@ -462,7 +497,7 @@ ank_ps() {
     printf "%s\n" "----------------------------------------------------------------------"
     local found=0
     if command -v curl >/dev/null 2>&1; then
-        local json=$(curl -s "http://127.0.0.1:${ANK_PORT:-8001}/api/containers/all" 2>/dev/null)
+        local json=$(_api_get "/api/containers/all")
         if [ -n "$json" ] && [ "$json" != "null" ]; then
             local i=0
             while true; do
@@ -551,8 +586,18 @@ ank_restart() {
     local node=$(_find_container_node "$name")
     if [ "$node" != "local" ]; then
         echo "Restarting '$name' on node $(_node_alias "$node")..."
-        _api_post "/api/nodes/${node}/containers/${name}/restart" "{}"
-        echo "Restart command sent"
+        local resp=$(_api_post "/api/nodes/${node}/containers/${name}/restart" "{}")
+        if echo "$resp" | grep -q "Unauthorized"; then
+            echo "ERROR: Unauthorized — token invalid, retrying login..."
+            ANK_TOKEN=""
+            _ank_login 2>/dev/null
+            resp=$(_api_post "/api/nodes/${node}/containers/${name}/restart" "{}")
+        fi
+        if echo "$resp" | grep -qi "error"; then
+            echo "ERROR: $resp"
+        else
+            echo "Restart command sent"
+        fi
     else
         sh "$SCRIPTS_DIR/container.sh" stop "$name" >/dev/null 2>&1
         sleep 1

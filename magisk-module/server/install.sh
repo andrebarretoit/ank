@@ -134,32 +134,26 @@ download_alpine() {
             "https://mirror.uepg.br/alpine/v3.20/releases/${ARCH_NAME}" \
             "https://alpine.mirror.lstn.net/alpine/v3.20/releases/${ARCH_NAME}"; do
             local URL="${BASE_URL}/alpine-minirootfs-${VER}-${ARCH_NAME}.tar.gz"
-            log INFO "Downloading Alpine ${VER} ${ARCH_NAME}..."
-            log INFO "URL: $URL"
+            log INFO "Downloading Alpine ${VER} for ${ARCH_NAME}..."
             rm -f "$OUT_TAR"
-        echo "[ANK-INSTALL] Downloading Alpine ${VER} for ${ARCH_NAME}..."
-        echo "[ANK-INSTALL] URL: $URL"
-        $DL "$OUT_TAR" "$URL" 2>&1
-        echo "[ANK-INSTALL] Download exit code: $?"
+            $DL "$OUT_TAR" "$URL" 2>&1
             if [ -s "$OUT_TAR" ]; then
                 local FSIZE=$(stat -c%s "$OUT_TAR" 2>/dev/null || echo 0)
                 if [ "$FSIZE" -gt 100000 ]; then
                     local HEAD=$(dd if="$OUT_TAR" bs=1 count=2 2>/dev/null | od -A n -t x1 | tr -d ' ')
                     if [ "$HEAD" = "1f8b" ]; then
                         log OK "Alpine ${VER} downloaded (${FSIZE} bytes)"
-                        echo "[ANK-INSTALL] OK: Alpine ${VER} downloaded (${FSIZE} bytes)"
                         return 0
                     fi
                 fi
-                echo "[ANK-INSTALL] WARN: Invalid download for ${VER} from $(echo $URL | cut -d/ -f3) (${FSIZE} bytes)"
+                log WARN "Invalid download from $(echo $URL | cut -d/ -f3) (${FSIZE} bytes)"
                 rm -f "$OUT_TAR"
             else
-                echo "[ANK-INSTALL] WARN: Download failed from $(echo $URL | cut -d/ -f3), retrying..."
+                log WARN "Download failed from $(echo $URL | cut -d/ -f3), retrying..."
                 sleep 2
             fi
         done
-        log WARN "Invalid download for ${VER}, trying next version..."
-        echo "[ANK-INSTALL] WARN: All mirrors failed for ${VER}, trying next version..."
+        log WARN "All mirrors failed for ${VER}, trying next version..."
     done
     return 1
 }
@@ -242,84 +236,39 @@ cat > "$ANK_DIR/mode" << MODEEOF
 MODEEOF
 log INFO "Mode: $MODE (chroot=$CHROOT netns=$NETNS pidns=$PIDNS overlay=$OVERLAY cgroups=$CGROUPS)"
 
-# --- STEP 2: Find or build ankcore tarball ---
-log STEP "2/4 > Rootfs + Python3..."
-echo "[ANK-INSTALL] STEP 2/4: Rootfs + Python3..."
+# --- STEP 2: Get tarball (prebuild or build from scratch) ---
+log STEP "2/4 > ANK-Engine..."
 
-# Tarball is always inside the ZIP at ankfs/
-ANKCORE="$MODPATH/ankfs/ankcore-${ARCH_NAME}.tar.gz"
-if [ ! -s "$ANKCORE" ]; then
-    log INFO "Extracting tarball from ZIP..."
-    echo "[ANK-INSTALL] Extracting tarball from ZIP..."
-    unzip -o "$ZIPFILE" -d "$MODPATH" >>"$LOG_FILE" 2>&1
-    rm -rf "$MODPATH/META-INF"
-    ANKCORE="$MODPATH/ankfs/ankcore-${ARCH_NAME}.tar.gz"
-fi
-
-TARBALL_FOUND=0
-[ -s "$ANKCORE" ] && TARBALL_FOUND=1
-
-# Shared Alpine tarball cache (used for both ankfs build-from-scratch AND container image)
+TARBALL="$ANK_DIR/cache/ank-prebuild-${ARCH_NAME}.tar.gz"
 ALPINE_CACHE="$ANK_DIR/cache/alpine-minirootfs-${ARCH_NAME}.tar.gz"
 
-if [ "$TARBALL_FOUND" -eq 1 ]; then
-    # ===== PATH A: Tarball exists -> extract as ankfs =====
-    log INFO "ankcore tarball found: $(stat -c%s "$ANKCORE" 2>/dev/null || echo 0) bytes"
-    echo "[ANK-INSTALL] Extracting ankcore tarball..."
-    rm -rf "$ANKFS"
-    mkdir -p "$ANKFS"
-    cd "$ANKFS" && tar xzf "$ANKCORE" 2>>"$LOG_FILE"; cd /
-    log OK "ankcore extracted"
-    echo "[ANK-INSTALL] OK: ankcore extracted"
+# Try prebuild from ZIP
+PREBUILD="$MODPATH/ankfs/ank-prebuild-${ARCH_NAME}.tar.gz"
+if [ ! -s "$PREBUILD" ]; then
+    log INFO "Extracting ank-prebuild..."
+    unzip -o "$ZIPFILE" -d "$MODPATH" >>"$LOG_FILE" 2>&1
+    rm -rf "$MODPATH/META-INF"
+    PREBUILD="$MODPATH/ankfs/ank-prebuild-${ARCH_NAME}.tar.gz"
+fi
 
-    # Ensure /dev nodes exist for Python/PTY (no devtmpfs on kernel 3.10)
-    mkdir -p "$ANKFS/dev"
-    [ -e "$ANKFS/dev/null" ] || mknod "$ANKFS/dev/null" c 1 3 2>/dev/null
-    [ -e "$ANKFS/dev/urandom" ] || mknod "$ANKFS/dev/urandom" c 1 9 2>/dev/null
-    [ -e "$ANKFS/dev/random" ] || mknod "$ANKFS/dev/random" c 1 8 2>/dev/null
-    [ -e "$ANKFS/dev/tty" ] || mknod "$ANKFS/dev/tty" c 5 0 2>/dev/null
-    [ -e "$ANKFS/dev/ptmx" ] || mknod "$ANKFS/dev/ptmx" c 5 2 2>/dev/null
-    [ -e "$ANKFS/dev/console" ] || mknod "$ANKFS/dev/console" c 5 1 2>/dev/null
-    chmod 666 "$ANKFS/dev/null" "$ANKFS/dev/urandom" "$ANKFS/dev/random" "$ANKFS/dev/tty" "$ANKFS/dev/ptmx" "$ANKFS/dev/console" 2>/dev/null
-    log OK "device nodes created"
-    echo "[ANK-INSTALL] OK: device nodes created"
-
-    # Ensure container base image exists (download if needed)
-    IMG_DIR="$ANK_DIR/images/$BASE_IMAGE"
-    if [ ! -e "$IMG_DIR/bin/sh" ] && [ ! -e "$IMG_DIR/bin/busybox" ]; then
-        log INFO "Container base image not found, downloading..."
-        echo "[ANK-INSTALL] Container base image not found, downloading Alpine..."
-        if [ ! -s "$ALPINE_CACHE" ]; then
-            download_alpine "$ALPINE_CACHE" || die "Alpine download failed"
-        fi
-        echo "[ANK-INSTALL] Extracting container base image..."
-        extract_rootfs "$ALPINE_CACHE" "$IMG_DIR" || die "Failed to extract container base image"
-        # Configure repos + DNS on image
-        mkdir -p "$IMG_DIR/etc/apk" "$IMG_DIR/var/cache/apk"
-        echo "http://dl-cdn.alpinelinux.org/alpine/v3.20/main" > "$IMG_DIR/etc/apk/repositories"
-        echo "http://dl-cdn.alpinelinux.org/alpine/v3.20/community" >> "$IMG_DIR/etc/apk/repositories"
-        echo "nameserver 8.8.8.8" > "$IMG_DIR/etc/resolv.conf"
-        echo "nameserver 8.8.4.4" >> "$IMG_DIR/etc/resolv.conf"
-        echo "127.0.0.1 localhost" > "$IMG_DIR/etc/hosts"
-        log OK "Container base image ready"
-        echo "[ANK-INSTALL] OK: Container base image ready"
-    else
-        echo "[ANK-INSTALL] Container base image already exists"
-    fi
+if [ -s "$PREBUILD" ]; then
+    # PATH A: Prebuild tarball found → use it
+    log INFO "Using prebuilt: $(basename "$PREBUILD")"
+    cp "$PREBUILD" "$TARBALL"
+    log OK "Tarball ready"
 else
-    # ===== PATH B: No tarball -> build ankfs from scratch + save image =====
-    log WARN "ankcore tarball not found, building from scratch..."
-    echo "[ANK-INSTALL] WARN: ankcore tarball not found, building from scratch..."
+    # PATH B: No tarball → download Alpine + install packages
+    log WARN "ank-prebuild not found, building from scratch..."
 
     # Download Alpine minirootfs
     if [ ! -s "$ALPINE_CACHE" ]; then
         download_alpine "$ALPINE_CACHE" || die "Alpine download failed"
     fi
 
-    # Build ankfs from Alpine
+    # Build tarball from Alpine
     BUILDROOT="$ANK_DIR/cache/buildroot"
     rm -rf "$BUILDROOT"
-    extract_rootfs "$ALPINE_CACHE" "$BUILDROOT" || die "Failed to extract Alpine for ankfs"
+    extract_rootfs "$ALPINE_CACHE" "$BUILDROOT" || die "Failed to extract Alpine"
 
     # Setup DNS + repos
     mkdir -p "$BUILDROOT/etc" "$BUILDROOT/etc/apk" "$BUILDROOT/var/cache/apk"
@@ -329,93 +278,125 @@ else
     echo "https://dl-cdn.alpinelinux.org/alpine/v3.20/main" > "$BUILDROOT/etc/apk/repositories"
     echo "https://dl-cdn.alpinelinux.org/alpine/v3.20/community" >> "$BUILDROOT/etc/apk/repositories"
 
-    # Install python3 + deps in ankfs
-    log INFO "Installing python3, openssl, openssh in chroot..."
-    echo "[ANK-INSTALL] Installing python3, openssl, openssh, bash..."
+    # Create /dev nodes in chroot (needed by openssh post-install)
+    mkdir -p "$BUILDROOT/dev"
+    [ -e "$BUILDROOT/dev/null" ] || mknod "$BUILDROOT/dev/null" c 1 3 2>/dev/null
+    [ -e "$BUILDROOT/dev/urandom" ] || mknod "$BUILDROOT/dev/urandom" c 1 9 2>/dev/null
+    [ -e "$BUILDROOT/dev/random" ] || mknod "$BUILDROOT/dev/random" c 1 8 2>/dev/null
+    [ -e "$BUILDROOT/dev/tty" ] || mknod "$BUILDROOT/dev/tty" c 5 0 2>/dev/null
+    [ -e "$BUILDROOT/dev/ptmx" ] || mknod "$BUILDROOT/dev/ptmx" c 5 2 2>/dev/null
+    chmod 666 "$BUILDROOT/dev/null" "$BUILDROOT/dev/urandom" "$BUILDROOT/dev/random" "$BUILDROOT/dev/tty" "$BUILDROOT/dev/ptmx" 2>/dev/null
     mount -t proc proc "$BUILDROOT/proc" 2>/dev/null
-    # apk is in /sbin on Alpine minirootfs — set PATH explicitly
-    chroot "$BUILDROOT" /bin/sh -c "export PATH=/sbin:/usr/sbin:/bin:/usr/bin; apk update && apk add --no-cache python3 openssl openssh bash busybox shadow" 2>>"$LOG_FILE"
-    RET=$?
+
+    # Install ALL packages using apk --root (no chroot needed)
+    log INFO "Installing packages..."
+    REPO_MAIN="https://dl-cdn.alpinelinux.org/alpine/v3.20/main"
+    REPO_COMMUNITY="https://dl-cdn.alpinelinux.org/alpine/v3.20/community"
+    LD_PATH=$(ls "$BUILDROOT"/lib/ld-musl-*.so.* 2>/dev/null | head -1)
+    APK="$BUILDROOT/sbin/apk"
+    if [ -n "$LD_PATH" ] && [ -x "$LD_PATH" ] && [ -x "$APK" ]; then
+        "$LD_PATH" "$APK" --root "$BUILDROOT" \
+            --repository "$REPO_MAIN" \
+            --repository "$REPO_COMMUNITY" \
+            --allow-untrusted \
+            add --no-cache python3 openssl openssh bash busybox shadow sshpass nginx 2>>"$LOG_FILE"
+        RET=$?
+    elif [ -x "$APK" ]; then
+        "$APK" --root "$BUILDROOT" \
+            --repository "$REPO_MAIN" \
+            --repository "$REPO_COMMUNITY" \
+            --allow-untrusted \
+            add --no-cache python3 openssl openssh bash busybox shadow sshpass nginx 2>>"$LOG_FILE"
+        RET=$?
+    else
+        die "apk not found in buildroot"
+    fi
     umount "$BUILDROOT/proc" 2>/dev/null
-    [ $RET -ne 0 ] && die "Failed to install packages in chroot"
-    echo "[ANK-INSTALL] OK: Packages installed"
+    [ $RET -ne 0 ] && die "Failed to install packages"
+    log OK "All packages installed"
 
     # Setup busybox symlinks
     if [ -f "$BUILDROOT/bin/busybox" ]; then
-        chroot "$BUILDROOT" /bin/busybox --install -s /bin 2>/dev/null
+        if [ -n "$LD_PATH" ] && [ -x "$LD_PATH" ]; then
+            "$LD_PATH" "$BUILDROOT/bin/busybox" --install -s "$BUILDROOT/bin" 2>/dev/null || true
+        fi
     fi
     [ ! -f "$BUILDROOT/bin/sh" ] && ln -sf /bin/busybox "$BUILDROOT/bin/sh" 2>/dev/null
 
-    # Save as ankfs
-    rm -rf "$ANKFS"
-    mv "$BUILDROOT" "$ANKFS"
-    log OK "ankfs built from scratch"
-
-    # Save clean Alpine as container base image (same download, no packages installed)
-    IMG_DIR="$ANK_DIR/images/$BASE_IMAGE"
-    extract_rootfs "$ALPINE_CACHE" "$IMG_DIR" || die "Failed to extract container base image"
-    mkdir -p "$IMG_DIR/etc/apk" "$IMG_DIR/var/cache/apk"
-    echo "http://dl-cdn.alpinelinux.org/alpine/v3.20/main" > "$IMG_DIR/etc/apk/repositories"
-    echo "http://dl-cdn.alpinelinux.org/alpine/v3.20/community" >> "$IMG_DIR/etc/apk/repositories"
-    echo "nameserver 8.8.8.8" > "$IMG_DIR/etc/resolv.conf"
-    echo "nameserver 8.8.4.4" >> "$IMG_DIR/etc/resolv.conf"
-    echo "127.0.0.1 localhost" > "$IMG_DIR/etc/hosts"
-    log OK "Container base image saved"
+    # Save as tarball
+    rm -f "$TARBALL"
+    cd "$BUILDROOT" && tar czf "$TARBALL" * 2>>"$LOG_FILE"; cd /
+    RET=$?
+    rm -rf "$BUILDROOT"
+    [ $RET -ne 0 ] && [ ! -s "$TARBALL" ] && die "Failed to create tarball"
+    log OK "Tarball built ($(stat -c%s "$TARBALL" 2>/dev/null || echo 0) bytes)"
 fi
 
-# --- STEP 2.5: Build ank-alpinebase-3.20 (pre-built container base with openssh/bash/busybox) ---
-log STEP "2.5/4 > Building ank-alpinebase-3.20..."
-echo "[ANK-INSTALL] STEP 2.5/4: Building ank-alpinebase-3.20..."
+# --- STEP 2.5: Build ANKFS (tarball + engine) + ANK-ALPINEBASE (tarball limpo) ---
+log STEP "2.5/4 > Building ANKFS + ANK-ALPINEBASE..."
+
+# --- ANKFS = tarball + engine files ---
+rm -rf "$ANKFS"
+mkdir -p "$ANKFS"
+cd "$ANKFS" && tar xzf "$TARBALL" 2>>"$LOG_FILE"; cd /
+[ -f "$ANKFS/bin/sh" ] || [ -L "$ANKFS/bin/sh" ] || die "Failed to extract ANKFS from tarball"
+
+# Device nodes for ANKFS
+mkdir -p "$ANKFS/dev"
+[ -e "$ANKFS/dev/null" ] || mknod "$ANKFS/dev/null" c 1 3 2>/dev/null
+[ -e "$ANKFS/dev/urandom" ] || mknod "$ANKFS/dev/urandom" c 1 9 2>/dev/null
+[ -e "$ANKFS/dev/random" ] || mknod "$ANKFS/dev/random" c 1 8 2>/dev/null
+[ -e "$ANKFS/dev/tty" ] || mknod "$ANKFS/dev/tty" c 5 0 2>/dev/null
+[ -e "$ANKFS/dev/ptmx" ] || mknod "$ANKFS/dev/ptmx" c 5 2 2>/dev/null
+chmod 666 "$ANKFS/dev/null" "$ANKFS/dev/urandom" "$ANKFS/dev/random" "$ANKFS/dev/tty" "$ANKFS/dev/ptmx" 2>/dev/null
+
+# DNS in ANKFS
+mkdir -p "$ANKFS/etc"
+echo "nameserver 8.8.8.8" > "$ANKFS/etc/resolv.conf"
+echo "nameserver 8.8.4.4" >> "$ANKFS/etc/resolv.conf"
+echo "127.0.0.1 localhost" > "$ANKFS/etc/hosts"
+
+# System users in ANKFS
+for u in nginx nobody; do
+    grep -q "^${u}:" "$ANKFS/etc/passwd" 2>/dev/null || \
+        echo "${u}:x:100:65534::/dev/null:/sbin/nologin" >> "$ANKFS/etc/passwd"
+done
+for g in nginx; do
+    grep -q "^${g}:" "$ANKFS/etc/group" 2>/dev/null || \
+        echo "${g}:x:100:" >> "$ANKFS/etc/group"
+done
+
+log OK "ANKFS built"
+
+# --- ANK-ALPINEBASE = tarball limpo (pra containers) ---
 ANKBASE="$ANK_DIR/images/ank-alpinebase-3.20"
-if [ ! -d "$ANKBASE/bin" ]; then
-    IMG_DIR="$ANK_DIR/images/$BASE_IMAGE"
-    if [ -d "$IMG_DIR" ]; then
-        # Verify the image has /sbin/apk
-        if [ ! -f "$IMG_DIR/sbin/apk" ] && [ ! -L "$IMG_DIR/sbin/apk" ]; then
-            log WARN "Container base image missing /sbin/apk, re-extracting..."
-            echo "[ANK-INSTALL] Re-extracting container base image (missing apk)..."
-            rm -rf "$IMG_DIR"
-            extract_rootfs "$ALPINE_CACHE" "$IMG_DIR" 2>>"$LOG_FILE"
-        fi
-        cp -a "$IMG_DIR" "$ANKBASE"
-        echo "nameserver 8.8.8.8" > "$ANKBASE/etc/resolv.conf"
-        echo "nameserver 8.8.4.4" >> "$ANKBASE/etc/resolv.conf"
-        echo "127.0.0.1 localhost" > "$ANKBASE/etc/hosts"
-        echo "[ANK-INSTALL] Installing openssh, bash in ank-alpinebase-3.20..."
-        mount -t proc proc "$ANKBASE/proc" 2>/dev/null
-        APK_PKGS="busybox bash shadow openssh openssl"
-        APK_RETRIES=3
-        RET=1
-        for attempt in 1 2 3; do
-            echo "[ANK-INSTALL] apk add attempt $APK_RETRIES/$attempt..."
-            chroot "$ANKBASE" /sbin/apk add --no-cache $APK_PKGS 2>&1
-            RET=$?
-            if [ $RET -eq 0 ]; then
-                echo "[ANK-INSTALL] OK: All packages installed"
-                break
-            fi
-            echo "[ANK-INSTALL] WARN: apk add failed (rc=$RET), retrying in 3s..."
-            echo "[ANK-INSTALL] Waiting 3s before retry..."
-            sleep 3
-        done
-        umount "$ANKBASE/proc" 2>/dev/null
-        if [ $RET -ne 0 ]; then
-            # Retry individual failed packages
-            echo "[ANK-INSTALL] Retrying failed packages individually..."
-            mount -t proc proc "$ANKBASE/proc" 2>/dev/null
-            for pkg in $APK_PKGS; do
-                if [ ! -f "$ANKBASE/usr/bin/$pkg" ] && [ ! -f "$ANKBASE/bin/$pkg" ] && [ ! -f "$ANKBASE/usr/sbin/$pkg" ] && [ ! -L "$ANKBASE/bin/$pkg" ]; then
-                    echo "[ANK-INSTALL] Installing $pkg individually..."
-                    chroot "$ANKBASE" /sbin/apk add --no-cache "$pkg" 2>&1 || echo "[ANK-INSTALL] WARN: $pkg install failed"
-                fi
-            done
-            umount "$ANKBASE/proc" 2>/dev/null
-            log WARN "ank-alpinebase-3.20 apk install had failures, containers will install packages individually"
-        else
-            chroot "$ANKBASE" /bin/busybox --install -s /bin 2>/dev/null
-            sed -i 's|^root:[^:]*:[^:]*:[^:]*:[^:]*:[^:]*:.*|root:x:0:0:root:/root:/bin/bash|' "$ANKBASE/etc/passwd" 2>/dev/null
-            mkdir -p "$ANKBASE/etc/ssh" "$ANKBASE/run/sshd"
-            cat > "$ANKBASE/etc/ssh/sshd_config" << 'SSHEOF'
+log INFO "Building ANK-ALPINEBASE..."
+rm -rf "$ANKBASE"
+mkdir -p "$ANKBASE"
+cd "$ANKBASE" && tar xzf "$TARBALL" 2>>"$LOG_FILE"; cd /
+[ -f "$ANKBASE/bin/sh" ] || [ -L "$ANKBASE/bin/sh" ] || die "Failed to extract ANK-ALPINEBASE from tarball"
+
+# Device nodes for ANK-ALPINEBASE
+mkdir -p "$ANKBASE/dev"
+[ -e "$ANKBASE/dev/null" ] || mknod "$ANKBASE/dev/null" c 1 3 2>/dev/null
+[ -e "$ANKBASE/dev/urandom" ] || mknod "$ANKBASE/dev/urandom" c 1 9 2>/dev/null
+[ -e "$ANKBASE/dev/random" ] || mknod "$ANKBASE/dev/random" c 1 8 2>/dev/null
+[ -e "$ANKBASE/dev/tty" ] || mknod "$ANKBASE/dev/tty" c 5 0 2>/dev/null
+[ -e "$ANKBASE/dev/ptmx" ] || mknod "$ANKBASE/dev/ptmx" c 5 2 2>/dev/null
+chmod 666 "$ANKBASE/dev/null" "$ANKBASE/dev/urandom" "$ANKBASE/dev/random" "$ANKBASE/dev/tty" "$ANKBASE/dev/ptmx" 2>/dev/null
+
+# DNS + repos for ANK-ALPINEBASE
+mkdir -p "$ANKBASE/etc/apk" "$ANKBASE/var/cache/apk"
+echo "http://dl-cdn.alpinelinux.org/alpine/v3.20/main" > "$ANKBASE/etc/apk/repositories"
+echo "http://dl-cdn.alpinelinux.org/alpine/v3.20/community" >> "$ANKBASE/etc/apk/repositories"
+echo "nameserver 8.8.8.8" > "$ANKBASE/etc/resolv.conf"
+echo "nameserver 8.8.4.4" >> "$ANKBASE/etc/resolv.conf"
+echo "127.0.0.1 localhost" > "$ANKBASE/etc/hosts"
+
+# SSH config for containers
+sed -i 's|^root:[^:]*:[^:]*:[^:]*:[^:]*:[^:]*:.*|root:x:0:0:root:/root:/bin/bash|' "$ANKBASE/etc/passwd" 2>/dev/null
+mkdir -p "$ANKBASE/etc/ssh" "$ANKBASE/run/sshd"
+cat > "$ANKBASE/etc/ssh/sshd_config" << 'SSHEOF'
 Port 22
 ListenAddress 0.0.0.0
 PermitRootLogin yes
@@ -426,70 +407,97 @@ AllowTcpForwarding no
 PidFile /run/sshd.pid
 Subsystem sftp internal-sftp
 SSHEOF
-            chroot "$ANKBASE" /usr/bin/ssh-keygen -A 2>>"$LOG_FILE" || true
-            mkdir -p "$ANKBASE/root/.ssh"
-            chmod 700 "$ANKBASE/root/.ssh"
-            touch "$ANKBASE/root/.ssh/authorized_keys"
-            chmod 600 "$ANKBASE/root/.ssh/authorized_keys"
-            rm -rf "$ANKBASE/opt/ank" 2>/dev/null
-            log OK "ank-alpinebase-3.20 built (openssh, bash, busybox, shadow)"
-        fi
+# Generate SSH host keys (needs /dev/urandom)
+mount -t proc proc "$ANKBASE/proc" 2>/dev/null
+chroot "$ANKBASE" /usr/bin/ssh-keygen -A 2>>"$LOG_FILE" || true
+umount "$ANKBASE/proc" 2>/dev/null
+mkdir -p "$ANKBASE/root/.ssh"
+chmod 700 "$ANKBASE/root/.ssh"
+touch "$ANKBASE/root/.ssh/authorized_keys"
+chmod 600 "$ANKBASE/root/.ssh/authorized_keys"
+
+# Security: no server files in container base image
+rm -rf "$ANKBASE/opt/ank" 2>/dev/null
+
+log OK "ANK-ALPINEBASE built"
+
+# Remove buildroot cache
+rm -rf "$ANK_DIR/cache/buildroot" 2>/dev/null
+
+# ===== HANDSHAKE: export tarball if build_tarball.sh exists =====
+EXPORT_SCRIPT="$MODPATH/server/scripts/build_tarball.sh"
+[ ! -f "$EXPORT_SCRIPT" ] && EXPORT_SCRIPT="$(dirname "$MODPATH")/server/scripts/build_tarball.sh"
+if [ -f "$EXPORT_SCRIPT" ]; then
+    log INFO "Exporting prebuilt engine..."
+    EXPORT_DIR="/sdcard/Download/ank-exports"
+    mkdir -p "$EXPORT_DIR"
+    EXPORT_OUT="$EXPORT_DIR/ank-prebuild-${ARCH_NAME}.tar.gz"
+    cp "$TARBALL" "$EXPORT_OUT" 2>>"$LOG_FILE"
+    if [ -s "$EXPORT_OUT" ]; then
+        log OK "Prebuild exported to $EXPORT_OUT"
+    else
+        log WARN "Export failed (non-critical)"
     fi
 else
-    log OK "ank-alpinebase-3.20 already exists"
+    log INFO "Export skipped (export script not available)"
+    # No export script → remove temp tarball after use
+    rm -f "$TARBALL"
 fi
 
-# --- Verify python3 in ankfs ---
-[ ! -f "$ANKFS/usr/bin/python3" ] && die "python3 not found in ankfs"
-log OK "python3 installed"
-echo "[ANK-INSTALL] OK: python3 installed"
+# --- Extract ZIP early (STEP 3 needs $SRC) ---
+SRC="$MODPATH"
+if [ ! -f "$SRC/server/server.py" ]; then
+    mkdir -p "$SRC"
+    unzip -o "$ZIPFILE" -d "$SRC" >>"$LOG_FILE" 2>&1
+    rm -rf "$SRC/META-INF"
+fi
 
-# System users in ankfs
-for u in nginx nobody; do
-    grep -q "^${u}:" "$ANKFS/etc/passwd" 2>/dev/null || \
-        echo "${u}:x:100:65534::/dev/null:/sbin/nologin" >> "$ANKFS/etc/passwd"
-done
-for g in nginx; do
-    grep -q "^${g}:" "$ANKFS/etc/group" 2>/dev/null || \
-        echo "${g}:x:100:" >> "$ANKFS/etc/group"
-done
-log OK "system users created"
-
-# DNS in ankfs
-mkdir -p "$ANKFS/etc"
-echo "nameserver 8.8.8.8" > "$ANKFS/etc/resolv.conf"
-echo "nameserver 8.8.4.4" >> "$ANKFS/etc/resolv.conf"
-echo "127.0.0.1 localhost" > "$ANKFS/etc/hosts"
-
-# --- STEP 3: openssh in ankfs ---
-log STEP "3/4 > openssh..."
-echo "[ANK-INSTALL] STEP 3/4: Configuring openssh..."
-# Setup DNS + mount proc for apk
+# --- STEP 3: ANK Core addons (config only - prebuild already has all packages) ---
+log STEP "3/4 > Configuring ANK Core addons..."
+# Setup DNS + mount proc (needed for ssh-keygen in chroot)
 mkdir -p "$ANKFS/etc/apk" "$ANKFS/var/cache/apk" 2>/dev/null
 echo "nameserver 8.8.8.8" > "$ANKFS/etc/resolv.conf" 2>/dev/null
 echo "nameserver 8.8.4.4" >> "$ANKFS/etc/resolv.conf" 2>/dev/null
 echo "https://dl-cdn.alpinelinux.org/alpine/v3.20/main" > "$ANKFS/etc/apk/repositories" 2>/dev/null
 echo "https://dl-cdn.alpinelinux.org/alpine/v3.20/community" >> "$ANKFS/etc/apk/repositories" 2>/dev/null
 mount -t proc proc "$ANKFS/proc" 2>/dev/null
-# apk is at /sbin/apk on Alpine minirootfs
-if [ -f "$ANKFS/sbin/apk" ] || [ -f "$ANKFS/usr/bin/apk" ]; then
-    echo "[ANK-INSTALL] Installing openssh in ankfs..."
-    chroot "$ANKFS" /bin/sh -c "export PATH=/sbin:/usr/sbin:/bin:/usr/bin; apk add --no-cache openssh openssl bash shadow" 2>&1 || log WARN "openssh install failed (non-fatal)"
-    if [ -d "$ANKFS/etc/ssh" ]; then
-        sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin yes/' "$ANKFS/etc/ssh/sshd_config" 2>/dev/null
-        sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication yes/' "$ANKFS/etc/ssh/sshd_config" 2>/dev/null
-        sed -i 's/^#\?ChallengeResponseAuthentication.*/ChallengeResponseAuthentication no/' "$ANKFS/etc/ssh/sshd_config" 2>/dev/null
-        sed -i '/^UsePAM/d' "$ANKFS/etc/ssh/sshd_config" 2>/dev/null
-        [ ! -f "$ANKFS/etc/ssh/ssh_host_rsa_key" ] && \
-            chroot "$ANKFS" /usr/bin/ssh-keygen -A 2>>"$LOG_FILE" || true
-        mkdir -p "$ANKFS/root/.ssh"
-        chmod 700 "$ANKFS/root/.ssh"
-        touch "$ANKFS/root/.ssh/authorized_keys"
-        chmod 600 "$ANKFS/root/.ssh/authorized_keys"
-        mkdir -p "$ANKFS/run/sshd"
-        log OK "openssh configured"
+
+# Configure sshd (prebuild already has openssh, bash, shadow installed)
+if [ -d "$ANKFS/etc/ssh" ]; then
+    sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin yes/' "$ANKFS/etc/ssh/sshd_config" 2>/dev/null
+    sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication yes/' "$ANKFS/etc/ssh/sshd_config" 2>/dev/null
+    sed -i 's/^#\?ChallengeResponseAuthentication.*/ChallengeResponseAuthentication no/' "$ANKFS/etc/ssh/sshd_config" 2>/dev/null
+    sed -i '/^UsePAM/d' "$ANKFS/etc/ssh/sshd_config" 2>/dev/null
+    [ ! -f "$ANKFS/etc/ssh/ssh_host_rsa_key" ] && \
+        chroot "$ANKFS" /usr/bin/ssh-keygen -A 2>>"$LOG_FILE" || true
+    mkdir -p "$ANKFS/root/.ssh"
+    chmod 700 "$ANKFS/root/.ssh"
+    touch "$ANKFS/root/.ssh/authorized_keys"
+    chmod 600 "$ANKFS/root/.ssh/authorized_keys"
+    mkdir -p "$ANKFS/run/sshd"
+        # Configure sshd for ANK SSH access (port 2200)
+        mkdir -p "$ANKFS/etc/ssh/sshd_config.d"
+        cat > "$ANKFS/etc/ssh/ank-sshd.conf" << 'SSHEOF'
+Port 2200
+ListenAddress 0.0.0.0
+PermitRootLogin yes
+PasswordAuthentication yes
+ChallengeResponseAuthentication no
+X11Forwarding no
+AllowTcpForwarding no
+PidFile /run/ankd/sshd.pid
+Subsystem sftp internal-sftp
+SSHEOF
+        # Merge into main sshd_config
+        if [ -f "$ANKFS/etc/ssh/sshd_config" ]; then
+            grep -v "^Port \|^ListenAddress \|^PermitRootLogin \|^PasswordAuthentication \|^ChallengeResponse \|^X11Forwarding \|^AllowTcpForwarding \|^PidFile \|^Subsystem sftp" \
+                "$ANKFS/etc/ssh/sshd_config" > "$ANKFS/etc/ssh/sshd_config.tmp" 2>/dev/null
+            cat "$ANKFS/etc/ssh/ank-sshd.conf" >> "$ANKFS/etc/ssh/sshd_config.tmp"
+            mv "$ANKFS/etc/ssh/sshd_config.tmp" "$ANKFS/etc/ssh/sshd_config"
+        fi
+        mkdir -p "$ANKFS/run/ankd"
+        log OK "SSH configured (port 2200)"
     fi
-fi
 umount "$ANKFS/proc" 2>/dev/null
 
 # Install ANK shell + set root shell
@@ -498,47 +506,41 @@ if [ -f "$ANKFS/usr/sbin/sshd" ]; then
     chmod 755 "$ANKFS/ank-shell.sh" 2>/dev/null
     sed -i '1s|#!/system/bin/sh|#!/bin/sh|' "$ANKFS/ank-shell.sh" 2>/dev/null
     sed -i 's|^root:.*|root:/bin/sh|' "$ANKFS/etc/passwd" 2>/dev/null
-    log OK "ank-shell installed as root shell"
+    log OK "ANK Shell installed"
+fi
+log OK "ANK Core addons installed"
+
+# Install ankcoreshell in ankfs
+if [ -f "$SRC/server/ankcoreshell.sh" ]; then
+    cp "$SRC/server/ankcoreshell.sh" "$ANKFS/ankcoreshell.sh"
+    chmod 755 "$ANKFS/ankcoreshell.sh"
+    # Set root shell to ankcoreshell
+    sed -i 's|^root:[^:]*:[^:]*:[^:]*:[^:]*:[^:]*:.*|root:x:0:0:root:/root:/ankcoreshell.sh|' "$ANKFS/etc/passwd" 2>/dev/null
+    log OK "ankcoreshell installed"
 fi
 
-# Copy openssh binaries + libs to container base image
-IMG_DIR="$ANK_DIR/images/$BASE_IMAGE"
-if [ -f "$ANKFS/usr/sbin/sshd" ] && [ -d "$IMG_DIR" ]; then
-    mkdir -p "$IMG_DIR/usr/sbin" "$IMG_DIR/usr/bin" "$IMG_DIR/usr/lib"
-    cp "$ANKFS/usr/sbin/sshd" "$IMG_DIR/usr/sbin/sshd" 2>/dev/null
-    cp "$ANKFS/usr/bin/ssh" "$IMG_DIR/usr/bin/ssh" 2>/dev/null
-    cp "$ANKFS/usr/bin/ssh-keygen" "$IMG_DIR/usr/bin/ssh-keygen" 2>/dev/null
-    mkdir -p "$IMG_DIR/etc/ssh"
-    [ -d "$ANKFS/etc/ssh" ] && cp "$ANKFS/etc/ssh/"* "$IMG_DIR/etc/ssh/" 2>/dev/null
-    mkdir -p "$IMG_DIR/root/.ssh"
-    chmod 700 "$IMG_DIR/root/.ssh"
-    touch "$IMG_DIR/root/.ssh/authorized_keys"
-    chmod 600 "$IMG_DIR/root/.ssh/authorized_keys"
-    mkdir -p "$IMG_DIR/run/sshd"
-    for lib in "$ANKFS/usr/lib/"libcrypto*.so* "$ANKFS/usr/lib/"libssl*.so* "$ANKFS/lib/"libz*.so* "$ANKFS/lib/"libc*.so* "$ANKFS/lib/"libutil*.so* "$ANKFS/lib/"libpthread*.so*; do
-        [ -e "$lib" ] && cp "$lib" "$IMG_DIR/usr/lib/" 2>/dev/null
-    done
-    log OK "openssh copied to container image"
+# Set root password in ankfs from config.json
+ANK_PASS=$(grep -o '"password":"[^"]*"' "$ANK_DIR/config.json" 2>/dev/null | head -1 | cut -d'"' -f4)
+[ -z "$ANK_PASS" ] && ANK_PASS="ank123"
+if [ -f "$ANKFS/usr/sbin/chpasswd" ] || [ -f "$ANKFS/usr/bin/chpasswd" ]; then
+    echo "root:${ANK_PASS}" | chroot "$ANKFS" /bin/sh -c "cat > /tmp/pw && chpasswd" 2>/dev/null || \
+    echo "root:${ANK_PASS}" | chroot "$ANKFS" /sbin/chpasswd 2>/dev/null || true
+    log OK "root password set in ankfs"
 fi
-# Security: ensure no server files in container image
-rm -rf "$IMG_DIR/opt/ank" 2>/dev/null
-log OK "$BASE_IMAGE image ready"
 
 # --- STEP 4: Server + scripts ---
-log STEP "4/4 > Server..."
-echo "[ANK-INSTALL] STEP 4/4: Server + scripts..."
-SRC="$MODPATH"
-if [ ! -f "$SRC/server/server.py" ]; then
-    mkdir -p "$SRC"
-    unzip -o "$ZIPFILE" -d "$SRC" >>"$LOG_FILE" 2>&1
-    rm -rf "$SRC/META-INF"
-fi
+log STEP "4/4 > Server + scripts..."
 
 mkdir -p "$ANKFS/opt/ank/static" "$ANK_DIR/core"
 [ -f "$SRC/server/server.py" ] || die "server.py not found"
 
 cp "$SRC/server/server.py" "$ANKFS/opt/ank/server.py"
 chmod 755 "$ANKFS/opt/ank/server.py"
+
+# Copy all server modules (stack_manager, node_manager, backup_*, ank_*, etc.)
+for f in "$SRC/server/"*.py; do
+    [ -f "$f" ] && cp "$f" "$ANKFS/opt/ank/" && chmod 755 "$ANKFS/opt/ank/$(basename "$f")"
+done
 
 SC=0
 cp -r "$SRC/server/static/"* "$ANKFS/opt/ank/static/" 2>/dev/null
@@ -554,17 +556,35 @@ done
 
 mkdir -p "$ANKFS/opt/ank/scripts"
 for f in "$SRC/scripts/"*.sh; do [ -f "$f" ] && cp "$f" "$ANKFS/opt/ank/scripts/"; done
+mkdir -p "$ANKFS/opt/ank/bin"
 mkdir -p "$ANK_DIR/core/ankd"
-cp -r "$SRC/server/ankd/"* "$ANK_DIR/core/ankd/" 2>/dev/null
+if [ -d "$SRC/server/ankd" ]; then
+    cp -r "$SRC/server/ankd/"* "$ANK_DIR/core/ankd/" 2>/dev/null
+    chmod 755 "$ANK_DIR/core/ankd/"*.sh 2>/dev/null
+fi
+if [ -f "$SRC/server/static/ank-cli.py" ]; then
+    cp "$SRC/server/static/ank-cli.py" "$ANKFS/opt/ank/bin/ank"
+    cp "$SRC/server/static/ank-cli.py" "$ANKFS/opt/ank/bin/ank-core"
+    chmod 755 "$ANKFS/opt/ank/bin/ank" "$ANKFS/opt/ank/bin/ank-core"
+fi
+if [ -f "$SRC/server/static/ank-profile.sh" ]; then
+    cp "$SRC/server/static/ank-profile.sh" "$ANKFS/opt/ank/ank-profile.sh"
+    chmod 755 "$ANKFS/opt/ank/ank-profile.sh"
+fi
+if [ -f "$SRC/scripts/ank-shell.sh" ]; then
+    cp "$SRC/scripts/ank-shell.sh" "$ANKFS/ank-shell.sh"
+    chmod 755 "$ANKFS/ank-shell.sh"
+fi
 mkdir -p "$ANK_DIR/core/static"
 cp -r "$SRC/server/static/"* "$ANK_DIR/core/static/" 2>/dev/null
 mkdir -p "$ANK_DIR/images"
+mkdir -p "$ANK_DIR/ank-engine"
 
 [ "$SHC" -eq 0 ] && die "No scripts found"
 
 if [ ! -f "$ANK_DIR/config.json" ]; then
     cat > "$ANK_DIR/config.json" << EOF
-{"version":"$ANK_VERSION","panel_port":8001,"username":"ank","password":"ank123","first_boot":true,"autostart_on_boot":true,"ssh_enabled":true,"ssh_port":2200,"host_sh":"/system/bin/sh","default_container_password":"ank123","network":{"bridge":"ank0","subnet":"10.20.30.0","gateway":"10.20.30.1","nat":true},"resources":{"max_ram_mb":512,"cpu_shares":512}}
+{"version":"$ANK_VERSION","panel_port":8001,"username":"admin","password":"admin123","first_boot":true,"autostart_on_boot":true,"host_sh":"/system/bin/sh","network":{"bridge":"ank0","subnet":"10.20.30.0","gateway":"10.20.30.1","nat":true},"resources":{"max_ram_mb":512,"cpu_shares":512}}
 EOF
 fi
 
@@ -572,15 +592,15 @@ mkdir -p "$ANK_SDCARD"
 cat > "$ANK_SDCARD/CREDENCIAIS.txt" << EOF
 ANK v$ANK_VERSION
 Painel: https://localhost:8001
-Usuario: ank
-Senha: ank123
+Usuario: admin
+Senha: admin123
 EOF
 
 log OK "$SC static, $SHC scripts"
 
 echo "" >> "$LOG_FILE"
 echo "=== Complete ===" >> "$LOG_FILE"
-echo "[ANK-INSTALL] Installation complete!"
+log OK "Installation complete!"
 cp_log_to_sdcard
 
 ui_print ""

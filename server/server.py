@@ -44,8 +44,8 @@ _pull_status = {}  # version -> {"state": "pulling|building|done|error", "output
 _status_lock = threading.Lock()
 _status_fail_counts = {}     # name -> consecutive failed-check count
 _status_grace_until = {}     # name -> monotonic() time before which checks are skipped
-STATUS_FAIL_THRESHOLD = 3    # consecutive failures required before flipping to stopped
-STATUS_GRACE_SECONDS = 12    # skip checks for this long right after a start
+STATUS_FAIL_THRESHOLD = 5    # consecutive failures required before flipping to stopped
+STATUS_GRACE_SECONDS = 30    # skip checks for this long right after a start
 
 ANK_DIR = os.environ.get("ANK_DIR", "/data/local/ank")
 ANK_SDCARD = "/sdcard/AndroidKonteiner"
@@ -445,28 +445,24 @@ def _ankd_port_open(name):
 
 
 def check_container_running(name):
-    """Check if a container is alive. Priority:
-    1. PID alive (process exists) — most reliable
-    2. TCP port open (sshd listening) — definitive backup
-    3. Health file says UP
-    Any positive signal = running. Only False when PID dead AND
-    TCP closed AND health says DOWN."""
-    pid = _pid_alive(name)
-    if pid:
+    """Check if a container is alive using TCP ports ONLY.
+    SSH port open OR ankd port open = running.
+    No PID checks, no health files — purely network-based."""
+    ssh = _sshd_port_open(name)
+    if ssh:
         return True
-    tcp = _sshd_port_open(name)
-    if tcp:
+    ankd = _ankd_port_open(name)
+    if ankd:
         return True
-    health = _health_file_status(name)
-    if health:
-        return True
-    # PID dead + TCP closed + no health = stopped
-    if pid is False:
+    # Both ports closed = stopped
+    if ssh is False and ankd is False:
         return False
-    # PID unknown but TCP closed = likely stopped
-    if tcp is False and health is not True:
+    # Both ports unknown (no config) = stopped
+    if ssh is None and ankd is None:
         return False
-    # Ambiguous: default to running
+    # One unknown, one closed = stopped
+    if (ssh is False and ankd is None) or (ssh is None and ankd is False):
+        return False
     return True
 
 
@@ -1371,12 +1367,8 @@ small{color:#334155}
             if not config:
                 self._ws_send_error(404, f"Container '{container_name}' not found")
                 return
-            if config.get("status") == "running" and should_mark_stopped(container_name):
-                config["status"] = "stopped"
-                config["pid"] = None
-                save_container_config(container_name, config)
-                note_container_stopped(container_name)
-            if config.get("status") != "running":
+            # Don't flip status on-demand here — the background poller handles that
+            if config.get("status") not in ("running", "starting"):
                 self._ws_send_error(400, f"Container '{container_name}' is not running (status: {config.get('status', 'unknown')})")
                 return
             # Accept WebSocket — send 101 on raw socket
@@ -1846,11 +1838,6 @@ small{color:#334155}
                 except Exception:
                     continue
                 if config:
-                    if config.get("status") == "running" and should_mark_stopped(name):
-                        config["status"] = "stopped"
-                        config["pid"] = None
-                        save_container_config(name, config)
-                        note_container_stopped(name)
                     config["stats"] = get_container_stats(name)
                     containers.append(config)
         self.send_json(containers)
@@ -1870,11 +1857,6 @@ small{color:#334155}
                 except Exception:
                     continue
                 if config:
-                    if config.get("status") == "running" and should_mark_stopped(cname):
-                        config["status"] = "stopped"
-                        config["pid"] = None
-                        save_container_config(cname, config)
-                        note_container_stopped(cname)
                     config["stats"] = get_container_stats(cname)
                     containers.append(config)
         for c in containers:
@@ -1911,12 +1893,18 @@ small{color:#334155}
         ssh_ok = _sshd_port_open(name)
         ankd_ok = _ankd_port_open(name)
         pid_alive = _pid_alive(name)
+        # If ankd port not configured, infer from PID + SSH
+        ankd_port = config.get("ankd_port")
+        if ankd_ok is None and not ankd_port:
+            ankd_ok = bool(pid_alive) if pid_alive is not None else False
         if ssh_ok and ankd_ok:
             status = "running"
         elif ankd_ok:
             status = "running_degraded_ssh"
         elif ssh_ok:
             status = "running_degraded_ankd"
+        elif pid_alive:
+            status = "running_degraded_both"
         else:
             status = "stopped"
         self.send_json({
@@ -1924,7 +1912,7 @@ small{color:#334155}
             "status": status,
             "ssh_port": config.get("ssh_port"),
             "ssh_alive": ssh_ok,
-            "ankd_port": config.get("ankd_port"),
+            "ankd_port": ankd_port,
             "ankd_alive": ankd_ok,
             "pid_alive": pid_alive
         })
@@ -5667,6 +5655,7 @@ small{color:#334155}
         ".png": "image/png",
         ".svg": "image/svg+xml",
         ".ico": "image/x-icon",
+        ".woff": "font/woff",
         ".woff2": "font/woff2",
     }
 
@@ -5685,7 +5674,7 @@ small{color:#334155}
             content = f.read()
         self.send_response(200)
         self.send_header("Content-Type", ct)
-        self.send_header("Content-Length", len(content))
+        self.send_header("Content-Length", str(len(content)))
         self.send_header("Cache-Control", "public, max-age=3600")
         self.end_headers()
         self.wfile.write(content)
@@ -5793,6 +5782,52 @@ def _setup_https():
         return None
 
 
+def _status_poller():
+    """Background thread: periodically check all containers and recover status.
+    If a container has status 'running' but TCP checks fail, it will eventually
+    flip to 'stopped'. But if a container has status 'stopped' and TCP checks
+    succeed, we flip it BACK to 'running'. This prevents the one-way ratchet."""
+    import time
+    while True:
+        try:
+            time.sleep(20)  # Check every 20 seconds
+            if not os.path.isdir(CONTAINERS_DIR):
+                continue
+            for name in os.listdir(CONTAINERS_DIR):
+                cfg_path = os.path.join(CONTAINERS_DIR, name, "config.json")
+                if not os.path.isfile(cfg_path):
+                    continue
+                try:
+                    config = load_container_config(name)
+                    if not config:
+                        continue
+                    status = config.get("status", "")
+                    # Only act on containers that claim to be running or stopped
+                    # Skip building, starting, stopping, failed
+                    if status not in ("running", "stopped"):
+                        continue
+                    is_alive = check_container_running(name)
+                    if status == "running" and not is_alive:
+                        # Container claims running but TCP checks fail
+                        # Use debounce — don't flip immediately
+                        if should_mark_stopped(name):
+                            config["status"] = "stopped"
+                            config["pid"] = None
+                            save_container_config(name, config)
+                            note_container_stopped(name)
+                            log(f"[POLLER] {name}: marked stopped (TCP checks failed)")
+                    elif status == "stopped" and is_alive:
+                        # Container claims stopped but TCP checks succeed — recover!
+                        config["status"] = "running"
+                        save_container_config(name, config)
+                        note_container_started(name)
+                        log(f"[POLLER] {name}: recovered to running (TCP checks pass)")
+                except Exception as e:
+                    log(f"[POLLER] Error checking {name}: {e}")
+        except Exception as e:
+            log(f"[POLLER] Fatal: {e}")
+
+
 def main():
     signal.signal(signal.SIGINT, lambda *_: sys.exit(0))
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
@@ -5814,6 +5849,11 @@ def main():
         print("Orchestrator started (auto-scaling enabled)")
     except Exception as _oe:
         print(f"Orchestrator not started: {_oe}")
+
+    # Start background status poller (recovers stopped→running when TCP checks pass)
+    _poller = threading.Thread(target=_status_poller, daemon=True)
+    _poller.start()
+    print("Status poller started (20s interval)")
 
     server = ThreadingHTTPServer(("0.0.0.0", PORT), AnkHandler)
 

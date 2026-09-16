@@ -655,6 +655,12 @@ cmd_create() {
         [ -e "$ROOTFS/dev/$_n" ] || mknod "$ROOTFS/dev/$_n" c "$_t" "$_m" 2>/dev/null
         chmod 666 "$ROOTFS/dev/$_n" 2>/dev/null
     done
+    # Generate SSH host keys if missing
+    if [ ! -f "$ROOTFS/etc/ssh/ssh_host_rsa_key" ]; then
+        mount -t proc proc "$ROOTFS/proc" 2>/dev/null
+        chroot "$ROOTFS" /usr/bin/ssh-keygen -A 2>/dev/null || true
+        umount "$ROOTFS/proc" 2>/dev/null
+    fi
 
     # Install ankd service manager
     _install_ankd "$ROOTFS" "$NAME" "$IMAGE" "$SSH_PORT" "$TEMPLATE_ID"
@@ -780,11 +786,17 @@ cmd_start() {
     fi
 
     local SSH_PORT=$(grep -o '"ssh_port":[^,]*' "$CONFIG" | cut -d: -f2 | tr -d ' ')
+    local ANKD_PORT=$(grep -o '"ankd_port":[^,]*' "$CONFIG" | cut -d: -f2 | tr -d ' ')
     local IP=$(grep -o '"ip_address":[^,]*' "$CONFIG" | cut -d'"' -f4)
     local IMAGE=$(grep -o '"image":[^,]*' "$CONFIG" 2>/dev/null | cut -d'"' -f4)
     local TEMPLATE_ID=$(grep -o '"template_id":[^,]*' "$CONFIG" 2>/dev/null | cut -d'"' -f4)
 
     echo "Starting container: $NAME (mode: $MODE, port: $SSH_PORT)"
+
+    # Clear old build logs — start output will go here
+    local LOG_PATH="$ANK_DIR/logs/${NAME}.log"
+    mkdir -p "$ANK_DIR/logs" 2>/dev/null
+    : > "$LOG_PATH" 2>/dev/null
 
     # Ensure services are properly configured at start time
     case "${TEMPLATE_ID:-$IMAGE}" in
@@ -936,7 +948,7 @@ cmd_start() {
         echo "  Using ankd service manager"
         local INSTANCE_UUID=$(grep -o '"instance_uuid": *"[^"]*"' "$CONFIG" 2>/dev/null | cut -d'"' -f4)
         local HEALTH_FILE="/tmp/ank-health"
-        CONTAINER_INIT="export PATH=/bin:/sbin:/usr/bin:/usr/sbin; ANKD_CONTAINER=$NAME ANKD_SSHD_PORT=$SSHD_PORT ANKD_INSTANCE_UUID=${INSTANCE_UUID:-$NAME} ANK_HEALTH_FILE=$HEALTH_FILE /usr/ankd/core/ankd.sh daemon"
+        CONTAINER_INIT="export PATH=/bin:/sbin:/usr/bin:/usr/sbin; ANKD_CONTAINER=$NAME ANKD_SSHD_PORT=$SSHD_PORT ANKD_PORT=${ANKD_PORT:-50000} ANKD_INSTANCE_UUID=${INSTANCE_UUID:-$NAME} ANK_HEALTH_FILE=$HEALTH_FILE /usr/ankd/core/ankd.sh daemon"
     else
         # Fallback: legacy inline init
         echo "  WARN: ankd not installed, using legacy init"
@@ -989,11 +1001,11 @@ cmd_start() {
     if [ "$MODE" = "isolated" ]; then
         nohup ip netns exec "$NS" unshare --fork --pid \
             --mount-proc="$ROOTFS/proc" \
-            chroot "$ROOTFS" "$SHELL" -c "$CONTAINER_INIT" </dev/null >/dev/null 2>&1 &
+            chroot "$ROOTFS" "$SHELL" -c "$CONTAINER_INIT" </dev/null >"$LOG_PATH" 2>&1 &
     elif [ "$MODE" = "shared_network" ]; then
         nohup unshare --fork --pid \
             --mount-proc="$ROOTFS/proc" \
-            chroot "$ROOTFS" "$SHELL" -c "$CONTAINER_INIT" </dev/null >/dev/null 2>&1 &
+            chroot "$ROOTFS" "$SHELL" -c "$CONTAINER_INIT" </dev/null >"$LOG_PATH" 2>&1 &
     elif [ "$MODE" = "lite" ]; then
         local PROOT_BIN="$ANK_DIR/proot"
         if [ ! -e "$PROOT_BIN" ]; then
@@ -1002,9 +1014,9 @@ cmd_start() {
         fi
         LD_LIBRARY_PATH="$ROOTFS/lib:$ROOTFS/usr/lib" \
         nohup "$PROOT_BIN" -0 -r "$ROOTFS" \
-            "$SHELL" -c "$CONTAINER_INIT" </dev/null >/dev/null 2>&1 &
+            "$SHELL" -c "$CONTAINER_INIT" </dev/null >"$LOG_PATH" 2>&1 &
     else
-        nohup chroot "$ROOTFS" "$SHELL" -c "$CONTAINER_INIT" </dev/null >"$ANK_DIR/logs/${NAME}.log" 2>&1 &
+        nohup chroot "$ROOTFS" "$SHELL" -c "$CONTAINER_INIT" </dev/null >"$LOG_PATH" 2>&1 &
     fi
 
     local PID=$!

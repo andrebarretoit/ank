@@ -871,7 +871,6 @@ _ankd_daemon() {
 
     # Start health check TCP listener on ankd port
     if [ -n "$ANKD_PORT" ]; then
-        _ankd_boot "INFO" "Starting health listener on port $ANKD_PORT"
         _ankd_health_listener "$ANKD_PORT"
     fi
 

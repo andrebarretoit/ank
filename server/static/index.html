@@ -6,19 +6,18 @@
   <title>ANK - Android Konteiner</title>
   <link rel="stylesheet" href="style.css">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css">
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700;800&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="vendor/xterm.min.css">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700;800&family=Inter:wght@400;500;600;700;800&display=swap">
   <link rel="icon" href="favicon.svg" type="image/svg+xml">
 </head>
 <body>
+<div class="bg-flares"></div>
 
   <!-- ═══════ LOGIN ═══════ -->
   <div id="login-screen" class="login-container">
     <div class="login-visual">
       <div class="login-visual-content">
-        <div class="big-logo">ANK</div>
+        <div class="big-logo"><i class="bi bi-box-seam"></i><span>ANK</span></div>
         <h1>Android Konteiner</h1>
         <p>Docker-like container management for your Android device</p>
         <div class="login-visual-graphs">
@@ -70,8 +69,8 @@
         <a class="notch-item" data-page="backups"><i class="bi bi-cloud-arrow-up"></i><span class="nav-label">Backups</span></a>
         <a class="notch-item" data-page="networks"><i class="bi bi-globe2"></i><span class="nav-label">Networks</span></a>
         <a class="notch-item" data-page="logs"><i class="bi bi-journal-text"></i><span class="nav-label">Logs</span></a>
-        <a class="notch-item" data-page="settings"><i class="bi bi-gear"></i><span class="nav-label">Settings</span></a>
         <a class="notch-item" data-page="shell"><i class="bi bi-terminal"></i><span class="nav-label">Shell</span></a>
+        <a class="notch-item" data-page="settings"><i class="bi bi-gear"></i><span class="nav-label">Settings</span></a>
       </div>
     </nav>
 
@@ -100,7 +99,7 @@
     <!-- ═══════ DASHBOARD ═══════ -->
     <div class="page active" id="page-dashboard">
       <div class="page-header">
-        <div class="ph-left"><div class="ph-icon">ANK</div><h1>Dashboard</h1></div>
+        <div class="ph-left"><div class="ph-icon"><i class="bi bi-box-seam"></i><span>ANK</span></div><h1>Dashboard</h1></div>
         <div class="header-actions">
           <button class="btn btn-secondary btn-sm" onclick="loadDashboard()"><i class="bi bi-arrow-clockwise"></i></button>
           <button class="btn-logout" onclick="logout()"><i class="bi bi-box-arrow-right"></i> Logout</button>
@@ -108,7 +107,7 @@
       </div>
       <div class="dash-hero">
         <div class="dash-hero-top">
-          <div class="dash-hero-node"><span class="badge-live"></span><span class="nm">node <b id="dash-device-name">Loading...</b> &middot; <span id="dash-node-status">online</span></span></div>
+          <div class="dash-hero-node"><span class="badge-live"></span><span class="nm"><b id="dash-device-name">Loading...</b> &middot; <span id="dash-node-status">online</span></span></div>
           <div class="uptime-tag" id="dash-uptime"></div>
         </div>
         <div class="dash-hero-stats">
@@ -166,7 +165,7 @@
     <!-- ═══════ CONTAINERS ═══════ -->
     <div class="page" id="page-containers">
       <div class="page-header">
-        <div class="ph-left"><div class="ph-icon">ANK</div><h1>Containers</h1></div>
+        <div class="ph-left"><div class="ph-icon"><i class="bi bi-box-seam"></i><span>ANK</span></div><h1>Containers</h1></div>
         <div class="header-actions">
           <button class="btn btn-primary btn-sm" id="btn-create-container"><i class="bi bi-plus-lg"></i> Create</button>
           <button class="btn btn-secondary btn-sm" onclick="loadContainers()"><i class="bi bi-arrow-clockwise"></i></button>
@@ -184,7 +183,7 @@
     <!-- ═══════ IMAGES ═══════ -->
     <div class="page" id="page-images">
       <div class="page-header">
-        <div class="ph-left"><div class="ph-icon">ANK</div><h1>Images</h1></div>
+        <div class="ph-left"><div class="ph-icon"><i class="bi bi-box-seam"></i><span>ANK</span></div><h1>Images</h1></div>
         <div class="header-actions">
           <button class="btn btn-primary btn-sm" id="btn-pull-image"><i class="bi bi-cloud-download"></i> Pull Alpine</button>
           <button class="btn btn-secondary btn-sm" onclick="loadImages()"><i class="bi bi-arrow-clockwise"></i></button>
@@ -215,7 +214,7 @@
     <!-- ═══════ NODES ═══════ -->
     <div class="page" id="page-nodes">
       <div class="page-header">
-        <div class="ph-left"><div class="ph-icon">ANK</div><h1>Nodes</h1></div>
+        <div class="ph-left"><div class="ph-icon"><i class="bi bi-box-seam"></i><span>ANK</span></div><h1>Nodes</h1></div>
         <div class="header-actions">
           <button class="btn btn-primary btn-sm" id="btn-add-node"><i class="bi bi-plus-lg"></i> Add Node</button>
           <button class="btn btn-secondary btn-sm" onclick="loadNodes()"><i class="bi bi-arrow-clockwise"></i></button>
@@ -234,7 +233,7 @@
     <!-- ═══════ STACKS ═══════ -->
     <div class="page" id="page-stacks">
       <div class="page-header">
-        <div class="ph-left"><div class="ph-icon">ANK</div><h1>Stacks</h1></div>
+        <div class="ph-left"><div class="ph-icon"><i class="bi bi-box-seam"></i><span>ANK</span></div><h1>Stacks</h1></div>
         <div class="header-actions">
           <button class="btn btn-primary btn-sm" id="btn-create-stack"><i class="bi bi-plus-lg"></i> Create</button>
           <button class="btn btn-secondary btn-sm" onclick="loadStacks()"><i class="bi bi-arrow-clockwise"></i></button>
@@ -252,7 +251,7 @@
     <!-- ═══════ BACKUPS ═══════ -->
     <div class="page" id="page-backups">
       <div class="page-header">
-        <div class="ph-left"><div class="ph-icon">ANK</div><h1>Backups</h1></div>
+        <div class="ph-left"><div class="ph-icon"><i class="bi bi-box-seam"></i><span>ANK</span></div><h1>Backups</h1></div>
         <div class="header-actions">
           <button class="btn btn-primary btn-sm" id="btn-create-backup"><i class="bi bi-plus-lg"></i> Create</button>
           <button class="btn btn-secondary btn-sm" onclick="loadBackups()"><i class="bi bi-arrow-clockwise"></i></button>
@@ -270,7 +269,7 @@
     <!-- ═══════ NETWORKS ═══════ -->
     <div class="page" id="page-networks">
       <div class="page-header">
-        <div class="ph-left"><div class="ph-icon">ANK</div><h1>Networks</h1></div>
+        <div class="ph-left"><div class="ph-icon"><i class="bi bi-box-seam"></i><span>ANK</span></div><h1>Networks</h1></div>
         <div class="header-actions">
           <button class="btn btn-secondary btn-sm" onclick="loadNetworks()"><i class="bi bi-arrow-clockwise"></i></button>
           <button class="btn-logout" onclick="logout()"><i class="bi bi-box-arrow-right"></i> Logout</button>
@@ -287,7 +286,7 @@
     <!-- ═══════ LOGS ═══════ -->
     <div class="page" id="page-logs">
       <div class="page-header">
-        <div class="ph-left"><div class="ph-icon">ANK</div><h1>Logs</h1></div>
+        <div class="ph-left"><div class="ph-icon"><i class="bi bi-box-seam"></i><span>ANK</span></div><h1>Logs</h1></div>
         <div class="header-actions">
           <select class="form-select" id="log-node-selector" style="width:auto" onchange="loadLogs(false)">
             <option value="local">Local</option>
@@ -311,80 +310,21 @@
     <!-- ═══════ SETTINGS ═══════ -->
     <div class="page" id="page-settings">
       <div class="page-header">
-        <div class="ph-left"><div class="ph-icon">ANK</div><h1>Settings</h1></div>
+        <div class="ph-left"><div class="ph-icon"><i class="bi bi-box-seam"></i><span>ANK</span></div><h1>Settings</h1></div>
         <div class="header-actions">
           <button class="btn-logout" onclick="logout()"><i class="bi bi-box-arrow-right"></i> Logout</button>
         </div>
       </div>
-      <div class="settings-grid">
-        <div class="card">
-          <div class="card-header"><h3><i class="bi bi-person-gear"></i> Account</h3></div>
-          <div class="card-body">
-            <form id="password-form">
-              <div class="form-group"><label class="form-label">Current Password</label><input type="password" class="form-input" id="current-password" required></div>
-              <div class="form-group"><label class="form-label">Username</label><input type="text" class="form-input" id="new-username" autocomplete="off"></div>
-              <div class="form-group"><label class="form-label">New Password</label><input type="password" class="form-input" id="new-password" minlength="6"></div>
-              <button type="submit" class="btn btn-primary"><i class="bi bi-check-lg"></i> Save</button>
-            </form>
-          </div>
+      <div class="split-layout">
+        <div class="split-left" id="settings-sidebar">
+          <div class="split-list-card selected" data-section="account" onclick="showSettingsSection('account')"><span class="slc-name"><i class="bi bi-person-gear" style="color:var(--accent)"></i> Account</span></div>
+          <div class="split-list-card" data-section="server" onclick="showSettingsSection('server')"><span class="slc-name"><i class="bi bi-server" style="color:var(--primary)"></i> Server</span></div>
+          <div class="split-list-card" data-section="remote" onclick="showSettingsSection('remote')"><span class="slc-name"><i class="bi bi-diagram-3" style="color:var(--success)"></i> Remote & SSH</span></div>
+          <div class="split-list-card" data-section="cache" onclick="showSettingsSection('cache')"><span class="slc-name"><i class="bi bi-database" style="color:var(--warning)"></i> Cache</span></div>
+          <div class="split-list-card" data-section="about" onclick="showSettingsSection('about')"><span class="slc-name"><i class="bi bi-info-circle" style="color:var(--text-muted)"></i> About</span></div>
         </div>
-        <div class="card">
-          <div class="card-header"><h3><i class="bi bi-server"></i> Server</h3></div>
-          <div class="card-body">
-            <form id="panel-settings-form">
-              <div class="form-group"><label class="form-label">Node Name</label><input type="text" class="form-input" id="setting-node-name" placeholder="e.g. ank-prod01" maxlength="30"><small class="form-hint">Identifies this server in the sidebar and on remote nodes</small></div>
-              <div class="form-row">
-                <div class="form-group"><label class="form-label">Bind Address</label><select class="form-select" id="setting-bind"><option value="0.0.0.0">0.0.0.0 (all)</option><option value="127.0.0.1">127.0.0.1</option></select></div>
-                <div class="form-group"><label class="form-label">Auto-Refresh</label><select class="form-select" id="setting-refresh"><option value="5">5s</option><option value="10" selected>10s</option><option value="30">30s</option><option value="60">60s</option><option value="0">Off</option></select></div>
-              </div>
-              <div class="form-group"><label class="checkbox-label" style="display:flex;align-items:center;gap:8px;cursor:pointer"><input type="checkbox" id="setting-autostart" style="width:18px;height:18px;accent-color:var(--accent)"><i class="bi bi-power" style="color:var(--accent)"></i> Start server on device boot</label></div>
-              <div class="form-group"><label class="form-label">Default Container Password</label><input type="password" class="form-input" id="setting-default-pass" placeholder="ank123" minlength="4"><small class="form-hint">Used when creating containers without specifying a password</small></div>
-              <button type="submit" class="btn btn-primary"><i class="bi bi-check-lg"></i> Save</button>
-            </form>
-          </div>
-        </div>
-        <div class="card">
-          <div class="card-header"><h3><i class="bi bi-diagram-3"></i> Remote Management & SSH</h3></div>
-          <div class="card-body">
-            <div class="form-group"><label class="checkbox-label" style="display:flex;align-items:center;gap:8px;cursor:pointer"><input type="checkbox" id="setting-remote-mgmt" style="width:18px;height:18px;accent-color:var(--accent)"><i class="bi bi-diagram-3" style="color:var(--accent)"></i> Enable Remote Management</label><small class="form-hint">Allow other ANK instances to pair with this node</small></div>
-            <div class="form-group" id="manager-ip-group" style="display:none"><label class="form-label">Manager IP / Range</label><input type="text" class="form-input" id="setting-manager-ip" placeholder="192.168.0.0/24 or 0.0.0.0" maxlength="30"><small class="form-hint">Single IP, CIDR range, or 0.0.0.0 (any)</small></div>
-            <hr style="border-color:var(--border);margin:12px 0">
-            <div class="form-group"><label class="checkbox-label" style="display:flex;align-items:center;gap:8px;cursor:pointer"><input type="checkbox" id="setting-ssh-enabled" checked style="width:18px;height:18px;accent-color:var(--accent)"><i class="bi bi-terminal" style="color:var(--accent)"></i> Enable SSH (Android host)</label><small class="form-hint">SSH server on port <span id="setting-ssh-port-display">2200</span> — same password as this panel</small></div>
-            <div class="form-group"><label class="form-label">SSH Port</label><input type="number" class="form-input" id="setting-ssh-port" value="2200" min="1024" max="65535"></div>
-            <button type="button" class="btn btn-primary" onclick="saveRemoteSSHSettings()"><i class="bi bi-check-lg"></i> Save</button>
-          </div>
-        </div>
-        <div class="card">
-          <div class="card-header"><h3><i class="bi bi-info-circle"></i> About</h3></div>
-          <div class="card-body">
-            <div class="info-grid">
-              <div class="info-item"><span class="info-label">Version</span><span>2.0.0</span></div>
-              <div class="info-item"><span class="info-label">Panel Port</span><span>8001</span></div>
-              <div class="info-item" style="grid-column:span 2"><span class="info-label">Credentials</span><span style="font-size:11px">/sdcard/AndroidKonteiner/CREDENCIAIS.txt</span></div>
-            </div>
-          </div>
-        </div>
-        <div class="card">
-          <div class="card-header"><h3><i class="bi bi-database"></i> Cache</h3></div>
-          <div class="card-body">
-            <div class="info-grid">
-              <div class="info-item"><span class="info-label">Rootfs Size</span><span id="info-rootfs">-</span></div>
-              <div class="info-item"><span class="info-label">Containers Data</span><span id="info-containers-size">-</span></div>
-              <div class="info-item"><span class="info-label">Total Used</span><span id="info-total-size">-</span></div>
-              <div class="info-item"><span class="info-label">Device Free</span><span id="info-device-free">-</span></div>
-            </div>
-          </div>
-        </div>
-        <div class="card" style="border:1px solid var(--danger)">
-          <div class="card-header"><h3 style="color:var(--danger)"><i class="bi bi-exclamation-triangle"></i> Danger Zone</h3></div>
-          <div class="card-body">
-            <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">
-              <button type="button" class="btn btn-secondary" id="restart-server-btn"><i class="bi bi-arrow-repeat"></i> Restart Server</button>
-              <button type="button" class="btn btn-secondary" id="restart-device-btn"><i class="bi bi-phone"></i> Restart Device</button>
-            </div>
-            <p style="color:var(--text-secondary);font-size:13px;margin-bottom:12px">Completely remove ANK: all containers, images, configs, and network rules. This cannot be undone.</p>
-            <button type="button" class="btn btn-danger" id="uninstall-btn"><i class="bi bi-trash3"></i> Uninstall ANK</button>
-          </div>
+        <div class="split-right" id="settings-content">
+          <div class="split-right-empty"><div><i class="bi bi-gear"></i><p>Select a settings section</p></div></div>
         </div>
       </div>
     </div>
@@ -392,7 +332,7 @@
     <!-- ═══════ SHELL ═══════ -->
     <div class="page" id="page-shell">
       <div class="page-header">
-        <div class="ph-left"><div class="ph-icon">ANK</div><h1>Shell</h1></div>
+        <div class="ph-left"><div class="ph-icon"><i class="bi bi-box-seam"></i><span>ANK</span></div><h1>Shell</h1></div>
         <div class="header-actions">
           <select class="form-select" id="shell-container-select" style="width:auto"></select>
           <button class="btn btn-primary btn-sm" id="btn-shell-connect"><i class="bi bi-play"></i> Connect</button>
@@ -405,7 +345,7 @@
           <div class="terminal-dot red"></div>
           <div class="terminal-dot yellow"></div>
           <div class="terminal-dot green"></div>
-          <span class="terminal-title">ank-shell</span>
+          <span class="terminal-title">root@ank-shell</span>
         </div>
         <div class="terminal-body" id="terminal"></div>
       </div>
@@ -563,7 +503,7 @@
   <div class="toast-container" id="toast-container"></div>
 
   <!-- VENDOR -->
-  <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
+  <script src="vendor/xterm.min.js"></script>
   <script src="app.js"></script>
 </body>
 </html>
