@@ -102,48 +102,52 @@
           <button class="btn-logout" onclick="logout()"><i class="bi bi-box-arrow-right"></i> Logout</button>
         </div>
       </div>
-      <div class="stats-grid" id="dashboard-stats">
-        <div class="stat-card"><div class="stat-icon green"><i class="bi bi-play-circle"></i></div><div class="stat-value" id="stat-running">-</div><div class="stat-label">Running</div></div>
-        <div class="stat-card"><div class="stat-icon red"><i class="bi bi-stop-circle"></i></div><div class="stat-value" id="stat-stopped">-</div><div class="stat-label">Stopped</div></div>
-        <div class="stat-card"><div class="stat-icon blue"><i class="bi bi-box-seam"></i></div><div class="stat-value" id="stat-total">-</div><div class="stat-label">Total Containers</div></div>
-        <div class="stat-card"><div class="stat-icon purple"><i class="bi bi-hdd-stack"></i></div><div class="stat-value" id="stat-images">-</div><div class="stat-label">Images</div></div>
-        <div class="stat-card"><div class="stat-icon yellow"><i class="bi bi-hdd-network"></i></div><div class="stat-value" id="stat-nodes">-</div><div class="stat-label">Nodes</div></div>
-      </div>
-      <div class="grid-2 mb-24">
-        <div class="gauge-card">
-          <div class="gauge"><svg viewBox="0 0 80 80"><circle class="gauge-bg" cx="40" cy="40" r="36"/><circle class="gauge-fill" id="gauge-cpu" cx="40" cy="40" r="36"/></svg><div class="gauge-text" id="gauge-cpu-text">0%</div></div>
-          <div class="gauge-label">CPU</div>
-          <div class="text-sm text-muted mt-8" id="cpu-cores"></div>
+      <div class="dash-hero">
+        <div class="dash-hero-top">
+          <div class="dash-hero-title" id="dash-device-name">Loading...</div>
+          <div class="text-sm text-muted" id="dash-uptime"></div>
         </div>
-        <div class="gauge-card">
-          <div class="gauge"><svg viewBox="0 0 80 80"><circle class="gauge-bg" cx="40" cy="40" r="36"/><circle class="gauge-fill green" id="gauge-ram" cx="40" cy="40" r="36"/></svg><div class="gauge-text" id="gauge-ram-text">0%</div></div>
-          <div class="gauge-label">RAM</div>
-          <div class="text-sm text-muted mt-8" id="ram-detail"></div>
-        </div>
-        <div class="gauge-card">
-          <div class="gauge"><svg viewBox="0 0 80 80"><circle class="gauge-bg" cx="40" cy="40" r="36"/><circle class="gauge-fill yellow" id="gauge-disk" cx="40" cy="40" r="36"/></svg><div class="gauge-text" id="gauge-disk-text">0%</div></div>
-          <div class="gauge-label">Disk</div>
-          <div class="text-sm text-muted mt-8" id="disk-detail"></div>
+        <div class="dash-hero-stats">
+          <div class="dash-hero-stat"><div class="dhs-value green" id="stat-running">-</div><div class="dhs-label">Running</div></div>
+          <div class="dash-hero-stat"><div class="dhs-value red" id="stat-stopped">-</div><div class="dhs-label">Stopped</div></div>
+          <div class="dash-hero-stat"><div class="dhs-value blue" id="stat-total">-</div><div class="dhs-label">Total</div></div>
         </div>
       </div>
-      <div class="card mb-24" id="device-info-card">
-        <div class="card-header"><span class="card-title">System Info</span></div>
-        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px">
-          <div class="flex justify-between"><span class="text-muted text-sm">Device</span><span id="info-device">-</span></div>
-          <div class="flex justify-between"><span class="text-muted text-sm">Kernel</span><span id="info-kernel" class="font-mono text-sm">-</span></div>
-          <div class="flex justify-between"><span class="text-muted text-sm">Uptime</span><span id="stat-uptime">-</span></div>
-          <div class="flex justify-between"><span class="text-muted text-sm">Battery</span><span id="info-battery">-</span></div>
-          <div class="flex justify-between"><span class="text-muted text-sm">Subnet</span><span id="info-subnet" class="font-mono text-sm">-</span></div>
-          <div class="flex justify-between"><span class="text-muted text-sm">Mode</span><span id="info-mode" class="badge badge-info">-</span></div>
+      <div class="dash-body">
+        <div class="dash-section">
+          <div class="dash-section-header"><h3><i class="bi bi-cpu"></i> Resources</h3></div>
+          <div class="dash-metrics">
+            <div class="dash-metric">
+              <div class="dm-gauge"><svg viewBox="0 0 64 64"><circle class="gauge-bg" cx="32" cy="32" r="28"/><circle class="gauge-fill cpu" id="gauge-cpu" cx="32" cy="32" r="28"/></svg><div class="dm-pct" id="gauge-cpu-text">0%</div></div>
+              <div class="dm-label">CPU</div><div class="dm-detail" id="cpu-cores"></div>
+            </div>
+            <div class="dash-metric">
+              <div class="dm-gauge"><svg viewBox="0 0 64 64"><circle class="gauge-bg" cx="32" cy="32" r="28"/><circle class="gauge-fill ram" id="gauge-ram" cx="32" cy="32" r="28"/></svg><div class="dm-pct" id="gauge-ram-text">0%</div></div>
+              <div class="dm-label">RAM</div><div class="dm-detail" id="ram-detail"></div>
+            </div>
+            <div class="dash-metric">
+              <div class="dm-gauge"><svg viewBox="0 0 64 64"><circle class="gauge-bg" cx="32" cy="32" r="28"/><circle class="gauge-fill disk" id="gauge-disk" cx="32" cy="32" r="28"/></svg><div class="dm-pct" id="gauge-disk-text">0%</div></div>
+              <div class="dm-label">Disk</div><div class="dm-detail" id="disk-detail"></div>
+            </div>
+          </div>
         </div>
-      </div>
-      <div class="card mb-24">
-        <div class="card-header"><span class="card-title">Containers</span></div>
-        <div id="dashboard-containers"><div class="skeleton skeleton-card"></div></div>
-      </div>
-      <div class="card" id="cluster-card" style="display:none">
-        <div class="card-header"><span class="card-title">ANK Cluster</span></div>
-        <div id="cluster-info"></div>
+        <div class="dash-section">
+          <div class="dash-section-header"><h3><i class="bi bi-phone"></i> Device</h3></div>
+          <div class="dash-device-grid">
+            <div class="dash-device-item"><div class="ddi-icon blue"><i class="bi bi-phone"></i></div><div><div class="ddi-label">Device</div><div class="ddi-value" id="info-device">-</div></div></div>
+            <div class="dash-device-item"><div class="ddi-icon purple"><i class="bi bi-motherboard"></i></div><div><div class="ddi-label">Kernel</div><div class="ddi-value font-mono" id="info-kernel">-</div></div></div>
+            <div class="dash-device-item"><div class="ddi-icon green"><i class="bi bi-battery-half"></i></div><div><div class="ddi-label">Battery</div><div class="ddi-value" id="info-battery">-</div></div></div>
+            <div class="dash-device-item"><div class="ddi-icon yellow"><i class="bi bi-wifi"></i></div><div><div class="ddi-label">Subnet</div><div class="ddi-value font-mono" id="info-subnet">-</div></div></div>
+          </div>
+        </div>
+        <div class="dash-section">
+          <div class="dash-section-header"><h3><i class="bi bi-box-seam"></i> Containers</h3><button class="btn btn-secondary btn-sm" onclick="navigateTo('containers')">View All</button></div>
+          <div class="dash-containers-list" id="dashboard-containers"><div class="skeleton skeleton-card"></div></div>
+        </div>
+        <div class="dash-section" id="cluster-card" style="display:none">
+          <div class="dash-section-header"><h3><i class="bi bi-hdd-network"></i> Cluster</h3><button class="btn btn-secondary btn-sm" onclick="navigateTo('nodes')">View All</button></div>
+          <div class="dash-cluster-list" id="cluster-info"></div>
+        </div>
       </div>
     </div>
 
@@ -161,7 +165,12 @@
           <button class="btn-logout" onclick="logout()"><i class="bi bi-box-arrow-right"></i> Logout</button>
         </div>
       </div>
-      <div class="container-grid" id="containers-list"><div class="skeleton skeleton-card"></div></div>
+      <div class="split-layout">
+        <div class="split-left" id="containers-list"><div class="skeleton skeleton-card"></div></div>
+        <div class="split-right" id="container-detail">
+          <div class="split-right-empty"><div><i class="bi bi-box-seam"></i><p>Select a container to manage</p></div></div>
+        </div>
+      </div>
     </div>
 
     <!-- ═══════ IMAGES ═══════ -->
@@ -175,7 +184,12 @@
         </div>
       </div>
       <div id="templates-section" class="mb-24"></div>
-      <div class="container-grid" id="images-list"><div class="skeleton skeleton-card"></div></div>
+      <div class="split-layout">
+        <div class="split-left" id="images-list"><div class="skeleton skeleton-card"></div></div>
+        <div class="split-right" id="image-detail">
+          <div class="split-right-empty"><div><i class="bi bi-hdd-stack"></i><p>Select an image to view details</p></div></div>
+        </div>
+      </div>
     </div>
 
     <!-- ═══════ NODES ═══════ -->
@@ -189,7 +203,12 @@
         </div>
       </div>
       <div id="nodes-pairing-requests" class="mb-16"></div>
-      <div class="node-grid" id="nodes-list"><div class="skeleton skeleton-card"></div></div>
+      <div class="split-layout">
+        <div class="split-left" id="nodes-list"><div class="skeleton skeleton-card"></div></div>
+        <div class="split-right" id="node-detail">
+          <div class="split-right-empty"><div><i class="bi bi-hdd-network"></i><p>Select a node to view details</p></div></div>
+        </div>
+      </div>
     </div>
 
     <!-- ═══════ STACKS ═══════ -->
@@ -202,7 +221,12 @@
           <button class="btn-logout" onclick="logout()"><i class="bi bi-box-arrow-right"></i> Logout</button>
         </div>
       </div>
-      <div class="container-grid" id="stacks-list"><div class="skeleton skeleton-card"></div></div>
+      <div class="split-layout">
+        <div class="split-left" id="stacks-list"><div class="skeleton skeleton-card"></div></div>
+        <div class="split-right" id="stack-detail">
+          <div class="split-right-empty"><div><i class="bi bi-layers"></i><p>Select a stack to manage</p></div></div>
+        </div>
+      </div>
     </div>
 
     <!-- ═══════ BACKUPS ═══════ -->
@@ -215,7 +239,12 @@
           <button class="btn-logout" onclick="logout()"><i class="bi bi-box-arrow-right"></i> Logout</button>
         </div>
       </div>
-      <div id="backups-list"><div class="skeleton skeleton-card"></div></div>
+      <div class="split-layout">
+        <div class="split-left" id="backups-list"><div class="skeleton skeleton-card"></div></div>
+        <div class="split-right" id="backup-detail">
+          <div class="split-right-empty"><div><i class="bi bi-cloud-arrow-up"></i><p>Select a backup routine</p></div></div>
+        </div>
+      </div>
     </div>
 
     <!-- ═══════ NETWORKS ═══════ -->
@@ -227,7 +256,12 @@
           <button class="btn-logout" onclick="logout()"><i class="bi bi-box-arrow-right"></i> Logout</button>
         </div>
       </div>
-      <div id="networks-list"><div class="skeleton skeleton-card"></div></div>
+      <div class="split-layout">
+        <div class="split-left" id="networks-list"><div class="skeleton skeleton-card"></div></div>
+        <div class="split-right" id="network-detail">
+          <div class="split-right-empty"><div><i class="bi bi-globe2"></i><p>Select a network to view</p></div></div>
+        </div>
+      </div>
     </div>
 
     <!-- ═══════ SETTINGS ═══════ -->

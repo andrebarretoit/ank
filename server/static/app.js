@@ -195,22 +195,20 @@ function showApp() {
 }
 
 /* ═══════ DASHBOARD ═══════ */
+let currentDashboardPage = 'dashboard';
 async function loadDashboard() {
   try {
     const [status, info] = await Promise.all([api('GET', '/status'), api('GET', '/system/info')]);
     animateCounter('stat-running', status.containers_running || 0);
     animateCounter('stat-stopped', status.containers_stopped || 0);
     animateCounter('stat-total', status.containers_total || 0);
-    const images = await api('GET', '/images').catch(() => []);
-    animateCounter('stat-images', Array.isArray(images) ? images.length : 0);
-    document.getElementById('stat-uptime').textContent = fmtUptime(status.uptime || 0);
+    document.getElementById('dash-device-name').textContent = info.device || 'ANK Device';
+    document.getElementById('dash-uptime').textContent = 'Uptime: ' + fmtUptime(status.uptime || 0);
     document.getElementById('info-device').textContent = info.device || '-';
     document.getElementById('info-kernel').textContent = info.kernel || '-';
     const bat = info.battery;
     document.getElementById('info-battery').textContent = (bat != null && bat >= 0) ? bat + '%' : '-';
     document.getElementById('info-subnet').textContent = (info.network?.subnet || '-') + '/24';
-    const mode = info.mode?.mode || 'shared_host';
-    document.getElementById('info-mode').textContent = mode;
     const cpuPct = info.cpu_usage != null ? Math.round(info.cpu_usage) : 0;
     const cpuCores = info.cpu_cores || 0;
     document.getElementById('cpu-cores').textContent = cpuCores > 0 ? cpuCores + ' cores' : '';
@@ -224,12 +222,20 @@ async function loadDashboard() {
     const diskUsedNum = disk.used_num || 0;
     const diskPct = diskTotal > 0 ? Math.round(diskUsedNum / diskTotal * 100) : 0;
     document.getElementById('disk-detail').textContent = diskTotal > 0 ? `${disk.used || '-'} / ${diskTotal} GB` : '';
-    setGauge('gauge-cpu', cpuPct, 'gauge-cpu-text');
-    setGauge('gauge-ram', memPct, 'gauge-ram-text');
-    setGauge('gauge-disk', diskPct, 'gauge-disk-text');
+    setGaugeDash('gauge-cpu', cpuPct, 'gauge-cpu-text', 175.9);
+    setGaugeDash('gauge-ram', memPct, 'gauge-ram-text', 175.9);
+    setGaugeDash('gauge-disk', diskPct, 'gauge-disk-text', 175.9);
     renderDashboardContainers();
     renderDashboardNodes();
   } catch (e) { console.error('Dashboard load failed:', e); }
+}
+
+function setGaugeDash(id, pct, textId, circ) {
+  const circle = document.getElementById(id);
+  const text = document.getElementById(textId);
+  if (!circle || !text) return;
+  circle.style.strokeDashoffset = circ - (circ * pct / 100);
+  text.textContent = pct + '%';
 }
 
 function animateCounter(id, target) {
@@ -264,23 +270,18 @@ async function renderDashboardContainers() {
   if (!el) return;
   try {
     const containers = await api('GET', '/containers/all');
-    if (!containers || !containers.length) { el.innerHTML = '<div class="empty-state"><p>No containers yet</p></div>'; return; }
-    el.innerHTML = '<div class="table-container"><table><thead><tr><th>Name</th><th>Status</th><th>Image</th><th>IP</th><th>Memory</th><th></th></tr></thead><tbody>' +
-      containers.map(c => {
-        const s = c.status;
-        const bc = s === 'running' ? 'badge-success' : s === 'building' ? 'badge-warning' : s === 'failed' ? 'badge-danger' : 'badge-neutral';
-        const node = c.node && c.node !== 'local' ? `<span class="badge badge-info" style="margin-left:6px;font-size:10px">${esc(c.node_alias||c.node.slice(0,8))}</span>` : '';
-        const mem = c.stats && c.stats.memory_bytes ? fmtBytes(c.stats.memory_bytes) : '-';
-        return `<tr onclick="navigate('containers');setTimeout(()=>showContainerDetail('${esc(c.name)}','${c.node||'local'}'),100)" style="cursor:pointer">
-          <td><i class="bi bi-box-seam" style="color:var(--accent);margin-right:8px"></i>${esc(c.name)}${node}</td>
-          <td><span class="badge ${bc}">${s==='building'?'<i class="bi bi-arrow-repeat spin"></i> ':''}${s}</span></td>
-          <td class="text-muted text-sm">${esc(c.template_name||c.image||'-')}</td>
-          <td class="font-mono text-sm">${esc(c.ip_address||'N/A')}</td>
-          <td class="text-sm">${mem}</td>
-          <td>${s==='running'?`<button class="btn btn-icon btn-ghost sm" onclick="event.stopPropagation();stopContainer('${esc(c.name)}')"><i class="bi bi-stop-fill"></i></button>`:`<button class="btn btn-icon btn-ghost sm" onclick="event.stopPropagation();startContainer('${esc(c.name)}')"><i class="bi bi-play-fill"></i></button>`}</td>
-        </tr>`;
-      }).join('') + '</tbody></table></div>';
-  } catch (e) { el.innerHTML = '<div class="empty-state"><p>Failed to load containers</p></div>'; }
+    if (!containers || !containers.length) { el.innerHTML = '<div class="empty-state" style="padding:30px"><p>No containers yet</p></div>'; return; }
+    el.innerHTML = containers.slice(0, 8).map(c => {
+      const s = c.status;
+      const color = s === 'running' ? 'var(--success)' : s === 'building' ? 'var(--warning)' : 'var(--text-muted)';
+      return `<div class="dash-container-row" onclick="navigateTo('containers');setTimeout(()=>showContainerDetail('${esc(c.name)}','${c.node||'local'}'),100)">
+        <span class="dcr-dot" style="background:${color}"></span>
+        <span class="dcr-name">${esc(c.name)}</span>
+        <span class="badge badge-neutral" style="font-size:9px">${s}</span>
+      </div>`;
+    }).join('');
+    if (containers.length > 8) el.innerHTML += `<div style="text-align:center;padding:8px;font-size:11px;color:var(--text-muted)">+${containers.length-8} more</div>`;
+  } catch (e) { el.innerHTML = '<div class="empty-state" style="padding:20px"><p>Failed to load</p></div>'; }
 }
 
 async function renderDashboardNodes() {
@@ -289,16 +290,15 @@ async function renderDashboardNodes() {
   if (!card || !info) return;
   try {
     const dashboard = await api('GET', '/system/dashboard');
-    animateCounter('stat-nodes', (dashboard.nodes || []).length);
     if (!dashboard.is_manager || !dashboard.nodes || !dashboard.nodes.length) { card.style.display = 'none'; return; }
     card.style.display = '';
     const nodes = dashboard.nodes;
     info.innerHTML = nodes.map(n => {
       const color = n.status === 'online' ? 'var(--success)' : 'var(--danger)';
-      return `<div style="display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--border)">
-        <span style="width:8px;height:8px;border-radius:50%;background:${color};flex-shrink:0;${n.status==='online'?'box-shadow:0 0 6px '+color:''}"></span>
-        <div style="flex:1"><strong>${esc(n.alias||n.ip)}</strong><span class="text-muted text-sm" style="margin-left:8px">${n.status}</span></div>
-        <span class="text-sm text-muted">CPU ${Math.round(n.cpu_percent||0)}% · RAM ${(n.mem_used_gb||0).toFixed(1)}/${(n.mem_total_gb||0).toFixed(1)} GB</span>
+      return `<div class="dash-cluster-row">
+        <span class="dcl-dot" style="background:${color}"></span>
+        <span class="dcl-name">${esc(n.alias||n.ip)}</span>
+        <span class="dcl-stats">CPU ${Math.round(n.cpu_percent||0)}% · RAM ${(n.mem_used_gb||0).toFixed(1)}/${(n.mem_total_gb||0).toFixed(1)}GB</span>
       </div>`;
     }).join('');
   } catch (e) { card.style.display = 'none'; }
@@ -321,32 +321,62 @@ async function loadContainers() {
 function renderContainers(containers, nodeId) {
   const el = document.getElementById('containers-list');
   if (!el) return;
-  if (!containers.length) { el.innerHTML = '<div class="empty-state"><i class="bi bi-box-seam"></i><h3>No containers</h3><p>Create your first container to get started</p></div>'; return; }
+  if (!containers.length) { el.innerHTML = '<div class="empty-state"><i class="bi bi-box-seam"></i><h3>No containers</h3><p>Create your first container</p></div>'; return; }
   el.innerHTML = containers.map(c => {
     const name = c.name || '';
     const node = c.node || 'local';
-    const isRemote = node !== 'local';
     const s = c.status;
     const bc = s === 'running' ? 'badge-success' : s === 'building' ? 'badge-warning' : s === 'failed' ? 'badge-danger' : 'badge-neutral';
-    const nodeLabel = c.node_alias || (isRemote ? node.slice(0,8) : '');
-    const nodeTag = nodeLabel ? `<span class="badge badge-info" style="margin-left:6px;font-size:10px">${esc(nodeLabel)}</span>` : '';
-    const isBuilding = s === 'building';
-    const isRunning = s === 'running';
-    return `<div class="container-card ${isBuilding?'building':''}" data-name="${esc(name)}" data-node="${node}" onclick="showContainerDetail('${esc(name)}','${node}')">
-      <div class="card-top"><span class="card-name"><i class="bi bi-box-seam" style="color:var(--accent)"></i>${esc(name)}${nodeTag}</span>
-        <span class="badge ${bc}">${isBuilding?'<i class="bi bi-arrow-repeat spin"></i> ':''}${s}</span></div>
-      <div class="card-meta">
-        <span><i class="bi bi-image"></i> ${esc(c.template_name||c.image||'-')}</span>
-        <span><i class="bi bi-globe2"></i> ${esc(c.ip_address||'N/A')}</span>
-        ${c.stats&&c.stats.memory_bytes?`<span><i class="bi bi-memory"></i> ${fmtBytes(c.stats.memory_bytes)}</span>`:''}
-      </div>
-      <div class="card-actions">
-        ${isRunning ? `<button class="btn btn-icon btn-ghost sm" onclick="event.stopPropagation();stopContainer('${esc(name)}')" title="Stop"><i class="bi bi-stop-fill"></i></button>` : ''}
-        ${!isRunning && !isBuilding ? `<button class="btn btn-icon btn-ghost sm" onclick="event.stopPropagation();startContainer('${esc(name)}')" title="Start"><i class="bi bi-play-fill"></i></button>` : ''}
-        <button class="btn btn-icon btn-ghost sm" onclick="event.stopPropagation();restartContainer('${esc(name)}')" title="Restart"><i class="bi bi-arrow-repeat"></i></button>
-        <button class="btn btn-icon btn-ghost sm" onclick="event.stopPropagation();deleteContainer('${esc(name)}')" title="Delete" style="color:var(--danger)"><i class="bi bi-trash3"></i></button>
-      </div></div>`;
+    const nodeTag = node !== 'local' ? `<span class="badge badge-info" style="font-size:9px">${esc(c.node_alias||node.slice(0,6))}</span>` : '';
+    const mem = c.stats && c.stats.memory_bytes ? fmtBytes(c.stats.memory_bytes) : '';
+    return `<div class="split-list-card" data-name="${esc(name)}" onclick="showContainerDetail('${esc(name)}','${node}')">
+      <div class="slc-top"><span class="slc-name"><i class="bi bi-box-seam" style="color:var(--accent)"></i>${esc(name)}${nodeTag}</span><span class="badge ${bc}" style="font-size:10px">${s}</span></div>
+      <div class="slc-meta"><span><i class="bi bi-image"></i> ${esc(c.template_name||c.image||'-')}</span><span><i class="bi bi-globe2"></i> ${esc(c.ip_address||'N/A')}</span>${mem?`<span>${mem}</span>`:''}</div>
+    </div>`;
   }).join('');
+}
+
+let selectedContainerName = null;
+async function showContainerDetail(name, nodeId) {
+  selectedContainerName = name;
+  document.querySelectorAll('#containers-list .split-list-card').forEach(c => c.classList.toggle('selected', c.dataset.name === name));
+  const el = document.getElementById('container-detail');
+  if (!el) return;
+  el.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text-muted)"><i class="bi bi-arrow-repeat spin" style="font-size:24px"></i><p style="margin-top:8px">Loading...</p></div>';
+  try {
+    const isRemote = nodeId && nodeId !== 'local';
+    let c;
+    if (isRemote) { c = await api('GET', `/nodes/${encodeURIComponent(nodeId)}/containers/${encodeURIComponent(name)}`); }
+    else { c = await api('GET', `/containers/${name}`); }
+    const s = c.status;
+    const bc = s === 'running' ? 'badge-success' : s === 'building' ? 'badge-warning' : s === 'failed' ? 'badge-danger' : 'badge-neutral';
+    const logs = isRemote ? (c.log || '') : (await api('GET', `/containers/${name}/logs`).catch(()=>({logs:''}))).logs || '';
+    const logText = typeof logs === 'string' ? logs : (Array.isArray(logs) ? logs.join('\n') : '');
+    el.innerHTML = `
+      <div class="sr-header">
+        <h2><i class="bi bi-box-seam" style="color:var(--accent)"></i>${esc(c.name)} <span class="badge ${bc}" style="font-size:11px">${s}</span></h2>
+        <div class="sr-actions">
+          ${s==='running'||s==='starting'?`<button class="btn btn-secondary btn-sm" onclick="stopContainer('${esc(name)}')"><i class="bi bi-stop-fill"></i> Stop</button>`:`<button class="btn btn-success btn-sm" onclick="startContainer('${esc(name)}')"><i class="bi bi-play-fill"></i> Start</button>`}
+          <button class="btn btn-primary btn-sm" onclick="restartContainer('${esc(name)}')"><i class="bi bi-arrow-repeat"></i></button>
+          <button class="btn btn-danger btn-sm" onclick="deleteContainer('${esc(name)}')"><i class="bi bi-trash3"></i></button>
+        </div>
+      </div>
+      <div class="sr-info-grid">
+        <div class="sr-info-item"><div class="sr-label">Image</div><div class="sr-value">${esc(c.template_name||c.image||'-')}</div></div>
+        <div class="sr-info-item"><div class="sr-label">IP Address</div><div class="sr-value font-mono">${esc(c.ip_address||'-')}</div></div>
+        <div class="sr-info-item"><div class="sr-label">Mode</div><div class="sr-value">${esc(c.mode||'-')}</div></div>
+        <div class="sr-info-item"><div class="sr-label">Memory</div><div class="sr-value">${esc(c.resources?.memory_limit||'-')}</div></div>
+        <div class="sr-info-item"><div class="sr-label">Ports</div><div class="sr-value">${esc((c.port_mappings||[]).join(', ')||'-')}</div></div>
+        <div class="sr-info-item"><div class="sr-label">Node</div><div class="sr-value">${esc(c.node||'local')}</div></div>
+      </div>
+      <div style="background:rgba(10,15,30,0.4);border:1px solid var(--border);border-radius:var(--radius-sm);overflow:hidden">
+        <div style="padding:10px 14px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px">
+          <i class="bi bi-terminal" style="color:var(--primary);font-size:12px"></i>
+          <span style="font-size:12px;font-weight:600;color:var(--text-secondary)">Logs</span>
+        </div>
+        <pre style="max-height:300px;overflow:auto;font-size:11px;margin:0;padding:14px;white-space:pre-wrap;font-family:monospace;color:var(--text-secondary)">${esc(logText||'No logs')}</pre>
+      </div>`;
+  } catch (e) { el.innerHTML = `<div style="color:var(--danger);padding:20px;text-align:center"><i class="bi bi-exclamation-triangle"></i> ${esc(e.message)}</div>`; }
 }
 
 async function startContainer(name) { setContainerLoading(name,'start'); try { await api('POST',`/containers/${name}/start`); toast(`Starting "${name}"...`,'info'); pollContainerStatus(name,0); } catch(e) { toast(`Failed: ${e.message}`,'error'); clearContainerLoading(name); } }
@@ -380,6 +410,11 @@ async function pollRemoteContainerStatus(nodeId, name, attempt) {
 
 let currentContainer = null;
 async function showContainerDetail(name, nodeId) {
+  selectedContainerName = name;
+  document.querySelectorAll('#containers-list .split-list-card').forEach(c => c.classList.toggle('selected', c.dataset.name === name));
+  const el = document.getElementById('container-detail');
+  if (!el) return;
+  el.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text-muted)"><i class="bi bi-arrow-repeat spin" style="font-size:24px"></i><p style="margin-top:8px">Loading...</p></div>';
   try {
     const isRemote = nodeId && nodeId !== 'local';
     let c;
@@ -389,37 +424,33 @@ async function showContainerDetail(name, nodeId) {
     currentContainer._nodeId = nodeId || 'local';
     const s = c.status;
     const bc = s === 'running' ? 'badge-success' : s === 'building' ? 'badge-warning' : s === 'failed' ? 'badge-danger' : 'badge-neutral';
-    const actionsHtml = isRemote
-      ? `<div style="display:flex;gap:8px">
-          ${s==='running'?`<button class="btn btn-secondary btn-sm" onclick="remoteContainerAction('${nodeId}','${esc(name)}','stop')"><i class="bi bi-stop-fill"></i> Stop</button>`:`<button class="btn btn-success btn-sm" onclick="remoteContainerAction('${nodeId}','${esc(name)}','start')"><i class="bi bi-play-fill"></i> Start</button>`}
-          <button class="btn btn-primary btn-sm" onclick="remoteContainerAction('${nodeId}','${esc(name)}','restart')"><i class="bi bi-arrow-repeat"></i> Restart</button>
-          <button class="btn btn-danger btn-sm" onclick="remoteDeleteContainer('${nodeId}','${esc(name)}')"><i class="bi bi-trash3"></i> Delete</button></div>`
-      : `<div style="display:flex;gap:8px">
-          ${s==='running'||s==='starting'?`<button class="btn btn-secondary btn-sm" onclick="stopContainer('${esc(name)}')"><i class="bi bi-stop-fill"></i> Stop</button>`:`<button class="btn btn-success btn-sm" onclick="startContainer('${esc(name)}')"><i class="bi bi-play-fill"></i> Start</button>`}
-          <button class="btn btn-primary btn-sm" onclick="restartContainer('${esc(name)}')"><i class="bi bi-arrow-repeat"></i> Restart</button>
-          <button class="btn btn-danger btn-sm" onclick="deleteContainer('${esc(name)}')"><i class="bi bi-trash3"></i> Delete</button></div>`;
-
     const logs = isRemote ? (c.log || '') : (await api('GET', `/containers/${name}/logs`).catch(()=>({logs:''}))).logs || '';
     const logText = typeof logs === 'string' ? logs : (Array.isArray(logs) ? logs.join('\n') : '');
-
-    openModal(c.name, `
-      <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
-        <span class="badge ${bc}" style="font-size:13px">${s}</span>
-        ${actionsHtml}
+    el.innerHTML = `
+      <div class="sr-header">
+        <h2><i class="bi bi-box-seam" style="color:var(--accent)"></i>${esc(c.name)} <span class="badge ${bc}" style="font-size:11px">${s}</span></h2>
+        <div class="sr-actions">
+          ${s==='running'||s==='starting'?`<button class="btn btn-secondary btn-sm" onclick="stopContainer('${esc(name)}')"><i class="bi bi-stop-fill"></i> Stop</button>`:`<button class="btn btn-success btn-sm" onclick="startContainer('${esc(name)}')"><i class="bi bi-play-fill"></i> Start</button>`}
+          <button class="btn btn-primary btn-sm" onclick="restartContainer('${esc(name)}')"><i class="bi bi-arrow-repeat"></i></button>
+          <button class="btn btn-danger btn-sm" onclick="deleteContainer('${esc(name)}')"><i class="bi bi-trash3"></i></button>
+        </div>
       </div>
-      <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:12px;margin-bottom:16px">
-        <div class="card" style="padding:12px"><div class="text-sm text-muted mb-8">Image</div><div>${esc(c.template_name||c.image||'-')}</div></div>
-        <div class="card" style="padding:12px"><div class="text-sm text-muted mb-8">IP Address</div><div class="font-mono">${esc(c.ip_address||'-')}</div></div>
-        <div class="card" style="padding:12px"><div class="text-sm text-muted mb-8">Mode</div><div>${esc(c.mode||'-')}</div></div>
-        <div class="card" style="padding:12px"><div class="text-sm text-muted mb-8">Memory</div><div>${esc(c.resources?.memory_limit||'-')}</div></div>
-        <div class="card" style="padding:12px"><div class="text-sm text-muted mb-8">Ports</div><div>${esc((c.port_mappings||[]).join(', ')||'-')}</div></div>
-        <div class="card" style="padding:12px"><div class="text-sm text-muted mb-8">Created</div><div>${esc(c.created||'-')}</div></div>
-        <div class="card" style="padding:12px"><div class="text-sm text-muted mb-8">Node</div><div>${esc(c.node||'local')}</div></div>
-        <div class="card" style="padding:12px"><div class="text-sm text-muted mb-8">PGID Mode</div><div>${esc(c.pgid_mode||'-')}</div></div>
+      <div class="sr-info-grid">
+        <div class="sr-info-item"><div class="sr-label">Image</div><div class="sr-value">${esc(c.template_name||c.image||'-')}</div></div>
+        <div class="sr-info-item"><div class="sr-label">IP Address</div><div class="sr-value font-mono">${esc(c.ip_address||'-')}</div></div>
+        <div class="sr-info-item"><div class="sr-label">Mode</div><div class="sr-value">${esc(c.mode||'-')}</div></div>
+        <div class="sr-info-item"><div class="sr-label">Memory</div><div class="sr-value">${esc(c.resources?.memory_limit||'-')}</div></div>
+        <div class="sr-info-item"><div class="sr-label">Ports</div><div class="sr-value">${esc((c.port_mappings||[]).join(', ')||'-')}</div></div>
+        <div class="sr-info-item"><div class="sr-label">Node</div><div class="sr-value">${esc(c.node||'local')}</div></div>
       </div>
-      <div class="card" style="padding:12px"><div class="text-sm text-muted mb-8">Logs</div><pre style="max-height:200px;overflow:auto;font-size:11px;margin:0;white-space:pre-wrap">${esc(logText||'No logs')}</pre></div>
-    `);
-  } catch (e) { toast(`Failed: ${e.message}`, 'error'); }
+      <div style="background:rgba(10,15,30,0.4);border:1px solid var(--border);border-radius:var(--radius-sm);overflow:hidden">
+        <div style="padding:10px 14px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px">
+          <i class="bi bi-terminal" style="color:var(--primary);font-size:12px"></i>
+          <span style="font-size:12px;font-weight:600;color:var(--text-secondary)">Logs</span>
+        </div>
+        <pre style="max-height:300px;overflow:auto;font-size:11px;margin:0;padding:14px;white-space:pre-wrap;font-family:monospace;color:var(--text-secondary)">${esc(logText||'No logs')}</pre>
+      </div>`;
+  } catch (e) { el.innerHTML = `<div style="color:var(--danger);padding:20px;text-align:center"><i class="bi bi-exclamation-triangle"></i> ${esc(e.message)}</div>`; }
 }
 
 /* ═══════ IMAGES ═══════ */
@@ -454,16 +485,29 @@ function renderImages(images) {
   if (!images.length) { el.innerHTML = '<div class="empty-state"><i class="bi bi-hdd-stack"></i><h3>No images</h3><p>Pull an image to get started</p></div>'; return; }
   el.innerHTML = images.map(img => {
     const nodeLabel = img.node_alias || (img.node && img.node !== 'local' ? img.node.slice(0,8) : '');
-    const nodeTag = nodeLabel ? `<span class="badge badge-info" style="font-size:10px">${esc(nodeLabel)}</span>` : '';
-    return `<div class="container-card">
-      <div class="card-top"><span class="card-name"><i class="bi bi-hdd-stack" style="color:var(--accent)"></i>${esc(img.name)}${nodeTag}</span><span class="badge badge-neutral">${esc(img.arch||'')}</span></div>
-      <div class="card-meta"><span><i class="bi bi-hdd"></i> ${img.size_human || fmtBytes(img.size||0)}</span><span>${esc(img.version||'')}</span></div>
-      <div class="card-actions">
-        <button class="btn btn-primary btn-sm" onclick="event.stopPropagation();deployTemplate('${esc(img.id||img.name)}')"><i class="bi bi-rocket-takeoff"></i> Deploy</button>
-        <button class="btn btn-danger btn-sm" onclick="event.stopPropagation();deleteImage('${esc(img.id||img.name)}')"><i class="bi bi-trash3"></i></button>
-      </div>
+    const nodeTag = nodeLabel ? `<span class="badge badge-info" style="font-size:9px">${esc(nodeLabel)}</span>` : '';
+    return `<div class="split-list-card" data-id="${esc(img.id||img.name)}" onclick="showImageDetail('${esc(img.id||img.name)}')">
+      <div class="slc-top"><span class="slc-name"><i class="bi bi-hdd-stack" style="color:var(--accent)"></i>${esc(img.name)}${nodeTag}</span><span class="badge badge-neutral" style="font-size:9px">${esc(img.arch||'')}</span></div>
+      <div class="slc-meta"><span>${img.size_human || fmtBytes(img.size||0)}</span><span>${esc(img.version||'')}</span></div>
     </div>`;
   }).join('');
+}
+
+function showImageDetail(id) {
+  document.querySelectorAll('#images-list .split-list-card').forEach(c => c.classList.toggle('selected', c.dataset.id === id));
+  const el = document.getElementById('image-detail');
+  if (!el) return;
+  el.innerHTML = `
+    <div class="sr-header">
+      <h2><i class="bi bi-hdd-stack" style="color:var(--accent)"></i>${esc(id)}</h2>
+      <div class="sr-actions">
+        <button class="btn btn-primary btn-sm" onclick="deployTemplate('${esc(id)}')"><i class="bi bi-rocket-takeoff"></i> Deploy</button>
+        <button class="btn btn-danger btn-sm" onclick="deleteImage('${esc(id)}')"><i class="bi bi-trash3"></i></button>
+      </div>
+    </div>
+    <div class="sr-info-grid">
+      <div class="sr-info-item"><div class="sr-label">Name</div><div class="sr-value">${esc(id)}</div></div>
+    </div>`;
 }
 
 async function pullImage() {
@@ -505,21 +549,62 @@ async function loadNodes() {
       const color = n.status === 'online' ? 'var(--success)' : n.status === 'pending' ? 'var(--warning)' : 'var(--danger)';
       const label = n.status === 'online' ? 'Online' : n.status === 'pending' ? 'Pending' : 'Offline';
       const isOnline = n.status === 'online';
-      return `<div class="node-card" onclick="openNodeDetail('${esc(n.id)}','${esc(n.alias||n.ip)}','${esc(n.status)}')">
-        <div class="node-header">
-          <div class="node-avatar"><i class="bi bi-hdd-network"></i></div>
-          <div class="node-info"><div class="node-name">${esc(n.alias||n.ip)}</div><div class="node-ip">${esc(n.ip||'')}</div></div>
-          <span class="badge ${n.status==='online'?'badge-success':n.status==='pending'?'badge-warning':'badge-danger'}">${label}</span>
-        </div>
-        <div class="node-stats">
-          <div class="node-stat"><div class="node-stat-value">${isOnline?Math.round(n.cpu_percent||0)+'%':'-'}</div><div class="node-stat-label">CPU</div></div>
-          <div class="node-stat"><div class="node-stat-value">${isOnline?(n.mem_used_gb||0).toFixed(1)+'GB':'-'}</div><div class="node-stat-label">RAM</div></div>
-          <div class="node-stat"><div class="node-stat-value">${isOnline?(n.containers_total||0):'-'}</div><div class="node-stat-label">Containers</div></div>
-        </div>
+      return `<div class="split-list-card" data-id="${esc(n.id)}" onclick="showNodeDetail('${esc(n.id)}','${esc(n.alias||n.ip)}','${esc(n.status)}')">
+        <div class="slc-top"><span class="slc-name"><i class="bi bi-hdd-network" style="color:var(--primary)"></i>${esc(n.alias||n.ip)}</span><span class="badge ${n.status==='online'?'badge-success':n.status==='pending'?'badge-warning':'badge-danger'}" style="font-size:10px">${label}</span></div>
+        <div class="slc-meta"><span>CPU ${isOnline?Math.round(n.cpu_percent||0)+'%':'-'}</span><span>RAM ${isOnline?(n.mem_used_gb||0).toFixed(1)+'GB':'-'}</span><span>${isOnline?(n.containers_total||0):'-'} containers</span></div>
       </div>`;
     }).join('');
     updateNodeSelectors(nodes);
   } catch (e) { el.innerHTML = '<div class="empty-state"><p>Failed to load nodes</p></div>'; }
+}
+
+async function showNodeDetail(nodeId, name, status) {
+  currentNodeDetailId = nodeId;
+  document.querySelectorAll('#nodes-list .split-list-card').forEach(c => c.classList.toggle('selected', c.dataset.id === nodeId));
+  const el = document.getElementById('node-detail');
+  if (!el) return;
+  el.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text-muted)"><i class="bi bi-arrow-repeat spin" style="font-size:24px"></i><p style="margin-top:8px">Loading...</p></div>';
+  try {
+    const [st, sysInfo, containers] = await Promise.all([
+      api('GET', `/nodes/${encodeURIComponent(nodeId)}/status`).catch(()=>({})),
+      api('GET', `/nodes/${encodeURIComponent(nodeId)}/system/info`).catch(()=>({})),
+      api('GET', `/nodes/${encodeURIComponent(nodeId)}/containers`).catch(()=>[])
+    ]);
+    const info = { ...sysInfo, ...st };
+    const dev = info.device_model || info.device || '-';
+    const cpu = info.cpu_usage != null ? info.cpu_usage+'%' : '-';
+    const memT = info.memory?.total_kb || 0;
+    const memA = info.memory?.available_kb || 0;
+    const mem = memT > 0 ? `${fmtBytes((memT-memA)*1024)} / ${fmtBytes(memT*1024)}` : '-';
+    const battery = info.battery;
+    const batteryText = (battery != null && battery >= 0) ? battery+'%' : '-';
+    const kernel = info.kernel || '-';
+    const contArr = Array.isArray(containers) ? containers : [];
+    el.innerHTML = `
+      <div class="sr-header">
+        <h2><i class="bi bi-hdd-network" style="color:var(--primary)"></i>${esc(name)} <span class="badge ${status==='online'?'badge-success':'badge-danger'}" style="font-size:11px">${status}</span></h2>
+        <div class="sr-actions">
+          ${status==='online'?`<button class="btn btn-danger btn-sm" onclick="restartRemoteNode()"><i class="bi bi-arrow-clockwise"></i> Restart</button>`:''}
+          <button class="btn btn-danger btn-sm" onclick="deleteNode('${esc(nodeId)}')"><i class="bi bi-trash3"></i> Remove</button>
+        </div>
+      </div>
+      <div class="sr-info-grid">
+        <div class="sr-info-item"><div class="sr-label">Device</div><div class="sr-value">${esc(dev)}</div></div>
+        <div class="sr-info-item"><div class="sr-label">CPU</div><div class="sr-value">${esc(cpu)}</div></div>
+        <div class="sr-info-item"><div class="sr-label">Memory</div><div class="sr-value">${esc(mem)}</div></div>
+        <div class="sr-info-item"><div class="sr-label">Battery</div><div class="sr-value">${esc(batteryText)}</div></div>
+        <div class="sr-info-item" style="grid-column:span 2"><div class="sr-label">Kernel</div><div class="sr-value font-mono">${esc(kernel)}</div></div>
+      </div>
+      <div style="font-size:12px;font-weight:600;color:var(--text-secondary);margin-bottom:10px">Containers (${contArr.length})</div>
+      ${contArr.length ? contArr.map(c => {
+        const sc = c.status==='running'?'badge-success':c.status==='building'?'badge-warning':'badge-neutral';
+        return `<div style="display:flex;align-items:center;justify-content:space-between;padding:8px 12px;border:1px solid var(--border);border-radius:8px;margin-bottom:6px">
+          <span style="font-size:13px">${esc(c.name)} <span class="badge ${sc}" style="font-size:9px">${c.status}</span></span>
+          <div style="display:flex;gap:4px">
+            ${c.status==='running'?`<button class="btn btn-icon btn-ghost sm" onclick="remoteContainerAction('${nodeId}','${esc(c.name)}','stop')"><i class="bi bi-stop-fill"></i></button>`:`<button class="btn btn-icon btn-ghost sm" onclick="remoteContainerAction('${nodeId}','${esc(c.name)}','start')"><i class="bi bi-play-fill"></i></button>`}
+          </div></div>`;
+      }).join('') : '<div style="text-align:center;padding:16px;color:var(--text-muted);font-size:12px">No containers</div>'}`;
+  } catch (e) { el.innerHTML = `<div style="color:var(--danger);padding:20px;text-align:center"><i class="bi bi-exclamation-triangle"></i> ${esc(e.message)}</div>`; }
 }
 
 async function loadPairingRequests() {
@@ -542,63 +627,17 @@ async function approvePairing(reqId) { try { await api('POST', `/nodes/pairing/$
 async function rejectPairing(reqId) { try { await api('POST', `/nodes/pairing/${encodeURIComponent(reqId)}/reject`); toast('Rejected', 'success'); loadPairingRequests(); } catch(e) { toast(`Failed: ${e.message}`, 'error'); } }
 
 let currentNodeDetailId = null;
-async function openNodeDetail(nodeId, name, status) {
-  currentNodeDetailId = nodeId;
-  openModal(name, '<div class="skeleton skeleton-card"></div>');
-  try {
-    const [st, sysInfo, containers] = await Promise.all([
-      api('GET', `/nodes/${encodeURIComponent(nodeId)}/status`).catch(()=>({})),
-      api('GET', `/nodes/${encodeURIComponent(nodeId)}/system/info`).catch(()=>({})),
-      api('GET', `/nodes/${encodeURIComponent(nodeId)}/containers`).catch(()=>[])
-    ]);
-    const info = { ...sysInfo, ...st };
-    const dev = info.device_model || info.device || '-';
-    const cpu = info.cpu_usage != null ? info.cpu_usage+'%' : '-';
-    const memT = info.memory?.total_kb || 0;
-    const memA = info.memory?.available_kb || 0;
-    const mem = memT > 0 ? `${fmtBytes((memT-memA)*1024)} / ${fmtBytes(memT*1024)}` : '-';
-    const battery = info.battery;
-    const batteryText = (battery != null && battery >= 0) ? battery+'%' : '-';
-    const kernel = info.kernel || '-';
-    const contArr = Array.isArray(containers) ? containers : [];
-
-    openModal(name, `
-      <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
-        <span class="badge ${status==='online'?'badge-success':'badge-danger'}">${status}</span>
-        ${status==='online'?`<button class="btn btn-danger btn-sm" onclick="restartRemoteNode()"><i class="bi bi-arrow-clockwise"></i> Restart Device</button>`:''}
-        <button class="btn btn-danger btn-sm" onclick="deleteNode('${esc(nodeId)}')"><i class="bi bi-trash3"></i> Remove</button>
-      </div>
-      <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-bottom:16px">
-        <div class="card" style="padding:10px"><div class="text-sm text-muted">Device</div><div>${esc(dev)}</div></div>
-        <div class="card" style="padding:10px"><div class="text-sm text-muted">CPU</div><div>${esc(cpu)}</div></div>
-        <div class="card" style="padding:10px"><div class="text-sm text-muted">Memory</div><div>${esc(mem)}</div></div>
-        <div class="card" style="padding:10px"><div class="text-sm text-muted">Battery</div><div>${esc(batteryText)}</div></div>
-      </div>
-      <div class="card" style="padding:10px;margin-bottom:16px"><div class="text-sm text-muted">Kernel</div><div class="font-mono text-sm">${esc(kernel)}</div></div>
-      ${contArr.length ? `<div class="text-sm text-muted mb-8">Containers (${contArr.length})</div>
-        <div style="display:flex;flex-direction:column;gap:6px">${contArr.map(c => {
-          const sc = c.status==='running'?'badge-success':c.status==='building'?'badge-warning':'badge-neutral';
-          return `<div style="display:flex;align-items:center;justify-content:space-between;padding:8px 12px;border:1px solid var(--border);border-radius:8px">
-            <span>${esc(c.name)} <span class="badge ${sc}" style="font-size:10px">${c.status}</span></span>
-            <div style="display:flex;gap:4px">
-              ${c.status==='running'?`<button class="btn btn-icon btn-ghost sm" onclick="remoteContainerAction('${nodeId}','${esc(c.name)}','stop')"><i class="bi bi-stop-fill"></i></button>`:`<button class="btn btn-icon btn-ghost sm" onclick="remoteContainerAction('${nodeId}','${esc(c.name)}','start')"><i class="bi bi-play-fill"></i></button>`}
-            </div></div>`;
-        }).join('')}</div>` : '<div class="text-center text-muted">No containers</div>'}
-    `);
-  } catch (e) { openModal(name, `<div class="text-center" style="color:var(--danger)"><i class="bi bi-exclamation-triangle"></i> ${esc(e.message)}</div>`); }
-}
-
 async function restartRemoteNode() {
   if (!currentNodeDetailId) return;
   const ok = await confirmAction('Restart Device', 'Reboot remote device?');
   if (!ok) return;
-  try { await api('POST', `/nodes/${encodeURIComponent(currentNodeDetailId)}/restart`); toast('Restart sent', 'success'); closeModal(); } catch(e) { toast(`Failed: ${e.message}`, 'error'); }
+  try { await api('POST', `/nodes/${encodeURIComponent(currentNodeDetailId)}/restart`); toast('Restart sent', 'success'); showNodeDetail(currentNodeDetailId, '', 'online'); } catch(e) { toast(`Failed: ${e.message}`, 'error'); }
 }
 
 async function deleteNode(id) {
   const ok = await confirmAction('Remove Node', 'Remove this node?');
   if (!ok) return;
-  try { await api('POST', `/nodes/${encodeURIComponent(id)}/delete`); toast('Node removed', 'success'); closeModal(); loadNodes(); } catch(e) { toast(`Failed: ${e.message}`, 'error'); }
+  try { await api('POST', `/nodes/${encodeURIComponent(id)}/delete`); toast('Node removed', 'success'); document.getElementById('node-detail').innerHTML = '<div class="split-right-empty"><div><i class="bi bi-hdd-network"></i><p>Select a node</p></div></div>'; loadNodes(); } catch(e) { toast(`Failed: ${e.message}`, 'error'); }
 }
 
 async function sendPairingRequest() {
@@ -651,20 +690,43 @@ async function loadStacks() {
       const running = (s.containers||[]).filter(c => c.status==='running').length;
       const total = (s.containers||[]).length;
       const bc = running===total&&total>0 ? 'badge-success' : running>0 ? 'badge-warning' : 'badge-danger';
-      const containers = (s.containers||[]).map(c => {
-        const sc = c.status==='running'?'badge-success':c.status==='building'?'badge-warning':'badge-neutral';
-        return `<span style="display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border:1px solid var(--border);border-radius:6px;font-size:11px"><span style="width:6px;height:6px;border-radius:50%;background:${c.status==='running'?'var(--success)':'var(--text-muted)'}"></span>${esc(c.name)} <span class="badge ${sc}" style="font-size:9px">${c.status}</span></span>`;
-      }).join(' ');
-      return `<div class="container-card">
-        <div class="card-top"><span class="card-name"><i class="bi bi-layers" style="color:var(--accent)"></i>${esc(s.name)}</span><span class="badge ${bc}">${running}/${total}</span></div>
-        <div class="card-meta"><span>Template: ${esc(s.template||'-')}</span></div>
-        ${containers ? `<div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:8px">${containers}</div>` : ''}
-        <div class="card-actions">
-          <button class="btn btn-icon btn-ghost sm" onclick="event.stopPropagation();deleteStack('${esc(s.name)}')" title="Delete" style="color:var(--danger)"><i class="bi bi-trash3"></i></button>
-        </div>
+      return `<div class="split-list-card" data-name="${esc(s.name)}" onclick="showStackDetail('${esc(s.name)}')">
+        <div class="slc-top"><span class="slc-name"><i class="bi bi-layers" style="color:var(--accent)"></i>${esc(s.name)}</span><span class="badge ${bc}" style="font-size:10px">${running}/${total}</span></div>
+        <div class="slc-meta"><span>Template: ${esc(s.template||'-')}</span></div>
       </div>`;
     }).join('');
   } catch (e) { el.innerHTML = '<div class="empty-state"><p>Failed to load</p></div>'; }
+}
+
+function showStackDetail(name) {
+  document.querySelectorAll('#stacks-list .split-list-card').forEach(c => c.classList.toggle('selected', c.dataset.name === name));
+  const el = document.getElementById('stack-detail');
+  if (!el) return;
+  el.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text-muted)"><i class="bi bi-arrow-repeat spin" style="font-size:24px"></i></div>';
+  api('GET', '/stacks/all').then(data => {
+    const s = (data.stacks||[]).find(x => x.name === name);
+    if (!s) { el.innerHTML = '<div style="padding:20px;color:var(--text-muted)">Stack not found</div>'; return; }
+    const running = (s.containers||[]).filter(c => c.status==='running').length;
+    const total = (s.containers||[]).length;
+    el.innerHTML = `
+      <div class="sr-header">
+        <h2><i class="bi bi-layers" style="color:var(--accent)"></i>${esc(s.name)}</h2>
+        <div class="sr-actions">
+          <button class="btn btn-danger btn-sm" onclick="deleteStack('${esc(s.name)}')"><i class="bi bi-trash3"></i></button>
+        </div>
+      </div>
+      <div class="sr-info-grid">
+        <div class="sr-info-item"><div class="sr-label">Template</div><div class="sr-value">${esc(s.template||'-')}</div></div>
+        <div class="sr-info-item"><div class="sr-label">Status</div><div class="sr-value">${running}/${total} running</div></div>
+      </div>
+      <div style="font-size:12px;font-weight:600;color:var(--text-secondary);margin-bottom:10px">Containers</div>
+      ${(s.containers||[]).map(c => {
+        const sc = c.status==='running'?'badge-success':c.status==='building'?'badge-warning':'badge-neutral';
+        return `<div style="display:flex;align-items:center;justify-content:space-between;padding:8px 12px;border:1px solid var(--border);border-radius:8px;margin-bottom:6px">
+          <span style="font-size:13px">${esc(c.name)} <span class="badge ${sc}" style="font-size:9px">${c.status}</span></span>
+        </div>`;
+      }).join('') || '<div style="text-align:center;padding:16px;color:var(--text-muted);font-size:12px">No containers</div>'}`;
+  }).catch(e => { el.innerHTML = `<div style="color:var(--danger);padding:20px">${esc(e.message)}</div>`; });
 }
 
 document.getElementById('btn-create-stack')?.addEventListener('click', async () => {
@@ -695,13 +757,28 @@ async function loadBackups() {
     const data = await api('GET', '/backups');
     const routines = data.routines || [];
     if (!routines.length) { el.innerHTML = '<div class="empty-state"><i class="bi bi-cloud-arrow-up"></i><h3>No backups</h3><p>Create a backup routine</p></div>'; return; }
-    el.innerHTML = routines.map(r => `<div class="container-card">
-      <div class="card-top"><span class="card-name"><i class="bi bi-cloud-arrow-up" style="color:var(--accent)"></i>${esc(r.name)}</span>
-        <div style="display:flex;gap:4px"><button class="btn btn-icon btn-ghost sm" onclick="executeBackup('${esc(r.id||r.name)}')" title="Run"><i class="bi bi-play-fill"></i></button>
-        <button class="btn btn-icon btn-ghost sm" onclick="deleteBackup('${esc(r.id||r.name)}')" title="Delete" style="color:var(--danger)"><i class="bi bi-trash3"></i></button></div></div>
-      <div class="card-meta"><span>Schedule: ${esc(r.schedule||'-')}</span><span>Retention: ${r.retention||30}d</span></div>
+    el.innerHTML = routines.map(r => `<div class="split-list-card" data-id="${esc(r.id||r.name)}" onclick="showBackupDetail('${esc(r.id||r.name)}')">
+      <div class="slc-top"><span class="slc-name"><i class="bi bi-cloud-arrow-up" style="color:var(--accent)"></i>${esc(r.name)}</span></div>
+      <div class="slc-meta"><span>${esc(r.schedule||'-')}</span><span>Retention: ${r.retention||30}d</span></div>
     </div>`).join('');
   } catch (e) { el.innerHTML = '<div class="empty-state"><p>Failed to load</p></div>'; }
+}
+
+function showBackupDetail(id) {
+  document.querySelectorAll('#backups-list .split-list-card').forEach(c => c.classList.toggle('selected', c.dataset.id === id));
+  const el = document.getElementById('backup-detail');
+  if (!el) return;
+  el.innerHTML = `
+    <div class="sr-header">
+      <h2><i class="bi bi-cloud-arrow-up" style="color:var(--accent)"></i>${esc(id)}</h2>
+      <div class="sr-actions">
+        <button class="btn btn-success btn-sm" onclick="executeBackup('${esc(id)}')"><i class="bi bi-play-fill"></i> Run</button>
+        <button class="btn btn-danger btn-sm" onclick="deleteBackup('${esc(id)}')"><i class="bi bi-trash3"></i></button>
+      </div>
+    </div>
+    <div class="sr-info-grid">
+      <div class="sr-info-item"><div class="sr-label">Routine</div><div class="sr-value">${esc(id)}</div></div>
+    </div>`;
 }
 
 async function executeBackup(id) { try { toast('Running backup...','info'); await api('POST',`/backups/${encodeURIComponent(id)}/execute`); toast('Backup complete','success'); loadBackups(); } catch(e) { toast(`Failed: ${e.message}`,'error'); } }
@@ -725,11 +802,32 @@ async function loadNetworks() {
   try {
     const [networks, info] = await Promise.all([api('GET', '/networks'), api('GET', '/networks/info')]);
     if (!networks || !networks.length) { el.innerHTML = '<div class="empty-state"><i class="bi bi-globe2"></i><h3>No networks</h3></div>'; return; }
-    el.innerHTML = networks.map(net => `<div class="container-card">
-      <div class="card-top"><span class="card-name"><i class="bi bi-globe2" style="color:var(--accent)"></i>${esc(net.name)}</span><span class="badge badge-success">${net.mode}</span></div>
-      <div class="card-meta"><span>Subnet: ${esc(net.subnet)}</span><span>Gateway: ${esc(net.gateway)}</span><span>NAT: ${net.nat?'On':'Off'}</span></div>
+    el.innerHTML = networks.map(net => `<div class="split-list-card" data-name="${esc(net.name)}" onclick="showNetworkDetail('${esc(net.name)}')">
+      <div class="slc-top"><span class="slc-name"><i class="bi bi-globe2" style="color:var(--accent)"></i>${esc(net.name)}</span><span class="badge badge-success" style="font-size:10px">${net.mode}</span></div>
+      <div class="slc-meta"><span>${esc(net.subnet)}</span><span>GW: ${esc(net.gateway)}</span><span>NAT: ${net.nat?'On':'Off'}</span></div>
     </div>`).join('');
   } catch (e) { el.innerHTML = '<div class="empty-state"><p>Failed to load</p></div>'; }
+}
+
+function showNetworkDetail(name) {
+  document.querySelectorAll('#networks-list .split-list-card').forEach(c => c.classList.toggle('selected', c.dataset.name === name));
+  const el = document.getElementById('network-detail');
+  if (!el) return;
+  api('GET', '/networks').then(networks => {
+    const net = networks.find(n => n.name === name);
+    if (!net) { el.innerHTML = '<div style="padding:20px;color:var(--text-muted)">Network not found</div>'; return; }
+    el.innerHTML = `
+      <div class="sr-header">
+        <h2><i class="bi bi-globe2" style="color:var(--accent)"></i>${esc(net.name)}</h2>
+      </div>
+      <div class="sr-info-grid">
+        <div class="sr-info-item"><div class="sr-label">Name</div><div class="sr-value">${esc(net.name)}</div></div>
+        <div class="sr-info-item"><div class="sr-label">Mode</div><div class="sr-value">${esc(net.mode)}</div></div>
+        <div class="sr-info-item"><div class="sr-label">Subnet</div><div class="sr-value font-mono">${esc(net.subnet)}</div></div>
+        <div class="sr-info-item"><div class="sr-label">Gateway</div><div class="sr-value font-mono">${esc(net.gateway)}</div></div>
+        <div class="sr-info-item"><div class="sr-label">NAT</div><div class="sr-value">${net.nat?'Enabled':'Disabled'}</div></div>
+      </div>`;
+  }).catch(e => { el.innerHTML = `<div style="color:var(--danger);padding:20px">${esc(e.message)}</div>`; });
 }
 
 /* ═══════ SETTINGS ═══════ */
