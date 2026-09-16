@@ -780,6 +780,7 @@ cmd_start() {
     fi
 
     local SSH_PORT=$(grep -o '"ssh_port":[^,]*' "$CONFIG" | cut -d: -f2 | tr -d ' ')
+    local ANKD_PORT=$(grep -o '"ankd_port":[^,]*' "$CONFIG" | cut -d: -f2 | tr -d ' ')
     local IP=$(grep -o '"ip_address":[^,]*' "$CONFIG" | cut -d'"' -f4)
     local IMAGE=$(grep -o '"image":[^,]*' "$CONFIG" 2>/dev/null | cut -d'"' -f4)
     local TEMPLATE_ID=$(grep -o '"template_id":[^,]*' "$CONFIG" 2>/dev/null | cut -d'"' -f4)
@@ -936,7 +937,7 @@ cmd_start() {
         echo "  Using ankd service manager"
         local INSTANCE_UUID=$(grep -o '"instance_uuid": *"[^"]*"' "$CONFIG" 2>/dev/null | cut -d'"' -f4)
         local HEALTH_FILE="/tmp/ank-health"
-        CONTAINER_INIT="export PATH=/bin:/sbin:/usr/bin:/usr/sbin; ANKD_CONTAINER=$NAME ANKD_SSHD_PORT=$SSHD_PORT ANKD_INSTANCE_UUID=${INSTANCE_UUID:-$NAME} ANK_HEALTH_FILE=$HEALTH_FILE /usr/ankd/core/ankd.sh daemon"
+        CONTAINER_INIT="export PATH=/bin:/sbin:/usr/bin:/usr/sbin; ANKD_CONTAINER=$NAME ANKD_SSHD_PORT=$SSHD_PORT ANKD_PORT=${ANKD_PORT:-50000} ANKD_INSTANCE_UUID=${INSTANCE_UUID:-$NAME} ANK_HEALTH_FILE=$HEALTH_FILE /usr/ankd/core/ankd.sh daemon"
     else
         # Fallback: legacy inline init
         echo "  WARN: ankd not installed, using legacy init"

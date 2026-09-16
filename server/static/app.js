@@ -793,11 +793,33 @@ function clearContainerLoading(name) {
 }
 
 function getStatusBadgeClass(status) {
-  return { running: 'badge-success', starting: 'badge-info', building: 'badge-warning', stopping: 'badge-info', stopped: 'badge-neutral', failed: 'badge-danger', deleting: 'badge-danger' }[status] || 'badge-neutral';
+  const map = {
+    running: 'badge-success',
+    running_degraded_ssh: 'badge-warning',
+    running_degraded_ankd: 'badge-warning',
+    starting: 'badge-info',
+    building: 'badge-warning',
+    stopping: 'badge-info',
+    stopped: 'badge-neutral',
+    failed: 'badge-danger',
+    deleting: 'badge-danger'
+  };
+  return map[status] || 'badge-neutral';
 }
 
 function getStatusLabel(status) {
-  return { building: 'building', starting: 'starting', running: 'running', stopping: 'stopping', stopped: 'stopped', failed: 'failed', deleting: 'deleting' }[status] || status;
+  const map = {
+    running: 'running',
+    running_degraded_ssh: 'degraded',
+    running_degraded_ankd: 'degraded',
+    building: 'building',
+    starting: 'starting',
+    stopping: 'stopping',
+    stopped: 'stopped',
+    failed: 'failed',
+    deleting: 'deleting'
+  };
+  return map[status] || status;
 }
 
 function updateContainerBadge(name, status) {
@@ -1822,25 +1844,47 @@ async function loadTaskManager() {
   if (!el) return;
   el.innerHTML = '<div class="empty-state">Loading services...</div>';
   try {
-    const data = await api('GET', `/containers/${currentContainer.name}/services`);
+    const [data, health] = await Promise.all([
+      api('GET', `/containers/${currentContainer.name}/services`),
+      api('GET', `/containers/${currentContainer.name}/health`).catch(() => null)
+    ]);
     const services = data.services || [];
-    if (services.length === 0) { el.innerHTML = '<div class="empty-state" style="padding:20px"><p style="color:var(--text-muted)">No services configured</p></div>'; return; }
-    el.innerHTML = services.map(svc => {
-      const isRunning = svc.status === 'running';
+    const containerStatus = currentContainer.status || 'stopped';
+    const isRunning = containerStatus === 'running';
+    const isBuilding = containerStatus === 'building';
+    const canManage = isRunning && !isBuilding;
+
+    // Health status banner
+    let healthBanner = '';
+    if (health && health.status && health.status !== 'running') {
+      const sshOk = health.ssh_alive ? '<span style="color:var(--success)">SSH OK</span>' : '<span style="color:var(--danger)">SSH Down</span>';
+      const ankdOk = health.ankd_alive ? '<span style="color:var(--success)">Ankd OK</span>' : '<span style="color:var(--danger)">Ankd Down</span>';
+      healthBanner = `<div style="padding:8px 12px;border-radius:var(--radius-sm);background:var(--warning-dim);margin-bottom:12px;font-size:12px;display:flex;align-items:center;gap:12px"><i class="bi bi-exclamation-triangle" style="color:var(--warning)"></i><span>Container degraded: ${sshOk} | ${ankdOk}</span></div>`;
+    }
+
+    if (services.length === 0) {
+      el.innerHTML = healthBanner + '<div class="empty-state" style="padding:20px"><p style="color:var(--text-muted)">No services configured</p></div>';
+      return;
+    }
+    el.innerHTML = healthBanner + services.map(svc => {
+      const isSvcRunning = svc.status === 'running';
       return `<div class="service-item">
         <div class="service-info">
-          <div class="service-dot ${isRunning?'running':'stopped'}"></div>
-          <div><div class="service-name">${esc(svc.name)} ${svc.enabled?'<span style="color:var(--success);font-size:11px">ON</span>':'<span style="color:var(--text-muted);font-size:11px">OFF</span>'}</div><div class="service-cmd">${esc(svc.cmd||'no command')}</div></div>
+          <div class="service-dot ${isSvcRunning?'running':'stopped'}"></div>
+          <div>
+            <div class="service-name">${esc(svc.name)} ${svc.enabled?'<span style="color:var(--success);font-size:11px">ON</span>':'<span style="color:var(--text-muted);font-size:11px">OFF</span>'}</div>
+            <div class="service-cmd">${esc(svc.cmd||'no command')}</div>
+          </div>
         </div>
         <div class="service-actions">
           <button class="btn btn-sm btn-ghost" onclick="taskManagerViewLog('${esc(svc.name)}')" title="View Log"><i class="bi bi-journal-text"></i></button>
-          ${isRunning
-            ? `<button class="btn btn-sm btn-secondary" onclick="taskManagerServiceAction('${esc(svc.name)}','stop')" title="Stop"><i class="bi bi-stop-fill"></i></button>
-               <button class="btn btn-sm btn-ghost" onclick="taskManagerServiceAction('${esc(svc.name)}','restart')" title="Restart"><i class="bi bi-arrow-clockwise"></i></button>`
-            : `<button class="btn btn-sm btn-success" onclick="taskManagerServiceAction('${esc(svc.name)}','start')" title="Start"><i class="bi bi-play-fill"></i></button>`
+          ${isSvcRunning
+            ? `<button class="btn btn-sm btn-secondary" onclick="taskManagerServiceAction('${esc(svc.name)}','stop')" title="Stop" ${!canManage?'disabled':''}><i class="bi bi-stop-fill"></i></button>
+               <button class="btn btn-sm btn-ghost" onclick="taskManagerServiceAction('${esc(svc.name)}','restart')" title="Restart" ${!canManage?'disabled':''}><i class="bi bi-arrow-clockwise"></i></button>`
+            : `<button class="btn btn-sm btn-success" onclick="taskManagerServiceAction('${esc(svc.name)}','start')" title="Start" ${!canManage?'disabled':''}><i class="bi bi-play-fill"></i></button>`
           }
-          <button class="btn btn-sm btn-ghost" onclick="taskManagerServiceAction('${esc(svc.name)}','${svc.enabled?'disable':'enable'}')" title="${svc.enabled?'Disable':'Enable'}"><i class="bi bi-${svc.enabled?'pause':'play'}-circle"></i></button>
-          <button class="btn btn-sm btn-ghost" onclick="taskManagerServiceAction('${esc(svc.name)}','delete')" title="Delete" style="color:var(--danger)"><i class="bi bi-trash3"></i></button>
+          <button class="btn btn-sm btn-ghost" onclick="taskManagerServiceAction('${esc(svc.name)}','${svc.enabled?'disable':'enable'}')" title="${svc.enabled?'Disable':'Enable'}" ${!canManage?'disabled':''}><i class="bi bi-${svc.enabled?'pause':'play'}-circle"></i></button>
+          <button class="btn btn-sm btn-ghost" onclick="taskManagerServiceAction('${esc(svc.name)}','delete')" title="Delete" style="color:var(--danger)" ${!canManage?'disabled':''}><i class="bi bi-trash3"></i></button>
         </div>
       </div>`;
     }).join('');
@@ -1956,24 +2000,48 @@ function startRefreshTimer() {
     if (!isLoggedIn || document.getElementById('app').classList.contains('hidden') || document.hidden) return;
     refreshCycle++;
     try {
-      const [status, info] = await Promise.all([api('GET', '/status'), api('GET', '/system/info')]);
-      animateCounter('stat-running', status.containers_running || 0);
-      animateCounter('stat-stopped', status.containers_stopped || 0);
-      animateCounter('stat-total', status.containers_total || 0);
-      document.getElementById('dash-uptime').textContent = 'Uptime: ' + fmtUptime(status.uptime || 0);
-      if (refreshCycle % 4 === 0) {
-        const cpuPct = info.cpu_usage != null ? Math.round(info.cpu_usage) : 0;
-        setGaugeDash('gauge-cpu', cpuPct, 'gauge-cpu-text', 175.9);
-        const memT = info.memory?.total_kb || 0;
-        const memA = info.memory?.available_kb || 0;
-        const memPct = memT > 0 ? Math.round((memT - memA) / memT * 100) : 0;
-        setGaugeDash('gauge-ram', memPct, 'gauge-ram-text', 175.9);
-      }
       const activePage = document.querySelector('.page.active');
-      if (activePage) {
-        const pageId = activePage.id;
-        if (pageId === 'page-containers') loadContainers();
-        if (pageId === 'page-dashboard') { renderDashboardContainers(); renderDashboardNodes(); }
+      if (!activePage) return;
+      const pageId = activePage.id;
+
+      if (pageId === 'page-dashboard') {
+        const [status, info] = await Promise.all([api('GET', '/status'), api('GET', '/system/info')]);
+        animateCounter('stat-running', status.containers_running || 0);
+        animateCounter('stat-stopped', status.containers_stopped || 0);
+        animateCounter('stat-total', status.containers_total || 0);
+        document.getElementById('dash-uptime').textContent = 'Uptime: ' + fmtUptime(status.uptime || 0);
+        if (refreshCycle % 4 === 0) {
+          const cpuPct = info.cpu_usage != null ? Math.round(info.cpu_usage) : 0;
+          setGaugeDash('gauge-cpu', cpuPct, 'gauge-cpu-text', 175.9);
+          const memT = info.memory?.total_kb || 0;
+          const memA = info.memory?.available_kb || 0;
+          const memPct = memT > 0 ? Math.round((memT - memA) / memT * 100) : 0;
+          setGaugeDash('gauge-ram', memPct, 'gauge-ram-text', 175.9);
+        }
+        renderDashboardContainers();
+        renderDashboardNodes();
+      } else if (pageId === 'page-containers') {
+        await loadContainers();
+        if (currentContainer) {
+          try {
+            const updated = await api('GET', `/containers/${currentContainer.name}`);
+            if (updated) {
+              currentContainer = updated;
+              updateContainerBadge(currentContainer.name, updated.status);
+              updateDetailButtons(currentContainer.name, updated.status);
+            }
+          } catch(e) {}
+        }
+      } else if (pageId === 'page-images') {
+        loadImages();
+      } else if (pageId === 'page-nodes') {
+        loadNodes();
+      } else if (pageId === 'page-stacks') {
+        loadStacks();
+      } else if (pageId === 'page-backups') {
+        loadBackups();
+      } else if (pageId === 'page-networks') {
+        loadNetworks();
       }
     } catch(e) {}
   }, refreshSeconds * 1000);
@@ -2129,11 +2197,10 @@ async function loadNotchPreview(page) {
       const containers = await api('GET', '/containers/all').catch(()=>[]);
       if (containers.length) {
         html += `<div style="margin:12px 0 8px;font-size:11px;font-weight:600;color:var(--text-muted);text-transform:uppercase">Containers (${containers.length})</div>`;
-        html += containers.slice(0, 8).map(x => {
+        html += containers.map(x => {
           const color = x.status === 'running' ? 'var(--success)' : x.status === 'building' ? 'var(--warning)' : x.status === 'failed' ? 'var(--danger)' : 'var(--text-muted)';
           return `<div class="np-row"><span class="dot" style="background:${color}"></span><span class="np-name">${esc(x.name)}</span><span class="badge ${getStatusBadgeClass(x.status)}" style="font-size:9px">${getStatusLabel(x.status)}</span></div>`;
         }).join('');
-        if (containers.length > 8) html += `<div class="np-empty">+${containers.length - 8} more</div>`;
       }
     } else if (page === 'settings') {
       html += `<div class="np-row"><i class="bi bi-person-gear" style="color:var(--text-muted);font-size:12px"></i><span class="np-name">Account</span><span class="text-muted text-sm">Change password</span></div>`;

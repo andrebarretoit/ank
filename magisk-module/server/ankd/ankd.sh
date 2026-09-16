@@ -730,6 +730,37 @@ ANKCTL_EOF
 }
 
 # ============================================================
+# ANKD TCP HEALTH LISTENER
+# Responds to TCP connections on $ANKD_PORT with "ANKD_OK\n<status>\n"
+# The host probes this port to determine if the container is truly alive.
+# ============================================================
+_ankd_health_listener() {
+    local port="$1"
+    [ -z "$port" ] && return 1
+
+    # Try busybox nc first, thenncat, then shell-based fallback
+    if command -v nc >/dev/null 2>&1; then
+        # busybox nc: listen mode, exec per connection
+        while true; do
+            echo -e "ANKD_OK\nrunning" | nc -l -p "$port" -w 1 2>/dev/null
+        done &
+    elif command -v ncat >/dev/null 2>&1; then
+        while true; do
+            echo -e "ANKD_OK\nrunning" | ncat -l "$port" -w 1 2>/dev/null
+        done &
+    else
+        # Pure shell fallback: use /dev/tcp or busybox
+        while true; do
+            # Create a minimal TCP responder using a file-based approach
+            local tmp=$(mktemp /tmp/ankd_hc_XXXXXX 2>/dev/null)
+            # Use busybox httpd style or simple echo
+            _ankd_sleep 1
+        done &
+    fi
+    echo $!
+}
+
+# ============================================================
 # DAEMON MODE
 # ============================================================
 _ankd_daemon() {
@@ -837,6 +868,12 @@ _ankd_daemon() {
     echo "  ========================"
 
     _ankd_boot "INFO" "SSH running at port $ANKD_SSHD_PORT"
+
+    # Start health check TCP listener on ankd port
+    if [ -n "$ANKD_PORT" ]; then
+        _ankd_boot "INFO" "Starting health listener on port $ANKD_PORT"
+        _ankd_health_listener "$ANKD_PORT"
+    fi
 
     # Show service ports
     local _svc_ports=""

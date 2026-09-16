@@ -891,8 +891,8 @@ tr:hover td { background: var(--bg-hover); }
 /* ═══════ LOGS VIEWER ═══════ */
 .log-viewer {
   background: #0d1117; border: 1px solid var(--border); border-radius: var(--radius-sm);
-  padding: 12px; max-height: 600px; overflow-y: auto; font-family: monospace;
-  font-size: 12px; line-height: 1.6;
+  padding: 12px; min-height: 500px; max-height: 80vh; overflow-y: auto; font-family: monospace;
+  font-size: 12px; line-height: 1.6; flex: 1;
 }
 .log-entry { white-space: pre-wrap; word-break: break-all; }
 .log-time { color: var(--text-muted); }
@@ -989,14 +989,15 @@ tr:hover td { background: var(--bg-hover); }
 .detail-stat-label { font-size: 10px; color: var(--text-muted); text-transform: uppercase; display: block; margin-bottom: 4px; }
 .detail-stat-value { font-size: 13px; font-weight: 600; }
 .detail-actions { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; }
-.detail-logs { margin-top: 16px; }
+.detail-logs { margin-top: 16px; display: flex; flex-direction: column; flex: 1; }
 .detail-logs .card-header { margin-bottom: 8px; }
 .detail-logs .card-header h4 { font-size: 13px; font-weight: 600; color: var(--text-secondary); display: flex; align-items: center; gap: 8px; }
 .detail-logs .card-header h4 i { color: var(--primary); }
 .log-output {
   background: #0d1117; border: 1px solid var(--border); border-radius: var(--radius-sm);
-  padding: 12px; max-height: 250px; overflow: auto; font-size: 11px;
+  padding: 12px; min-height: 400px; max-height: 70vh; overflow: auto; font-size: 11px;
   white-space: pre-wrap; font-family: monospace; color: var(--text-secondary); margin: 0;
+  flex: 1;
 }
 
 /* ═══════ STATUS BADGES (extended) ═══════ */
