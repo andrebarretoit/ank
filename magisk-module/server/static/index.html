@@ -105,25 +105,50 @@
         <div class="stat-card"><div class="stat-icon purple"><i class="bi bi-hdd-stack"></i></div><div class="stat-value" id="stat-images">-</div><div class="stat-label">Images</div></div>
         <div class="stat-card"><div class="stat-icon yellow"><i class="bi bi-hdd-network"></i></div><div class="stat-value" id="stat-nodes">-</div><div class="stat-label">Nodes</div></div>
       </div>
-      <div class="gauge-grid" id="dashboard-gauges">
+      <div class="grid-2 mb-24">
         <div class="gauge-card">
           <div class="gauge"><svg viewBox="0 0 80 80"><circle class="gauge-bg" cx="40" cy="40" r="36"/><circle class="gauge-fill" id="gauge-cpu" cx="40" cy="40" r="36"/></svg><div class="gauge-text" id="gauge-cpu-text">0%</div></div>
           <div class="gauge-label">CPU</div>
+          <div class="text-sm text-muted mt-8" id="cpu-cores"></div>
         </div>
         <div class="gauge-card">
           <div class="gauge"><svg viewBox="0 0 80 80"><circle class="gauge-bg" cx="40" cy="40" r="36"/><circle class="gauge-fill green" id="gauge-ram" cx="40" cy="40" r="36"/></svg><div class="gauge-text" id="gauge-ram-text">0%</div></div>
           <div class="gauge-label">RAM</div>
+          <div class="text-sm text-muted mt-8" id="ram-detail"></div>
         </div>
         <div class="gauge-card">
           <div class="gauge"><svg viewBox="0 0 80 80"><circle class="gauge-bg" cx="40" cy="40" r="36"/><circle class="gauge-fill yellow" id="gauge-disk" cx="40" cy="40" r="36"/></svg><div class="gauge-text" id="gauge-disk-text">0%</div></div>
           <div class="gauge-label">Disk</div>
+          <div class="text-sm text-muted mt-8" id="disk-detail"></div>
         </div>
       </div>
-      <div class="card">
+      <div class="grid-2 mb-24">
+        <div class="card" id="device-info-card">
+          <div class="card-header"><span class="card-title">System Info</span></div>
+          <div style="display:flex;flex-direction:column;gap:8px">
+            <div class="flex justify-between"><span class="text-muted text-sm">Device</span><span id="info-device">-</span></div>
+            <div class="flex justify-between"><span class="text-muted text-sm">Kernel</span><span id="info-kernel" class="font-mono text-sm">-</span></div>
+            <div class="flex justify-between"><span class="text-muted text-sm">Uptime</span><span id="stat-uptime">-</span></div>
+            <div class="flex justify-between"><span class="text-muted text-sm">Battery</span><span id="info-battery">-</span></div>
+            <div class="flex justify-between"><span class="text-muted text-sm">Subnet</span><span id="info-subnet" class="font-mono text-sm">-</span></div>
+            <div class="flex justify-between"><span class="text-muted text-sm">Mode</span><span id="info-mode" class="badge badge-info">-</span></div>
+          </div>
+        </div>
+        <div class="card" id="device-sizes-card">
+          <div class="card-header"><span class="card-title">Storage</span></div>
+          <div style="display:flex;flex-direction:column;gap:8px">
+            <div class="flex justify-between"><span class="text-muted text-sm">RootFS Size</span><span id="info-rootfs">-</span></div>
+            <div class="flex justify-between"><span class="text-muted text-sm">Containers Size</span><span id="info-containers-size">-</span></div>
+            <div class="flex justify-between"><span class="text-muted text-sm">Total Size</span><span id="info-total-size">-</span></div>
+            <div class="flex justify-between"><span class="text-muted text-sm">Free Space</span><span id="info-device-free">-</span></div>
+          </div>
+        </div>
+      </div>
+      <div class="card mb-24">
         <div class="card-header"><span class="card-title">Containers</span></div>
         <div id="dashboard-containers"><div class="skeleton skeleton-card"></div></div>
       </div>
-      <div class="card mt-16" id="cluster-card" style="display:none">
+      <div class="card" id="cluster-card" style="display:none">
         <div class="card-header"><span class="card-title">ANK Cluster</span></div>
         <div id="cluster-info"></div>
       </div>
@@ -134,6 +159,10 @@
       <div class="page-header">
         <h1>Containers</h1>
         <div class="header-actions">
+          <select class="form-select" id="container-node-filter" style="width:auto" onchange="loadContainers()">
+            <option value="all">All Nodes</option>
+            <option value="local">Local Only</option>
+          </select>
           <button class="btn btn-primary btn-sm" id="btn-create-container"><i class="bi bi-plus-lg"></i> Create</button>
           <button class="btn btn-secondary btn-sm" onclick="loadContainers()"><i class="bi bi-arrow-clockwise"></i></button>
         </div>
@@ -150,6 +179,7 @@
           <button class="btn btn-secondary btn-sm" onclick="loadImages()"><i class="bi bi-arrow-clockwise"></i></button>
         </div>
       </div>
+      <div id="templates-section" class="mb-24"></div>
       <div class="container-grid" id="images-list"><div class="skeleton skeleton-card"></div></div>
     </div>
 

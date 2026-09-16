@@ -141,17 +141,20 @@ const loginPassGroup = document.getElementById('login-pass-group');
 const loginPassword = document.getElementById('login-password');
 
 loginUsername.addEventListener('input', () => {
+  if (loginUsername.value.length > 0 && !loginPassGroup.classList.contains('hidden')) return;
   if (loginUsername.value.length > 0) {
     loginPassGroup.classList.remove('hidden');
-    loginPassword.focus();
   }
 });
 loginUsername.addEventListener('keydown', e => {
   if (e.key === 'Enter') {
     e.preventDefault();
     if (loginUsername.value.length > 0) {
-      loginPassGroup.classList.remove('hidden');
-      loginPassword.focus();
+      if (loginPassGroup.classList.contains('hidden')) {
+        loginPassGroup.classList.remove('hidden');
+      } else {
+        loginPassword.focus();
+      }
     }
   }
 });
@@ -200,15 +203,37 @@ async function loadDashboard() {
     animateCounter('stat-total', status.containers_total || 0);
     const images = await api('GET', '/images').catch(() => []);
     animateCounter('stat-images', Array.isArray(images) ? images.length : 0);
+    document.getElementById('stat-uptime').textContent = fmtUptime(status.uptime || 0);
+    document.getElementById('info-device').textContent = info.device || '-';
+    document.getElementById('info-kernel').textContent = info.kernel || '-';
+    const bat = info.battery;
+    document.getElementById('info-battery').textContent = (bat != null && bat >= 0) ? bat + '%' : '-';
+    document.getElementById('info-subnet').textContent = (info.network?.subnet || '-') + '/24';
+    const mode = info.mode?.mode || 'shared_host';
+    document.getElementById('info-mode').textContent = mode;
     const cpuPct = info.cpu_usage != null ? Math.round(info.cpu_usage) : 0;
+    const cpuCores = info.cpu_cores || 0;
+    document.getElementById('cpu-cores').textContent = cpuCores > 0 ? cpuCores + ' cores' : '';
     const memT = info.memory?.total_kb || 0;
     const memA = info.memory?.available_kb || 0;
-    const memPct = memT > 0 ? Math.round((memT - memA) / memT * 100) : 0;
+    const memUsed = memT - memA;
+    const memPct = memT > 0 ? Math.round(memUsed / memT * 100) : 0;
+    document.getElementById('ram-detail').textContent = memT > 0 ? `${fmtBytes(memUsed * 1024)} / ${fmtBytes(memT * 1024)}` : '';
     const disk = status.disk || {};
-    const diskPct = disk.total > 0 ? Math.round((disk.used_num || 0) / (disk.total_num || 1) * 100) : 0;
+    const diskTotal = disk.total || 0;
+    const diskUsedNum = disk.used_num || 0;
+    const diskPct = diskTotal > 0 ? Math.round(diskUsedNum / diskTotal * 100) : 0;
+    document.getElementById('disk-detail').textContent = diskTotal > 0 ? `${disk.used || '-'} / ${diskTotal} GB` : '';
     setGauge('gauge-cpu', cpuPct, 'gauge-cpu-text');
     setGauge('gauge-ram', memPct, 'gauge-ram-text');
     setGauge('gauge-disk', diskPct, 'gauge-disk-text');
+    try {
+      const sysInfo = await api('GET', '/system/info');
+      document.getElementById('info-rootfs').textContent = sysInfo.rootfs_size || '-';
+      document.getElementById('info-containers-size').textContent = sysInfo.containers_size || '-';
+      document.getElementById('info-total-size').textContent = sysInfo.total_size || '-';
+      document.getElementById('info-device-free').textContent = sysInfo.device_free || '-';
+    } catch(e) {}
     renderDashboardContainers();
     renderDashboardNodes();
   } catch (e) { console.error('Dashboard load failed:', e); }
@@ -247,15 +272,18 @@ async function renderDashboardContainers() {
   try {
     const containers = await api('GET', '/containers/all');
     if (!containers || !containers.length) { el.innerHTML = '<div class="empty-state"><p>No containers yet</p></div>'; return; }
-    el.innerHTML = '<div class="table-container"><table><thead><tr><th>Name</th><th>Status</th><th>Image</th><th></th></tr></thead><tbody>' +
+    el.innerHTML = '<div class="table-container"><table><thead><tr><th>Name</th><th>Status</th><th>Image</th><th>IP</th><th>Memory</th><th></th></tr></thead><tbody>' +
       containers.map(c => {
         const s = c.status;
         const bc = s === 'running' ? 'badge-success' : s === 'building' ? 'badge-warning' : s === 'failed' ? 'badge-danger' : 'badge-neutral';
         const node = c.node && c.node !== 'local' ? `<span class="badge badge-info" style="margin-left:6px;font-size:10px">${esc(c.node_alias||c.node.slice(0,8))}</span>` : '';
-        return `<tr onclick="showContainerDetail('${esc(c.name)}','${c.node||'local'}')" style="cursor:pointer">
+        const mem = c.stats && c.stats.memory_bytes ? fmtBytes(c.stats.memory_bytes) : '-';
+        return `<tr onclick="navigate('containers');setTimeout(()=>showContainerDetail('${esc(c.name)}','${c.node||'local'}'),100)" style="cursor:pointer">
           <td><i class="bi bi-box-seam" style="color:var(--accent);margin-right:8px"></i>${esc(c.name)}${node}</td>
           <td><span class="badge ${bc}">${s==='building'?'<i class="bi bi-arrow-repeat spin"></i> ':''}${s}</span></td>
           <td class="text-muted text-sm">${esc(c.template_name||c.image||'-')}</td>
+          <td class="font-mono text-sm">${esc(c.ip_address||'N/A')}</td>
+          <td class="text-sm">${mem}</td>
           <td>${s==='running'?`<button class="btn btn-icon btn-ghost sm" onclick="event.stopPropagation();stopContainer('${esc(c.name)}')"><i class="bi bi-stop-fill"></i></button>`:`<button class="btn btn-icon btn-ghost sm" onclick="event.stopPropagation();startContainer('${esc(c.name)}')"><i class="bi bi-play-fill"></i></button>`}</td>
         </tr>`;
       }).join('') + '</tbody></table></div>';
@@ -288,9 +316,12 @@ async function loadContainers() {
   const el = document.getElementById('containers-list');
   if (!el) return;
   el.innerHTML = '<div class="skeleton skeleton-card"></div>';
+  const filter = document.getElementById('container-node-filter')?.value || 'all';
   try {
     const containers = await api('GET', '/containers/all');
-    renderContainers(Array.isArray(containers) ? containers : [], 'all');
+    let list = Array.isArray(containers) ? containers : [];
+    if (filter === 'local') list = list.filter(c => !c.node || c.node === 'local');
+    renderContainers(list, 'all');
   } catch (e) { el.innerHTML = '<div class="empty-state"><p>Failed to load</p></div>'; }
 }
 
@@ -311,7 +342,11 @@ function renderContainers(containers, nodeId) {
     return `<div class="container-card ${isBuilding?'building':''}" data-name="${esc(name)}" data-node="${node}" onclick="showContainerDetail('${esc(name)}','${node}')">
       <div class="card-top"><span class="card-name"><i class="bi bi-box-seam" style="color:var(--accent)"></i>${esc(name)}${nodeTag}</span>
         <span class="badge ${bc}">${isBuilding?'<i class="bi bi-arrow-repeat spin"></i> ':''}${s}</span></div>
-      <div class="card-meta"><span><i class="bi bi-image"></i> ${esc(c.template_name||c.image||'-')}</span></div>
+      <div class="card-meta">
+        <span><i class="bi bi-image"></i> ${esc(c.template_name||c.image||'-')}</span>
+        <span><i class="bi bi-globe2"></i> ${esc(c.ip_address||'N/A')}</span>
+        ${c.stats&&c.stats.memory_bytes?`<span><i class="bi bi-memory"></i> ${fmtBytes(c.stats.memory_bytes)}</span>`:''}
+      </div>
       <div class="card-actions">
         ${isRunning ? `<button class="btn btn-icon btn-ghost sm" onclick="event.stopPropagation();stopContainer('${esc(name)}')" title="Stop"><i class="bi bi-stop-fill"></i></button>` : ''}
         ${!isRunning && !isBuilding ? `<button class="btn btn-icon btn-ghost sm" onclick="event.stopPropagation();startContainer('${esc(name)}')" title="Start"><i class="bi bi-play-fill"></i></button>` : ''}
@@ -384,6 +419,10 @@ async function showContainerDetail(name, nodeId) {
         <div class="card" style="padding:12px"><div class="text-sm text-muted mb-8">IP Address</div><div class="font-mono">${esc(c.ip_address||'-')}</div></div>
         <div class="card" style="padding:12px"><div class="text-sm text-muted mb-8">Mode</div><div>${esc(c.mode||'-')}</div></div>
         <div class="card" style="padding:12px"><div class="text-sm text-muted mb-8">Memory</div><div>${esc(c.resources?.memory_limit||'-')}</div></div>
+        <div class="card" style="padding:12px"><div class="text-sm text-muted mb-8">Ports</div><div>${esc((c.port_mappings||[]).join(', ')||'-')}</div></div>
+        <div class="card" style="padding:12px"><div class="text-sm text-muted mb-8">Created</div><div>${esc(c.created||'-')}</div></div>
+        <div class="card" style="padding:12px"><div class="text-sm text-muted mb-8">Node</div><div>${esc(c.node||'local')}</div></div>
+        <div class="card" style="padding:12px"><div class="text-sm text-muted mb-8">PGID Mode</div><div>${esc(c.pgid_mode||'-')}</div></div>
       </div>
       <div class="card" style="padding:12px"><div class="text-sm text-muted mb-8">Logs</div><pre style="max-height:200px;overflow:auto;font-size:11px;margin:0;white-space:pre-wrap">${esc(logText||'No logs')}</pre></div>
     `);
@@ -393,11 +432,26 @@ async function showContainerDetail(name, nodeId) {
 /* ═══════ IMAGES ═══════ */
 async function loadImages() {
   const el = document.getElementById('images-list');
+  const tplEl = document.getElementById('templates-section');
   if (!el) return;
   el.innerHTML = '<div class="skeleton skeleton-card"></div>';
   try {
-    const images = await api('GET', '/images/all');
+    const [images, tplData] = await Promise.all([
+      api('GET', '/images/all').catch(() => []),
+      api('GET', '/images/templates').catch(() => ({ templates: [] }))
+    ]);
     renderImages(Array.isArray(images) ? images : []);
+    const templates = tplData.templates || [];
+    if (tplEl && templates.length) {
+      tplEl.innerHTML = '<div class="page-header"><h2 style="font-size:16px">Templates</h2></div><div class="container-grid">' +
+        templates.map(t => `<div class="container-card" onclick="deployTemplate('${esc(t.id)}')">
+          <div class="card-top"><span class="card-name"><i class="bi bi-filetype-sh" style="color:var(--accent)"></i>${esc(t.name)}</span><span class="badge badge-info">${esc(t.arch||'all')}</span></div>
+          <div class="card-meta"><span>${esc(t.description||'')}</span></div>
+          <div class="card-actions"><button class="btn btn-primary btn-sm"><i class="bi bi-rocket-takeoff"></i> Deploy</button></div>
+        </div>`).join('') + '</div>';
+    } else if (tplEl) {
+      tplEl.innerHTML = '';
+    }
   } catch (e) { el.innerHTML = '<div class="empty-state"><p>Failed to load</p></div>'; }
 }
 
@@ -409,8 +463,12 @@ function renderImages(images) {
     const nodeLabel = img.node_alias || (img.node && img.node !== 'local' ? img.node.slice(0,8) : '');
     const nodeTag = nodeLabel ? `<span class="badge badge-info" style="font-size:10px">${esc(nodeLabel)}</span>` : '';
     return `<div class="container-card">
-      <div class="card-top"><span class="card-name"><i class="bi bi-hdd-stack" style="color:var(--accent)"></i>${esc(img.name)}${nodeTag}</span></div>
-      <div class="card-meta"><span>${img.size_human || fmtBytes(img.size||0)}</span></div>
+      <div class="card-top"><span class="card-name"><i class="bi bi-hdd-stack" style="color:var(--accent)"></i>${esc(img.name)}${nodeTag}</span><span class="badge badge-neutral">${esc(img.arch||'')}</span></div>
+      <div class="card-meta"><span><i class="bi bi-hdd"></i> ${img.size_human || fmtBytes(img.size||0)}</span><span>${esc(img.version||'')}</span></div>
+      <div class="card-actions">
+        <button class="btn btn-primary btn-sm" onclick="event.stopPropagation();deployTemplate('${esc(img.id||img.name)}')"><i class="bi bi-rocket-takeoff"></i> Deploy</button>
+        <button class="btn btn-danger btn-sm" onclick="event.stopPropagation();deleteImage('${esc(img.id||img.name)}')"><i class="bi bi-trash3"></i></button>
+      </div>
     </div>`;
   }).join('');
 }
@@ -434,6 +492,12 @@ async function deployTemplate(id) {
 }
 
 document.getElementById('btn-pull-image')?.addEventListener('click', pullImage);
+
+async function deleteImage(id) {
+  const ok = await confirmAction('Delete Image', 'Delete this image?');
+  if (!ok) return;
+  try { await api('DELETE', `/images/${encodeURIComponent(id)}`); toast('Image deleted', 'success'); loadImages(); } catch(e) { toast(`Failed: ${e.message}`, 'error'); }
+}
 
 /* ═══════ NODES ═══════ */
 async function loadNodes() {
@@ -574,6 +638,12 @@ function updateNodeSelectors(nodes) {
     shellSel.innerHTML = '<option value="local">Local</option>' + onlineNodes.map(n => `<option value="${esc(n.id)}">${esc(n.alias||n.ip)}</option>`).join('');
     if (val) shellSel.value = val;
   }
+  const nodeFilter = document.getElementById('container-node-filter');
+  if (nodeFilter) {
+    const val = nodeFilter.value;
+    nodeFilter.innerHTML = '<option value="all">All Nodes</option><option value="local">Local Only</option>' + onlineNodes.map(n => `<option value="${esc(n.id)}">${esc(n.alias||n.ip)}</option>`).join('');
+    if (val) nodeFilter.value = val;
+  }
 }
 
 /* ═══════ STACKS ═══════ */
@@ -588,12 +658,40 @@ async function loadStacks() {
       const running = (s.containers||[]).filter(c => c.status==='running').length;
       const total = (s.containers||[]).length;
       const bc = running===total&&total>0 ? 'badge-success' : running>0 ? 'badge-warning' : 'badge-danger';
+      const containers = (s.containers||[]).map(c => {
+        const sc = c.status==='running'?'badge-success':c.status==='building'?'badge-warning':'badge-neutral';
+        return `<span style="display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border:1px solid var(--border);border-radius:6px;font-size:11px"><span style="width:6px;height:6px;border-radius:50%;background:${c.status==='running'?'var(--success)':'var(--text-muted)'}"></span>${esc(c.name)} <span class="badge ${sc}" style="font-size:9px">${c.status}</span></span>`;
+      }).join(' ');
       return `<div class="container-card">
         <div class="card-top"><span class="card-name"><i class="bi bi-layers" style="color:var(--accent)"></i>${esc(s.name)}</span><span class="badge ${bc}">${running}/${total}</span></div>
         <div class="card-meta"><span>Template: ${esc(s.template||'-')}</span></div>
+        ${containers ? `<div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:8px">${containers}</div>` : ''}
+        <div class="card-actions">
+          <button class="btn btn-icon btn-ghost sm" onclick="event.stopPropagation();deleteStack('${esc(s.name)}')" title="Delete" style="color:var(--danger)"><i class="bi bi-trash3"></i></button>
+        </div>
       </div>`;
     }).join('');
   } catch (e) { el.innerHTML = '<div class="empty-state"><p>Failed to load</p></div>'; }
+}
+
+document.getElementById('btn-create-stack')?.addEventListener('click', async () => {
+  let templates = [];
+  try { const t = await api('GET', '/images/templates'); templates = t.templates || []; } catch(e) {}
+  const opts = templates.map(t => `<option value="${esc(t.id)}">${esc(t.name)}</option>`).join('');
+  const result = await customModal('Create Stack', [
+    { id: 'name', label: 'Stack Name', type: 'text' },
+    { id: 'template', label: 'Template', type: 'select', options: opts || '<option value="">No templates</option>' },
+    { id: 'instances', label: 'Instances', type: 'text', value: '2' },
+    { id: 'password', label: 'Root Password', type: 'text', value: 'ank123' }
+  ]);
+  if (!result || !result.name) return;
+  try { toast(`Creating stack "${result.name}"...`, 'info'); await api('POST', '/stacks', { name: result.name, template: result.template, instances: parseInt(result.instances)||2, root_password: result.password }); toast('Stack created', 'success'); loadStacks();   } catch(e) { toast(`Failed: ${e.message}`, 'error'); }
+});
+
+async function deleteStack(name) {
+  const ok = await confirmAction('Delete Stack', `Delete stack "${name}" and all its containers?`);
+  if (!ok) return;
+  try { await api('DELETE', `/stacks/${encodeURIComponent(name)}`); toast('Stack deleted', 'success'); loadStacks(); } catch(e) { toast(`Failed: ${e.message}`, 'error'); }
 }
 
 /* ═══════ BACKUPS ═══════ */
