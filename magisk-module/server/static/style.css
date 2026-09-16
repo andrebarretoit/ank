@@ -84,22 +84,6 @@ body::before {
   box-shadow: var(--shadow-lg), 0 0 30px rgba(59, 130, 246, 0.08);
   background: rgba(15, 23, 42, 0.85);
 }
-.notch-logo {
-  width: 34px;
-  height: 34px;
-  background: linear-gradient(135deg, var(--primary), var(--accent));
-  border-radius: 10px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-weight: 800;
-  font-size: 13px;
-  color: #fff;
-  flex-shrink: 0;
-  margin-right: 0;
-  transition: margin var(--transition);
-}
-.notch:hover .notch-logo { margin-right: 12px; }
 .notch-items { display: flex; align-items: center; gap: 2px; white-space: nowrap; }
 .notch-item {
   display: flex; align-items: center; gap: 0;
@@ -152,6 +136,7 @@ body::before {
 .notch-preview .np-header .np-goto {
   color: var(--primary); font-size: 18px; cursor: pointer; padding: 4px 8px;
   border-radius: var(--radius-sm); transition: background var(--transition);
+  max-width: 3vh;
 }
 .notch-preview .np-header .np-goto:hover { background: var(--primary-dim); }
 .notch-preview .np-row {
@@ -171,7 +156,7 @@ body::before {
 
 /* ═══════ MAIN CONTENT ═══════ */
 #app {
-  max-width: 99%;
+  max-width: 90%;
   margin-left: 5%;
   position: relative; z-index: 1;
 }
@@ -261,7 +246,7 @@ body::before {
 /* ═══════ PAGE HEADER ═══════ */
 .page-header {
   display: flex; align-items: center; justify-content: space-between;
-  margin-bottom: 24px; padding-top: 30px;
+  margin-bottom: 24px; padding-top: 75px;
 }
 .page-header .ph-left { display: flex; align-items: center; gap: 10px; }
 .page-header .ph-icon {

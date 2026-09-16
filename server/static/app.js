@@ -664,18 +664,19 @@ async function loadImages() {
   try {
     const [images, tplData] = await Promise.all([
       api('GET', '/images/all').catch(() => []),
-      api('GET', '/images/templates').catch(() => ({ templates: [] }))
+      api('GET', '/images/templates').catch(() => null)
     ]);
     renderImages(Array.isArray(images) ? images : []);
-    const templates = tplData.templates || [];
-    if (tplEl && templates.length) {
-      tplEl.innerHTML = `<div class="card" style="margin-bottom:16px"><div class="card-header"><h3><i class="bi bi-lightning-charge"></i> Quick Deploy</h3></div><div class="card-body"><p style="font-size:13px;color:var(--text-muted);margin-bottom:12px">One-click containers — pick a template, name it, deploy.</p><div class="templates-grid">${templates.map(t => `<div class="template-card" style="border-left:3px solid ${t.color||'var(--primary)'}" onclick="deployTemplate('${esc(t.id)}')"><div class="template-icon" style="color:${t.color||'var(--primary)'}"><i class="bi ${t.icon||'bi-box-seam'}"></i></div><div class="template-name">${esc(t.name)}</div><div class="template-desc">${esc(t.description||'')}</div><span class="template-badge ${t.base_ready?'ready':'pending'}">${t.base_ready?'Ready':'Pull base first'}</span></div>`).join('')}</div></div></div>
-      <div class="card" style="margin-bottom:16px;border:1px solid var(--accent)"><div class="card-header"><h3><i class="bi bi-file-earmark-code"></i> Ankfile Build</h3></div><div class="card-body"><p style="font-size:13px;color:var(--text-muted);margin-bottom:12px">Build custom images from an Ankfile (like Dockerfile).</p><div class="form-group"><label class="form-label">Container Name</label><input type="text" class="form-input" id="ankfile-name" placeholder="my-app" value="ank-build"></div><div class="form-group"><label class="form-label">Ankfile</label><textarea class="ankfile-editor" id="ankfile-content" placeholder="# Example Ankfile&#10;FROM alpine-3.20&#10;PASSWD ank123&#10;RUN apk add --allow-untrusted nginx&#10;EXPOSE 8080">FROM alpine-3.20
-PASSWD ank123
-RUN apk add --allow-untrusted nginx
-RUN mkdir -p /var/www/html
-RUN echo "&lt;h1&gt;Custom ANK Image&lt;/h1&gt;" > /var/www/html/index.html
-EXPOSE 8080</textarea></div><div style="display:flex;gap:8px"><button type="button" class="btn btn-primary" id="ankfile-build-btn"><i class="bi bi-hammer"></i> Build</button><button type="button" class="btn btn-ghost" id="ankfile-example-btn"><i class="bi bi-filetype-json"></i> Load Example</button></div></div></div>`;
+    const templates = tplData?.templates || [];
+    if (tplEl) {
+      let tplHtml = '';
+      if (templates.length) {
+        tplHtml += `<div class="card" style="margin-bottom:16px"><div class="card-header"><h3><i class="bi bi-lightning-charge"></i> Quick Deploy</h3></div><div class="card-body"><p style="font-size:13px;color:var(--text-muted);margin-bottom:12px">One-click containers — pick a template, name it, deploy.</p><div class="templates-grid">${templates.map(t => `<div class="template-card" style="border-left:3px solid ${t.color||'var(--primary)'}" onclick="deployTemplate('${esc(t.id)}')"><div class="template-icon" style="color:${t.color||'var(--primary)'}"><i class="bi ${t.icon||'bi-box-seam'}"></i></div><div class="template-name">${esc(t.name)}</div><div class="template-desc">${esc(t.description||'')}</div><span class="template-badge ${t.base_ready?'ready':'pending'}">${t.base_ready?'Ready':'Pull base first'}</span></div>`).join('')}</div></div></div>`;
+      } else {
+        tplHtml += `<div class="card" style="margin-bottom:16px"><div class="card-header"><h3><i class="bi bi-lightning-charge"></i> Quick Deploy</h3></div><div class="card-body"><p style="font-size:13px;color:var(--text-muted);margin-bottom:12px">One-click containers — pick a template, name it, deploy.</p><div class="empty-state" style="padding:20px"><i class="bi bi-cloud-download" style="font-size:24px;color:var(--text-muted)"></i><p style="margin-top:8px;color:var(--text-muted)">No templates available. Pull an image first.</p></div></div></div>`;
+      }
+      tplHtml += `<div class="card" style="margin-bottom:16px;border:1px solid var(--accent)"><div class="card-header"><h3><i class="bi bi-file-earmark-code"></i> Ankfile Build</h3></div><div class="card-body"><p style="font-size:13px;color:var(--text-muted);margin-bottom:12px">Build custom images from an Ankfile (like Dockerfile).</p><div class="form-group"><label class="form-label">Container Name</label><input type="text" class="form-input" id="ankfile-name" placeholder="my-app" value="ank-build"></div><div class="form-group"><label class="form-label">Ankfile</label><textarea class="ankfile-editor" id="ankfile-content" placeholder="# Example Ankfile&#10;FROM alpine-3.20&#10;PASSWD ank123&#10;RUN apk add --allow-untrusted nginx&#10;EXPOSE 8080">FROM alpine-3.20\nPASSWD ank123\nRUN apk add --allow-untrusted nginx\nRUN mkdir -p /var/www/html\nRUN echo "&lt;h1&gt;Custom ANK Image&lt;/h1&gt;" > /var/www/html/index.html\nEXPOSE 8080</textarea></div><div style="display:flex;gap:8px"><button type="button" class="btn btn-primary" id="ankfile-build-btn"><i class="bi bi-hammer"></i> Build</button><button type="button" class="btn btn-ghost" id="ankfile-example-btn"><i class="bi bi-filetype-json"></i> Load Example</button></div></div></div>`;
+      tplEl.innerHTML = tplHtml;
       document.getElementById('ankfile-build-btn')?.addEventListener('click', async () => {
         const content = document.getElementById('ankfile-content')?.value?.trim();
         const name = document.getElementById('ankfile-name')?.value?.trim() || 'ank-build';
@@ -683,16 +684,9 @@ EXPOSE 8080</textarea></div><div style="display:flex;gap:8px"><button type="butt
         if (!content.includes('FROM')) { toast('Ankfile must have a FROM instruction', 'error'); return; }
         try { toast(`Building from Ankfile as "${name}"...`, 'info'); await api('POST', '/images/ankfile', { content, name }); loadContainers(); pollContainerStatus(name, 0); } catch (e) { toast(`Failed: ${e.message}`, 'error'); }
       });
-      const ANKFILE_EXAMPLE = `FROM alpine-3.20
-PASSWD ank123
-RUN apk add --allow-untrusted curl tar sqlite
-RUN mkdir -p /opt/cloudreve
-RUN curl -L https://github.com/cloudreve/cloudreve/releases/download/4.18.0/cloudreve_4.18.0_linux_armv7.tar.gz | tar xz -C /opt/cloudreve
-EXPOSE 5212
-WORKDIR /opt/cloudreve
-CMD /opt/cloudreve/cloudreve`;
+      const ANKFILE_EXAMPLE = `FROM alpine-3.20\nPASSWD ank123\nRUN apk add --allow-untrusted curl tar sqlite\nRUN mkdir -p /opt/cloudreve\nRUN curl -L https://github.com/cloudreve/cloudreve/releases/download/4.18.0/cloudreve_4.18.0_linux_armv7.tar.gz | tar xz -C /opt/cloudreve\nEXPOSE 5212\nWORKDIR /opt/cloudreve\nCMD /opt/cloudreve/cloudreve`;
       document.getElementById('ankfile-example-btn')?.addEventListener('click', () => { document.getElementById('ankfile-content').value = ANKFILE_EXAMPLE; document.getElementById('ankfile-name').value = 'cloudreve'; toast('Example Ankfile loaded', 'info'); });
-    } else if (tplEl) { tplEl.innerHTML = ''; }
+    }
   } catch (e) { el.innerHTML = '<div class="empty-state"><p>Failed to load</p></div>'; }
 }
 
@@ -1809,10 +1803,15 @@ document.querySelectorAll('.notch-item').forEach(item => {
   const page = item.dataset.page;
   item.addEventListener('mouseenter', () => {
     if (notchPreviewHideTimer) { clearTimeout(notchPreviewHideTimer); notchPreviewHideTimer = null; }
-    notchPreviewTimer = setTimeout(async () => {
-      notchPreview.innerHTML = await loadNotchPreview(page);
-      notchPreview.classList.add('active');
-    }, 1500);
+    const isOpen = notchPreview.classList.contains('active');
+    if (isOpen) {
+      loadNotchPreview(page).then(html => { notchPreview.innerHTML = html; });
+    } else {
+      notchPreviewTimer = setTimeout(async () => {
+        notchPreview.innerHTML = await loadNotchPreview(page);
+        notchPreview.classList.add('active');
+      }, 1500);
+    }
   });
   item.addEventListener('mouseleave', () => {
     if (notchPreviewTimer) { clearTimeout(notchPreviewTimer); notchPreviewTimer = null; }
