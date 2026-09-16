@@ -227,13 +227,6 @@ async function loadDashboard() {
     setGauge('gauge-cpu', cpuPct, 'gauge-cpu-text');
     setGauge('gauge-ram', memPct, 'gauge-ram-text');
     setGauge('gauge-disk', diskPct, 'gauge-disk-text');
-    try {
-      const sysInfo = await api('GET', '/system/info');
-      document.getElementById('info-rootfs').textContent = sysInfo.rootfs_size || '-';
-      document.getElementById('info-containers-size').textContent = sysInfo.containers_size || '-';
-      document.getElementById('info-total-size').textContent = sysInfo.total_size || '-';
-      document.getElementById('info-device-free').textContent = sysInfo.device_free || '-';
-    } catch(e) {}
     renderDashboardContainers();
     renderDashboardNodes();
   } catch (e) { console.error('Dashboard load failed:', e); }
@@ -866,6 +859,117 @@ function openFooterModal() {
       <span class="text-sm text-muted">ANK · Android Konteiner v2.0.0</span>
     </div>
   `);
+}
+
+/* ═══════ NOTCH HOVER PREVIEW ═══════ */
+const notchPreview = document.getElementById('notch-preview');
+let notchPreviewTimer = null;
+let notchPreviewHideTimer = null;
+let notchPreviewActive = false;
+
+const pageIcons = {
+  dashboard: 'bi-grid-1x2', containers: 'bi-box-seam', images: 'bi-hdd-stack',
+  nodes: 'bi-hdd-network', stacks: 'bi-layers', backups: 'bi-cloud-arrow-up',
+  networks: 'bi-globe2', settings: 'bi-gear', shell: 'bi-terminal'
+};
+const pageNames = {
+  dashboard: 'Dashboard', containers: 'Containers', images: 'Images',
+  nodes: 'Nodes', stacks: 'Stacks', backups: 'Backups',
+  networks: 'Networks', settings: 'Settings', shell: 'Shell'
+};
+
+async function loadNotchPreview(page) {
+  let html = `<div class="np-header"><i class="bi ${pageIcons[page]||''}"></i><span>${pageNames[page]||page}</span></div>`;
+  try {
+    if (page === 'containers') {
+      const c = await api('GET', '/containers/all');
+      if (!c.length) { html += '<div class="np-empty">No containers</div>'; }
+      else { html += c.slice(0, 8).map(x => {
+        const color = x.status === 'running' ? 'var(--success)' : x.status === 'building' ? 'var(--warning)' : 'var(--text-muted)';
+        return `<div class="np-row"><span class="dot" style="background:${color}"></span><span class="np-name">${esc(x.name)}</span><span class="badge badge-neutral" style="font-size:9px">${x.status}</span></div>`;
+      }).join(''); if (c.length > 8) html += `<div class="np-empty">+${c.length - 8} more</div>`; }
+    } else if (page === 'images') {
+      const img = await api('GET', '/images/all').catch(() => []);
+      if (!img.length) { html += '<div class="np-empty">No images</div>'; }
+      else { html += img.slice(0, 6).map(x => `<div class="np-row"><i class="bi bi-hdd-stack" style="color:var(--accent);font-size:12px"></i><span class="np-name">${esc(x.name)}</span><span class="text-muted text-sm">${x.size_human||''}</span></div>`).join(''); }
+    } else if (page === 'nodes') {
+      const d = await api('GET', '/nodes').catch(() => ({nodes:[]}));
+      const nodes = d.nodes || [];
+      if (!nodes.length) { html += '<div class="np-empty">No nodes</div>'; }
+      else { html += nodes.slice(0, 5).map(n => {
+        const color = n.status === 'online' ? 'var(--success)' : 'var(--danger)';
+        return `<div class="np-row"><span class="dot" style="background:${color}"></span><span class="np-name">${esc(n.alias||n.ip)}</span><span class="text-muted text-sm">${n.status}</span></div>`;
+      }).join(''); }
+    } else if (page === 'stacks') {
+      const d = await api('GET', '/stacks/all').catch(() => ({stacks:[]}));
+      const stacks = d.stacks || [];
+      if (!stacks.length) { html += '<div class="np-empty">No stacks</div>'; }
+      else { html += stacks.slice(0, 5).map(s => {
+        const running = (s.containers||[]).filter(c=>c.status==='running').length;
+        const total = (s.containers||[]).length;
+        return `<div class="np-row"><i class="bi bi-layers" style="color:var(--accent);font-size:12px"></i><span class="np-name">${esc(s.name)}</span><span class="text-muted text-sm">${running}/${total}</span></div>`;
+      }).join(''); }
+    } else if (page === 'networks') {
+      const nets = await api('GET', '/networks').catch(() => []);
+      if (!nets.length) { html += '<div class="np-empty">No networks</div>'; }
+      else { html += nets.slice(0, 5).map(n => `<div class="np-row"><i class="bi bi-globe2" style="color:var(--accent);font-size:12px"></i><span class="np-name">${esc(n.name)}</span><span class="text-muted text-sm">${n.subnet||''}</span></div>`).join(''); }
+    } else if (page === 'dashboard') {
+      const st = await api('GET', '/status').catch(() => ({}));
+      html += `<div class="np-row"><span class="dot" style="background:var(--success)"></span><span class="np-name">Running</span><span>${st.containers_running||0}</span></div>`;
+      html += `<div class="np-row"><span class="dot" style="background:var(--danger)"></span><span class="np-name">Stopped</span><span>${st.containers_stopped||0}</span></div>`;
+      html += `<div class="np-row"><span class="dot" style="background:var(--primary)"></span><span class="np-name">Total</span><span>${st.containers_total||0}</span></div>`;
+    } else if (page === 'settings') {
+      html += `<div class="np-row"><i class="bi bi-gear" style="color:var(--text-muted);font-size:12px"></i><span class="np-name">General</span></div>`;
+      html += `<div class="np-row"><i class="bi bi-hdd-network" style="color:var(--text-muted);font-size:12px"></i><span class="np-name">Remote</span></div>`;
+      html += `<div class="np-row"><i class="bi bi-shield-lock" style="color:var(--text-muted);font-size:12px"></i><span class="np-name">Security</span></div>`;
+      html += `<div class="np-row"><i class="bi bi-cpu" style="color:var(--text-muted);font-size:12px"></i><span class="np-name">System</span></div>`;
+    } else if (page === 'shell') {
+      html += `<div class="np-row"><i class="bi bi-terminal" style="color:var(--text-muted);font-size:12px"></i><span class="np-name">Core Shell</span><span class="text-muted text-sm">Click to open</span></div>`;
+    } else if (page === 'backups') {
+      const d = await api('GET', '/backups').catch(() => ({routines:[]}));
+      const r = d.routines || [];
+      if (!r.length) { html += '<div class="np-empty">No backups</div>'; }
+      else { html += r.slice(0, 5).map(b => `<div class="np-row"><i class="bi bi-cloud-arrow-up" style="color:var(--accent);font-size:12px"></i><span class="np-name">${esc(b.name)}</span><span class="text-muted text-sm">${b.schedule||''}</span></div>`).join(''); }
+    }
+  } catch(e) { html += `<div class="np-empty">Failed to load</div>`; }
+  html += `<div style="text-align:center;margin-top:12px;padding-top:8px;border-top:1px solid var(--border)"><a href="#" onclick="event.preventDefault();notchPreviewHide();navigateTo('${page}')" style="color:var(--primary);font-size:11px;text-decoration:none;font-weight:600">Open ${pageNames[page]} →</a></div>`;
+  return html;
+}
+
+document.querySelectorAll('.notch-item').forEach(item => {
+  const page = item.dataset.page;
+  item.addEventListener('mouseenter', () => {
+    if (notchPreviewHideTimer) { clearTimeout(notchPreviewHideTimer); notchPreviewHideTimer = null; }
+    notchPreviewTimer = setTimeout(async () => {
+      notchPreview.innerHTML = await loadNotchPreview(page);
+      notchPreview.classList.add('active');
+      notchPreviewActive = true;
+    }, 1500);
+  });
+  item.addEventListener('mouseleave', () => {
+    if (notchPreviewTimer) { clearTimeout(notchPreviewTimer); notchPreviewTimer = null; }
+    notchPreviewHideTimer = setTimeout(() => {
+      if (!notchPreview.matches(':hover')) {
+        notchPreview.classList.remove('active');
+        notchPreviewActive = false;
+      }
+    }, 300);
+  });
+});
+
+notchPreview.addEventListener('mouseenter', () => {
+  if (notchPreviewHideTimer) { clearTimeout(notchPreviewHideTimer); notchPreviewHideTimer = null; }
+});
+notchPreview.addEventListener('mouseleave', () => {
+  notchPreviewHideTimer = setTimeout(() => {
+    notchPreview.classList.remove('active');
+    notchPreviewActive = false;
+  }, 200);
+});
+
+function notchPreviewHide() {
+  notchPreview.classList.remove('active');
+  notchPreviewActive = false;
 }
 
 /* ═══════ INIT ═══════ */

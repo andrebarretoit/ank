@@ -72,6 +72,9 @@
       </div>
     </nav>
 
+    <!-- NOTCH HOVER PREVIEW -->
+    <div class="notch-preview" id="notch-preview"></div>
+
     <!-- MOBILE BOTTOM BAR -->
     <div class="mobile-bar" id="mobile-bar">
       <div class="mobile-bar-items">
@@ -93,9 +96,10 @@
     <!-- ═══════ DASHBOARD ═══════ -->
     <div class="page active" id="page-dashboard">
       <div class="page-header">
-        <h1>Dashboard</h1>
+        <div class="ph-left"><div class="ph-icon">ANK</div><h1>Dashboard</h1></div>
         <div class="header-actions">
-          <button class="btn btn-secondary btn-sm" onclick="loadDashboard()"><i class="bi bi-arrow-clockwise"></i> Refresh</button>
+          <button class="btn btn-secondary btn-sm" onclick="loadDashboard()"><i class="bi bi-arrow-clockwise"></i></button>
+          <button class="btn-logout" onclick="logout()"><i class="bi bi-box-arrow-right"></i> Logout</button>
         </div>
       </div>
       <div class="stats-grid" id="dashboard-stats">
@@ -122,26 +126,15 @@
           <div class="text-sm text-muted mt-8" id="disk-detail"></div>
         </div>
       </div>
-      <div class="grid-2 mb-24">
-        <div class="card" id="device-info-card">
-          <div class="card-header"><span class="card-title">System Info</span></div>
-          <div style="display:flex;flex-direction:column;gap:8px">
-            <div class="flex justify-between"><span class="text-muted text-sm">Device</span><span id="info-device">-</span></div>
-            <div class="flex justify-between"><span class="text-muted text-sm">Kernel</span><span id="info-kernel" class="font-mono text-sm">-</span></div>
-            <div class="flex justify-between"><span class="text-muted text-sm">Uptime</span><span id="stat-uptime">-</span></div>
-            <div class="flex justify-between"><span class="text-muted text-sm">Battery</span><span id="info-battery">-</span></div>
-            <div class="flex justify-between"><span class="text-muted text-sm">Subnet</span><span id="info-subnet" class="font-mono text-sm">-</span></div>
-            <div class="flex justify-between"><span class="text-muted text-sm">Mode</span><span id="info-mode" class="badge badge-info">-</span></div>
-          </div>
-        </div>
-        <div class="card" id="device-sizes-card">
-          <div class="card-header"><span class="card-title">Storage</span></div>
-          <div style="display:flex;flex-direction:column;gap:8px">
-            <div class="flex justify-between"><span class="text-muted text-sm">RootFS Size</span><span id="info-rootfs">-</span></div>
-            <div class="flex justify-between"><span class="text-muted text-sm">Containers Size</span><span id="info-containers-size">-</span></div>
-            <div class="flex justify-between"><span class="text-muted text-sm">Total Size</span><span id="info-total-size">-</span></div>
-            <div class="flex justify-between"><span class="text-muted text-sm">Free Space</span><span id="info-device-free">-</span></div>
-          </div>
+      <div class="card mb-24" id="device-info-card">
+        <div class="card-header"><span class="card-title">System Info</span></div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px">
+          <div class="flex justify-between"><span class="text-muted text-sm">Device</span><span id="info-device">-</span></div>
+          <div class="flex justify-between"><span class="text-muted text-sm">Kernel</span><span id="info-kernel" class="font-mono text-sm">-</span></div>
+          <div class="flex justify-between"><span class="text-muted text-sm">Uptime</span><span id="stat-uptime">-</span></div>
+          <div class="flex justify-between"><span class="text-muted text-sm">Battery</span><span id="info-battery">-</span></div>
+          <div class="flex justify-between"><span class="text-muted text-sm">Subnet</span><span id="info-subnet" class="font-mono text-sm">-</span></div>
+          <div class="flex justify-between"><span class="text-muted text-sm">Mode</span><span id="info-mode" class="badge badge-info">-</span></div>
         </div>
       </div>
       <div class="card mb-24">
@@ -157,7 +150,7 @@
     <!-- ═══════ CONTAINERS ═══════ -->
     <div class="page" id="page-containers">
       <div class="page-header">
-        <h1>Containers</h1>
+        <div class="ph-left"><div class="ph-icon">ANK</div><h1>Containers</h1></div>
         <div class="header-actions">
           <select class="form-select" id="container-node-filter" style="width:auto" onchange="loadContainers()">
             <option value="all">All Nodes</option>
@@ -165,6 +158,7 @@
           </select>
           <button class="btn btn-primary btn-sm" id="btn-create-container"><i class="bi bi-plus-lg"></i> Create</button>
           <button class="btn btn-secondary btn-sm" onclick="loadContainers()"><i class="bi bi-arrow-clockwise"></i></button>
+          <button class="btn-logout" onclick="logout()"><i class="bi bi-box-arrow-right"></i> Logout</button>
         </div>
       </div>
       <div class="container-grid" id="containers-list"><div class="skeleton skeleton-card"></div></div>
@@ -173,10 +167,11 @@
     <!-- ═══════ IMAGES ═══════ -->
     <div class="page" id="page-images">
       <div class="page-header">
-        <h1>Images</h1>
+        <div class="ph-left"><div class="ph-icon">ANK</div><h1>Images</h1></div>
         <div class="header-actions">
           <button class="btn btn-primary btn-sm" id="btn-pull-image"><i class="bi bi-cloud-download"></i> Pull</button>
           <button class="btn btn-secondary btn-sm" onclick="loadImages()"><i class="bi bi-arrow-clockwise"></i></button>
+          <button class="btn-logout" onclick="logout()"><i class="bi bi-box-arrow-right"></i> Logout</button>
         </div>
       </div>
       <div id="templates-section" class="mb-24"></div>
@@ -186,10 +181,11 @@
     <!-- ═══════ NODES ═══════ -->
     <div class="page" id="page-nodes">
       <div class="page-header">
-        <h1>Nodes</h1>
+        <div class="ph-left"><div class="ph-icon">ANK</div><h1>Nodes</h1></div>
         <div class="header-actions">
           <button class="btn btn-primary btn-sm" id="btn-add-node"><i class="bi bi-plus-lg"></i> Add Node</button>
           <button class="btn btn-secondary btn-sm" onclick="loadNodes()"><i class="bi bi-arrow-clockwise"></i></button>
+          <button class="btn-logout" onclick="logout()"><i class="bi bi-box-arrow-right"></i> Logout</button>
         </div>
       </div>
       <div id="nodes-pairing-requests" class="mb-16"></div>
@@ -199,10 +195,11 @@
     <!-- ═══════ STACKS ═══════ -->
     <div class="page" id="page-stacks">
       <div class="page-header">
-        <h1>Stacks</h1>
+        <div class="ph-left"><div class="ph-icon">ANK</div><h1>Stacks</h1></div>
         <div class="header-actions">
           <button class="btn btn-primary btn-sm" id="btn-create-stack"><i class="bi bi-plus-lg"></i> Create</button>
           <button class="btn btn-secondary btn-sm" onclick="loadStacks()"><i class="bi bi-arrow-clockwise"></i></button>
+          <button class="btn-logout" onclick="logout()"><i class="bi bi-box-arrow-right"></i> Logout</button>
         </div>
       </div>
       <div class="container-grid" id="stacks-list"><div class="skeleton skeleton-card"></div></div>
@@ -211,10 +208,11 @@
     <!-- ═══════ BACKUPS ═══════ -->
     <div class="page" id="page-backups">
       <div class="page-header">
-        <h1>Backups</h1>
+        <div class="ph-left"><div class="ph-icon">ANK</div><h1>Backups</h1></div>
         <div class="header-actions">
           <button class="btn btn-primary btn-sm" id="btn-create-backup"><i class="bi bi-plus-lg"></i> Create</button>
           <button class="btn btn-secondary btn-sm" onclick="loadBackups()"><i class="bi bi-arrow-clockwise"></i></button>
+          <button class="btn-logout" onclick="logout()"><i class="bi bi-box-arrow-right"></i> Logout</button>
         </div>
       </div>
       <div id="backups-list"><div class="skeleton skeleton-card"></div></div>
@@ -223,9 +221,10 @@
     <!-- ═══════ NETWORKS ═══════ -->
     <div class="page" id="page-networks">
       <div class="page-header">
-        <h1>Networks</h1>
+        <div class="ph-left"><div class="ph-icon">ANK</div><h1>Networks</h1></div>
         <div class="header-actions">
           <button class="btn btn-secondary btn-sm" onclick="loadNetworks()"><i class="bi bi-arrow-clockwise"></i></button>
+          <button class="btn-logout" onclick="logout()"><i class="bi bi-box-arrow-right"></i> Logout</button>
         </div>
       </div>
       <div id="networks-list"><div class="skeleton skeleton-card"></div></div>
@@ -233,7 +232,12 @@
 
     <!-- ═══════ SETTINGS ═══════ -->
     <div class="page" id="page-settings">
-      <div class="page-header"><h1>Settings</h1></div>
+      <div class="page-header">
+        <div class="ph-left"><div class="ph-icon">ANK</div><h1>Settings</h1></div>
+        <div class="header-actions">
+          <button class="btn-logout" onclick="logout()"><i class="bi bi-box-arrow-right"></i> Logout</button>
+        </div>
+      </div>
       <div class="tabs" id="settings-tabs">
         <div class="tab active" data-tab="general">General</div>
         <div class="tab" data-tab="remote">Remote</div>
@@ -246,11 +250,12 @@
     <!-- ═══════ SHELL ═══════ -->
     <div class="page" id="page-shell">
       <div class="page-header">
-        <h1>Shell</h1>
+        <div class="ph-left"><div class="ph-icon">ANK</div><h1>Shell</h1></div>
         <div class="header-actions">
           <select class="form-select" id="shell-container-select" style="width:auto"></select>
           <button class="btn btn-primary btn-sm" id="btn-shell-connect"><i class="bi bi-play"></i> Connect</button>
           <button class="btn btn-danger btn-sm" id="btn-shell-disconnect" style="display:none"><i class="bi bi-stop"></i> Disconnect</button>
+          <button class="btn-logout" onclick="logout()"><i class="bi bi-box-arrow-right"></i> Logout</button>
         </div>
       </div>
       <div class="terminal-container">
