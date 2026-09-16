@@ -312,7 +312,7 @@ if [ -s "$PREBUILD" ]; then
     # PATH A: Prebuild tarball found → use it
     log INFO "Using prebuilt: $(basename "$PREBUILD")"
     cp "$PREBUILD" "$TARBALL"
-    log OK "Tarball ready"
+    log OK "ANK Prebuild ready"
 else
     # PATH B: No tarball → download Alpine + install packages
     log WARN "ank-prebuild not found, building from scratch..."
@@ -382,7 +382,7 @@ else
     RET=$?
     rm -rf "$BUILDROOT"
     [ $RET -ne 0 ] && [ ! -s "$TARBALL" ] && die "Failed to create tarball"
-    log OK "Tarball built ($(stat -c%s "$TARBALL" 2>/dev/null || echo 0) bytes)"
+    log OK "ANK Prebuild built ($(stat -c%s "$TARBALL" 2>/dev/null || echo 0) bytes)"
 fi
 
 # --- STEP 2.5: Build ANKFS (tarball + engine) + ANK-ALPINEBASE (tarball limpo) ---
@@ -392,7 +392,7 @@ log STEP "2.5/4 > Building ANKFS + ANK-ALPINEBASE..."
 rm -rf "$ANKFS"
 mkdir -p "$ANKFS"
 cd "$ANKFS" && tar xzf "$TARBALL" 2>>"$LOG_FILE"; cd /
-[ -f "$ANKFS/bin/sh" ] || [ -L "$ANKFS/bin/sh" ] || die "Failed to extract ANKFS from tarball"
+[ -f "$ANKFS/bin/sh" ] || [ -L "$ANKFS/bin/sh" ] || die "Failed to extract ANKFS from ANK Prebuild"
 
 # Device nodes for ANKFS
 mkdir -p "$ANKFS/dev"
@@ -427,7 +427,7 @@ log INFO "Building ANK-ALPINEBASE..."
 rm -rf "$ANKBASE"
 mkdir -p "$ANKBASE"
 cd "$ANKBASE" && tar xzf "$TARBALL" 2>>"$LOG_FILE"; cd /
-[ -f "$ANKBASE/bin/sh" ] || [ -L "$ANKBASE/bin/sh" ] || die "Failed to extract ANK-ALPINEBASE from tarball"
+[ -f "$ANKBASE/bin/sh" ] || [ -L "$ANKBASE/bin/sh" ] || die "Failed to extract ANK-ALPINEBASE from ANK Prebuild"
 
 # Device nodes for ANK-ALPINEBASE
 mkdir -p "$ANKBASE/dev"

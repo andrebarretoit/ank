@@ -681,6 +681,8 @@ tr:hover td { background: var(--bg-hover); }
   -webkit-backdrop-filter: var(--glass-blur);
   overflow-y: auto;
   padding: 24px;
+  display: flex;
+  flex-direction: column;
 }
 .split-right-empty {
   display: flex; align-items: center; justify-content: center;
@@ -863,7 +865,8 @@ tr:hover td { background: var(--bg-hover); }
   border-radius: var(--radius-sm); padding: 10px 12px; text-align: center;
 }
 .dash-cluster-stat .dcs-label { font-size: 10px; color: var(--text-muted); text-transform: uppercase; margin-bottom: 4px; }
-.dash-cluster-stat .dcs-value { font-size: 16px; font-weight: 600; color: var(--text-primary); }
+  .dash-cluster-stat .dcs-value { font-size: 16px; font-weight: 600; color: var(--text-primary); }
+  .dash-cluster-stat .dcs-sub { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
 
 /* ═══════ RESPONSIVE ═══════ */
 @media (max-width: 768px) {

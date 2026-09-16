@@ -126,7 +126,7 @@ function navigateTo(page) {
   document.getElementById('mobile-expanded')?.classList.remove('active');
   if (page === 'dashboard') loadDashboard();
   if (page === 'containers') loadContainers();
-  if (page === 'images') loadImages();
+  if (page === 'images') { loadImages().then(() => { const sel = document.querySelector('#images-list .split-list-card.selected'); if (!sel) showImageSection('quick-deploy'); }); }
   if (page === 'nodes') { loadNodes(); loadPairingRequests(); }
   if (page === 'stacks') loadStacks();
   if (page === 'backups') loadBackups();
@@ -369,11 +369,12 @@ async function renderDashboardNodes() {
     if (!dashboard.is_manager || !dashboard.nodes || !dashboard.nodes.length) { card.style.display = 'none'; return; }
     card.style.display = '';
     const nodes = dashboard.nodes;
-    let totalCpu = 0, totalMemUsed = 0, totalMemTotal = 0, totalDiskUsed = 0, totalDiskTotal = 0, totalContainers = 0, onlineCount = 0;
+    let totalCpu = 0, totalCores = 0, totalMemUsed = 0, totalMemTotal = 0, totalDiskUsed = 0, totalDiskTotal = 0, totalContainers = 0, onlineCount = 0;
     nodes.forEach(n => {
       if (n.status === 'online') {
         onlineCount++;
         totalCpu += n.cpu_percent || 0;
+        totalCores += n.cpu_cores || 0;
         totalMemUsed += n.mem_used_gb || 0;
         totalMemTotal += n.mem_total_gb || 0;
         totalDiskUsed += n.disk_used || 0;
@@ -381,15 +382,28 @@ async function renderDashboardNodes() {
         totalContainers += n.containers_total || 0;
       }
     });
+    // Add local node stats
+    try {
+      const localStatus = await api('GET', '/status');
+      const localInfo = await api('GET', '/system/info');
+      totalCpu += localStatus.cpu_usage || 0;
+      totalCores += localStatus.cpu_cores || localInfo.cpu_count || 0;
+      totalMemUsed += (localInfo.mem_used_bytes || 0) / 1073741824;
+      totalMemTotal += (localInfo.mem_total_bytes || 0) / 1073741824;
+      totalDiskUsed += (localStatus.disk?.used || 0) / 1073741824;
+      totalDiskTotal += (localStatus.disk?.total || 0) / 1073741824;
+      totalContainers += (localStatus.containers_total || 0);
+      onlineCount++;
+    } catch(e) {}
     const avgCpu = onlineCount > 0 ? Math.round(totalCpu / onlineCount) : 0;
     const memPct = totalMemTotal > 0 ? Math.round(totalMemUsed / totalMemTotal * 100) : 0;
     const diskPct = totalDiskTotal > 0 ? Math.round(totalDiskUsed / totalDiskTotal * 100) : 0;
 
     const clusterStatsHtml = `<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px">
-      <div class="dash-cluster-stat"><div class="dcs-label">CPU Avg</div><div class="dcs-value">${avgCpu}%</div></div>
-      <div class="dash-cluster-stat"><div class="dcs-label">Memory</div><div class="dcs-value">${totalMemUsed.toFixed(1)}/${totalMemTotal.toFixed(1)}GB</div></div>
-      <div class="dash-cluster-stat"><div class="dcs-label">Disk</div><div class="dcs-value">${totalDiskUsed.toFixed(0)}/${totalDiskTotal.toFixed(0)}GB</div></div>
-      <div class="dash-cluster-stat"><div class="dcs-label">Containers</div><div class="dcs-value">${totalContainers}</div></div>
+      <div class="dash-cluster-stat"><div class="dcs-label">CPU</div><div class="dcs-value">${totalCores} cores</div><div class="dcs-sub">${avgCpu}% avg</div></div>
+      <div class="dash-cluster-stat"><div class="dcs-label">Memory</div><div class="dcs-value">${totalMemUsed.toFixed(1)} GB</div><div class="dcs-sub">${memPct}% of ${totalMemTotal.toFixed(1)} GB</div></div>
+      <div class="dash-cluster-stat"><div class="dcs-label">Disk</div><div class="dcs-value">${totalDiskUsed.toFixed(0)} GB</div><div class="dcs-sub">${diskPct}% of ${totalDiskTotal.toFixed(0)} GB</div></div>
+      <div class="dash-cluster-stat"><div class="dcs-label">Containers</div><div class="dcs-value">${totalContainers}</div><div class="dcs-sub">${onlineCount} nodes online</div></div>
     </div>`;
 
     const modeBadge = document.getElementById('mode-badge');
@@ -421,6 +435,7 @@ async function renderDashboardNodes() {
 }
 
 /* ═══════ CONTAINERS ═══════ */
+let cachedContainers = [];
 async function loadContainers() {
   const el = document.getElementById('containers-list');
   if (!el) return;
@@ -429,7 +444,8 @@ async function loadContainers() {
   }
   try {
     const containers = await api('GET', '/containers/all');
-    renderContainers(Array.isArray(containers) ? containers : [], 'all');
+    cachedContainers = Array.isArray(containers) ? containers : [];
+    renderContainers(cachedContainers, 'all');
   } catch (e) { el.innerHTML = '<div class="empty-state"><p>Failed to load</p></div>'; }
 }
 
@@ -779,11 +795,16 @@ async function showContainerDetail(name, nodeId) {
     });
 
     // Start log polling for running containers
-    if (!isRemote && s === 'running') {
+    if (s === 'running') {
       detailLogTimer = setInterval(async () => {
         try {
           if (!currentContainer || currentContainer.name !== name) { clearInterval(detailLogTimer); detailLogTimer = null; return; }
-          const logs = await api('GET', `/containers/${name}/logs`);
+          let logs;
+          if (isRemote) {
+            logs = await api('GET', `/nodes/${encodeURIComponent(nodeId)}/containers/${encodeURIComponent(name)}/logs`);
+          } else {
+            logs = await api('GET', `/containers/${name}/logs`);
+          }
           const logText = typeof logs.logs === 'string' ? logs.logs : (Array.isArray(logs.logs) ? logs.logs.join('\n') : '');
           const el = document.getElementById('detail-log-output');
           if (el) el.textContent = logText || 'No logs available';
@@ -1009,7 +1030,6 @@ async function loadImages() {
     cachedImages = Array.isArray(images) ? images : [];
     cachedTemplates = Array.isArray(templates) ? templates : [];
     document.getElementById('images-count-label').textContent = cachedImages.length + ' images';
-    showImageSection('quick-deploy');
   } catch (e) { console.error('Images load failed:', e); }
 }
 
@@ -1042,7 +1062,7 @@ function showImageSection(section) {
       el.innerHTML = `<div class="sr-header"><h2><i class="bi bi-lightning-charge" style="color:var(--accent)"></i> Quick Deploy</h2></div><div class="empty-state" style="padding:40px"><i class="bi bi-cloud-download" style="font-size:32px;color:var(--text-muted)"></i><p style="margin-top:8px;color:var(--text-muted)">No templates available.<br>Pull an Alpine image first.</p></div>`;
     }
   } else if (section === 'ankfile') {
-    el.innerHTML = `<div class="sr-header"><h2><i class="bi bi-file-earmark-code" style="color:var(--accent)"></i> Ankfile Build</h2></div><p style="font-size:13px;color:var(--text-muted);margin-bottom:16px">Build custom images from an Ankfile (like Dockerfile).</p><div class="card" style="border:1px solid var(--accent)"><div class="card-body"><div class="form-group"><label class="form-label">Container Name</label><input type="text" class="form-input" id="ankfile-name" placeholder="my-app" value="ank-build"></div><div class="form-group"><label class="form-label">Ankfile</label><textarea class="ankfile-editor" id="ankfile-content" rows="10" placeholder="# FROM alpine-3.20&#10;PASSWD ank123&#10;RUN apk add nginx">FROM alpine-3.20\nPASSWD ank123\nRUN apk add --allow-untrusted nginx\nRUN mkdir -p /var/www/html\nRUN echo "&lt;h1&gt;Custom ANK Image&lt;/h1&gt;" > /var/www/html/index.html\nEXPOSE 8080</textarea></div><div style="display:flex;gap:8px"><button type="button" class="btn btn-primary" id="ankfile-build-btn"><i class="bi bi-hammer"></i> Build</button><button type="button" class="btn btn-ghost" id="ankfile-example-btn"><i class="bi bi-filetype-json"></i> Load Example</button></div></div></div><div class="card" style="border:1px dashed var(--border);margin-top:12px"><div class="card-body" id="ank-drop-zone" style="text-align:center;padding:24px;cursor:pointer;transition:background 0.2s"><i class="bi bi-cloud-arrow-up" style="font-size:28px;color:var(--accent);display:block;margin-bottom:8px"></i><p style="font-size:13px;color:var(--text-muted);margin:0">Drag & drop a <code>.ank</code> file here</p><p style="font-size:11px;color:var(--text-muted);margin:4px 0 0">or click to browse</p><input type="file" id="ank-file-input" accept=".ank,.txt" style="display:none"></div></div>`;
+    el.innerHTML = `<div class="sr-header"><h2><i class="bi bi-file-earmark-code" style="color:var(--accent)"></i> Ankfile Build</h2></div><p style="font-size:13px;color:var(--text-muted);margin-bottom:16px">Build custom images from an Ankfile (like Dockerfile).</p><div class="card" style="border:1px solid var(--accent)"><div class="card-body"><div class="form-group"><label class="form-label">Container Name</label><input type="text" class="form-input" id="ankfile-name" placeholder="my-app" value="ank-build"></div><div class="form-group"><label class="form-label">Ankfile</label><textarea class="ankfile-editor" id="ankfile-content" rows="10" placeholder="# FROM alpine-3.20&#10;PASSWD ank123&#10;RUN apk add nginx">FROM alpine-3.20\nPASSWD ank123\nRUN apk add --allow-untrusted nginx\nRUN mkdir -p /var/www/html\nRUN echo "&lt;h1&gt;Custom ANK Image&lt;/h1&gt;" > /var/www/html/index.html\nEXPOSE 8080</textarea></div><div class="form-group" style="display:flex;align-items:center;gap:8px"><label class="checkbox-label" style="display:flex;align-items:center;gap:8px;cursor:pointer"><input type="checkbox" id="ankfile-save-image" style="width:18px;height:18px;accent-color:var(--accent)"><i class="bi bi-bookmark" style="color:var(--accent)"></i> Save as Image</label></div><div class="form-group" id="ankfile-image-name-group" style="display:none"><label class="form-label">Image Name</label><input type="text" class="form-input" id="ankfile-image-name" placeholder="my-custom-image" pattern="[a-zA-Z0-9._-]+" maxlength="40"><small class="form-hint">Letters, numbers, dots, dashes only</small></div><div style="display:flex;gap:8px"><button type="button" class="btn btn-primary" id="ankfile-build-btn"><i class="bi bi-hammer"></i> Build</button><button type="button" class="btn btn-ghost" id="ankfile-example-btn"><i class="bi bi-filetype-json"></i> Load Example</button></div></div></div><div class="card" style="border:1px dashed var(--border);margin-top:12px"><div class="card-body" id="ank-drop-zone" style="text-align:center;padding:24px;cursor:pointer;transition:background 0.2s"><i class="bi bi-cloud-arrow-up" style="font-size:28px;color:var(--accent);display:block;margin-bottom:8px"></i><p style="font-size:13px;color:var(--text-muted);margin:0">Drag & drop a <code>.ank</code> file here</p><p style="font-size:11px;color:var(--text-muted);margin:4px 0 0">or click to browse</p><input type="file" id="ank-file-input" accept=".ank,.txt" style="display:none"></div></div>`;
     document.getElementById('ank-drop-zone')?.addEventListener('click', () => document.getElementById('ank-file-input')?.click());
     const dz = document.getElementById('ank-drop-zone');
     const fi = document.getElementById('ank-file-input');
@@ -1055,9 +1075,16 @@ function showImageSection(section) {
     document.getElementById('ankfile-build-btn')?.addEventListener('click', async () => {
       const content = document.getElementById('ankfile-content')?.value?.trim();
       const name = document.getElementById('ankfile-name')?.value?.trim() || 'ank-build';
+      const saveAsImage = document.getElementById('ankfile-save-image')?.checked || false;
+      const imageName = document.getElementById('ankfile-image-name')?.value?.trim() || '';
       if (!content) { toast('Ankfile is empty', 'error'); return; }
       if (!content.includes('FROM')) { toast('Ankfile must have a FROM instruction', 'error'); return; }
-      try { toast(`Building from Ankfile as "${name}"...`, 'info'); await api('POST', '/images/ankfile', { content, name }); loadContainers(); pollContainerStatus(name, 0); } catch (e) { toast(`Failed: ${e.message}`, 'error'); }
+      if (saveAsImage && !imageName) { toast('Image name is required', 'error'); return; }
+      if (saveAsImage && !/^[a-zA-Z0-9._-]+$/.test(imageName)) { toast('Image name: only letters, numbers, dots, dashes', 'error'); return; }
+      try { toast(`Building from Ankfile as "${name}"...`, 'info'); await api('POST', '/images/ankfile', { content, name, save_as_image: saveAsImage, image_name: imageName }); loadContainers(); if (saveAsImage) loadImages(); pollContainerStatus(name, 0); } catch (e) { toast(`Failed: ${e.message}`, 'error'); }
+    });
+    document.getElementById('ankfile-save-image')?.addEventListener('change', (e) => {
+      document.getElementById('ankfile-image-name-group').style.display = e.target.checked ? 'block' : 'none';
     });
     document.getElementById('ankfile-example-btn')?.addEventListener('click', () => {
       document.getElementById('ankfile-content').value = 'FROM alpine-3.20\nPASSWD ank123\nRUN apk add --allow-untrusted curl tar sqlite\nRUN mkdir -p /opt/cloudreve\nRUN curl -L https://github.com/cloudreve/cloudreve/releases/download/4.18.0/cloudreve_4.18.0_linux_armv7.tar.gz | tar xz -C /opt/cloudreve\nEXPOSE 5212\nWORKDIR /opt/cloudreve\nCMD /opt/cloudreve/cloudreve';
@@ -1066,35 +1093,72 @@ function showImageSection(section) {
     });
   } else if (section === 'images') {
     if (cachedImages.length) {
-      el.innerHTML = `<div class="sr-header"><h2><i class="bi bi-hdd-stack" style="color:var(--accent)"></i> Ank Images (${cachedImages.length})</h2></div>${cachedImages.map(img => `<div class="split-list-card" data-id="${esc(img.name)}" onclick="showImageDetail('${esc(img.name)}')"><div class="slc-top"><span class="slc-name"><i class="bi bi-hdd-stack" style="color:var(--accent)"></i>${esc(img.name)}</span><button class="btn btn-danger btn-sm" onclick="event.stopPropagation();deleteImage('${esc(img.name)}')" title="Delete"><i class="bi bi-trash3"></i></button></div><div class="slc-meta"><span>${img.size_human || fmtBytes(img.size||0)}</span><span>${esc(img.version||'')}</span></div></div>`).join('')}`;
+      el.innerHTML = `<div class="sr-header"><h2><i class="bi bi-hdd-stack" style="color:var(--accent)"></i> Ank Images (${cachedImages.length})</h2></div>${cachedImages.map(img => `<div class="split-list-card" data-id="${esc(img.name)}" onclick="showImageDetail('${esc(img.name)}','${esc(img.node||'local')}')"><div class="slc-top"><span class="slc-name"><i class="bi bi-hdd-stack" style="color:var(--accent)"></i>${esc(img.name)}</span><span class="template-badge ready" style="font-size:10px;padding:2px 6px;border-radius:8px;background:${img.node==='local'?'var(--primary)':'var(--accent)'};color:#fff">${esc(img.node_alias||'local')}</span><button class="btn btn-danger btn-sm" onclick="event.stopPropagation();deleteImage('${esc(img.name)}')" title="Delete"><i class="bi bi-trash3"></i></button></div><div class="slc-meta"><span>${img.size_human || fmtBytes(img.size||0)}</span><span>${esc(img.version||'')}</span></div></div>`).join('')}`;
     } else {
       el.innerHTML = `<div class="sr-header"><h2><i class="bi bi-hdd-stack" style="color:var(--accent)"></i> Ank Images</h2></div><div class="empty-state" style="padding:40px"><i class="bi bi-hdd-stack" style="font-size:32px;color:var(--text-muted)"></i><p style="margin-top:8px;color:var(--text-muted)">No images downloaded yet</p></div>`;
     }
   }
 }
 
-function showImageDetail(name) {
+function showImageDetail(name, node) {
   const el = document.getElementById('image-detail');
   if (!el) return;
+  const containersUsing = (cachedContainers || []).filter(c => c.image === name || c.template === name);
   el.innerHTML = `
     <div class="sr-header">
       <h2><i class="bi bi-hdd-stack" style="color:var(--accent)"></i>${esc(name)}</h2>
       <div class="sr-actions">
-        <button class="btn btn-primary btn-sm" onclick="deployTemplate('${esc(name)}','${esc(name)}',true)"><i class="bi bi-rocket-takeoff"></i> Deploy</button>
+        <button class="btn btn-ghost btn-sm" onclick="showImageSection('images')"><i class="bi bi-arrow-left"></i> Back</button>
         <button class="btn btn-danger btn-sm" onclick="deleteImage('${esc(name)}')"><i class="bi bi-trash3"></i></button>
       </div>
     </div>
     <div class="sr-info-grid">
       <div class="sr-info-item"><div class="sr-label">Name</div><div class="sr-value">${esc(name)}</div></div>
-    </div>`;
+      ${node ? `<div class="sr-info-item"><div class="sr-label">Node</div><div class="sr-value">${esc(node)}</div></div>` : ''}
+    </div>
+    ${containersUsing.length ? `<div style="margin-top:16px"><h3 style="font-size:14px;margin-bottom:8px">Containers using this image</h3>${containersUsing.map(c => `<div class="split-list-card" onclick="navigateTo('containers');setTimeout(()=>showContainerDetail('${esc(c.name)}','${esc(c.node||'local')}'),200)" style="cursor:pointer"><div class="slc-top"><span class="slc-name"><i class="bi bi-box" style="color:var(--accent)"></i>${esc(c.name)}</span><span class="template-badge ${c.status==='running'?'ready':'pending'}">${esc(c.status)}</span></div></div>`).join('')}</div>` : ''}`;
 }
 
 async function pullImage() {
+  let versions = ['3.20', '3.19', '3.18'];
+  try { const v = await api('GET', '/images/alpine-versions'); if (Array.isArray(v) && v.length) versions = v; } catch(e) {}
+  const versionOpts = versions.map(v => `<option value="${esc(v)}">Alpine ${esc(v)}</option>`).join('');
   const result = await customModal('Pull Image', [
-    { id: 'version', label: 'Alpine Version', type: 'select', options: '<option value="3.20">Alpine 3.20</option><option value="3.19">Alpine 3.19</option><option value="3.18">Alpine 3.18</option>' }
+    { id: 'version', label: 'Alpine Version', type: 'select', options: versionOpts }
   ]);
   if (!result) return;
-  try { toast('Pulling image...', 'info'); await api('POST', '/images/pull', { version: result.version }); toast('Image pulled', 'success'); loadImages(); } catch (e) { toast(`Failed: ${e.message}`, 'error'); }
+  const version = result.version;
+  const pullId = `pull-${Date.now()}`;
+  document.body.insertAdjacentHTML('beforeend', `<div class="modal-overlay active" id="${pullId}"><div class="modal-card" style="max-width:560px"><div class="modal-header"><h3>Pulling Alpine ${esc(version)}</h3><button class="modal-close" onclick="document.getElementById('${pullId}').remove()">&times;</button></div><div class="modal-body"><pre class="log-output" id="${pullId}-log" style="min-height:180px;max-height:400px;overflow:auto"></pre></div><div class="modal-footer"><button class="btn btn-ghost" onclick="document.getElementById('${pullId}').remove()">Close</button></div></div></div>`);
+  const logEl = document.getElementById(`${pullId}-log`);
+  try {
+    await api('POST', '/images/pull', { version });
+    let lastLen = 0;
+    const poll = setInterval(async () => {
+      try {
+        const st = await api('GET', `/images/pull/status?version=${version}`);
+        const lines = st.output || [];
+        if (lines.length !== lastLen) {
+          logEl.textContent = lines.join('\n');
+          logEl.scrollTop = logEl.scrollHeight;
+          lastLen = lines.length;
+        }
+        if (st.state === 'done') {
+          clearInterval(poll);
+          logEl.textContent += '\nDone!';
+          toast('Image pulled successfully', 'success');
+          loadImages().then(() => { const sel = document.querySelector('#images-list .split-list-card.selected'); showImageSection(sel ? sel.dataset.section : 'images'); });
+        } else if (st.state === 'error') {
+          clearInterval(poll);
+          logEl.textContent += `\nError: ${st.error || 'Unknown error'}`;
+          toast('Pull failed', 'error');
+        }
+      } catch(e) {}
+    }, 1500);
+  } catch (e) {
+    logEl.textContent = `Error: ${e.message}`;
+    toast(`Failed: ${e.message}`, 'error');
+  }
 }
 
 async function deployTemplate(id, name, baseReady) {
@@ -1119,10 +1183,12 @@ async function deployTemplate(id, name, baseReady) {
   const nodeId = result['tpl-target-node'] || 'local';
   if (!containerName) { toast('Container name required', 'warning'); return; }
   if (!rootPass || rootPass.length < 4) { toast('Password must be at least 4 characters', 'warning'); return; }
+  const tpl = cachedTemplates.find(t => t.id === id);
+  const imageField = tpl ? tpl.image : id;
   try {
     if (nodeId !== 'local') {
       toast(`Deploying on remote...`, 'info');
-      await api('POST', `/nodes/${encodeURIComponent(nodeId)}/containers`, { name: containerName, image: id, root_password: rootPass });
+      await api('POST', `/nodes/${encodeURIComponent(nodeId)}/containers`, { name: containerName, image: imageField, root_password: rootPass });
       toast(`Creation sent to remote node`, 'success');
       setTimeout(() => { loadContainers(); pollRemoteContainerStatus(nodeId, containerName, 0); }, 1000);
     } else {
@@ -1139,7 +1205,7 @@ document.getElementById('btn-pull-image')?.addEventListener('click', pullImage);
 async function deleteImage(id) {
   const ok = await confirmAction('Delete Image', 'Delete this image?');
   if (!ok) return;
-  try { await api('DELETE', `/images/${encodeURIComponent(id)}`); toast('Image deleted', 'success'); loadImages(); } catch(e) { toast(`Failed: ${e.message}`, 'error'); }
+  try { await api('DELETE', `/images/${encodeURIComponent(id)}`); toast('Image deleted', 'success'); loadImages().then(() => { const sel = document.querySelector('#images-list .split-list-card.selected'); showImageSection(sel ? sel.dataset.section : 'images'); }); } catch(e) { toast(`Failed: ${e.message}`, 'error'); }
 }
 
 /* ═══════ NODES ═══════ */
@@ -1969,10 +2035,18 @@ async function loadTaskManager() {
   if (!el) return;
   el.innerHTML = '<div class="empty-state">Loading services...</div>';
   try {
-    const [data, health] = await Promise.all([
-      api('GET', `/containers/${currentContainer.name}/services`),
-      api('GET', `/containers/${currentContainer.name}/health`).catch(() => null)
-    ]);
+    const isRemote = currentContainer._nodeId && currentContainer._nodeId !== 'local';
+    let data, health;
+    if (isRemote) {
+      const nid = encodeURIComponent(currentContainer._nodeId);
+      const cname = encodeURIComponent(currentContainer.name);
+      data = await api('GET', `/nodes/${nid}/containers/${cname}/services`).catch(() => ({services:[]}));
+      health = await api('GET', `/nodes/${nid}/containers/${cname}/health`).catch(() => null);
+    } else {
+      [data, health] = await Promise.all([
+        api('GET', `/containers/${currentContainer.name}/services`),
+        api('GET', `/containers/${currentContainer.name}/health`).catch(() => null)
+      ]);
     const services = data.services || [];
     const containerStatus = currentContainer.status || 'stopped';
     const isRunning = containerStatus === 'running';
@@ -2245,10 +2319,12 @@ document.getElementById('create-form')?.addEventListener('submit', async (e) => 
   if (imageVal.startsWith('template:')) {
     const templateId = imageVal.replace('template:', '');
     const rootPass = document.getElementById('container-root-password').value || 'ank123';
+    const tpl = cachedTemplates.find(t => t.id === templateId);
+    const imageField = tpl ? tpl.image : templateId;
     try {
       if (isRemote) {
         toast(`Deploying on remote...`, 'info');
-        await api('POST', `/nodes/${encodeURIComponent(nodeId)}/containers`, { name, image: templateId, root_password: rootPass });
+        await api('POST', `/nodes/${encodeURIComponent(nodeId)}/containers`, { name, image: imageField, root_password: rootPass });
       } else {
         toast(`Deploying as "${name}"...`, 'info');
         await api('POST', '/images/deploy', { template: templateId, name, root_password: rootPass });

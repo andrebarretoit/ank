@@ -1551,6 +1551,8 @@ small{color:#334155}
                     if part.startswith("version="):
                         version = part.split("=", 1)[1]
             self.api_pull_image_status({"version": version})
+        elif path == "/api/images/alpine-versions":
+            self.api_alpine_versions()
         elif path == "/api/system/info":
             self.api_system_info()
         elif path == "/api/networks":
@@ -1599,6 +1601,18 @@ small{color:#334155}
         elif path.startswith("/api/nodes/") and "/containers/" in path and path.endswith("/logs"):
             parts = path.split("/")
             self.api_node_container_logs(parts[3], parts[5])
+        elif path.startswith("/api/nodes/") and "/containers/" in path and path.endswith("/services"):
+            parts = path.split("/")
+            self.api_node_container_services(parts[3], parts[5])
+        elif path.startswith("/api/nodes/") and "/containers/" in path and path.endswith("/health"):
+            parts = path.split("/")
+            self.api_node_container_health(parts[3], parts[5])
+        elif path.startswith("/api/nodes/") and "/containers/" in path:
+            parts = path.split("/")
+            if len(parts) >= 6 and parts[5]:
+                self.api_node_container_detail(parts[3], parts[5])
+            else:
+                self.api_node_containers(parts[3])
         elif path.startswith("/api/nodes/"):
             self.api_node_inspect(path.split("/")[3])
         elif path.startswith("/api/containers/") and "/services/" in path and path.endswith("/logs"):
@@ -2915,6 +2929,19 @@ small{color:#334155}
         status = _pull_status.get(version, {"state": "idle", "output": [], "error": ""})
         self.send_json(status)
 
+    def api_alpine_versions(self):
+        try:
+            import urllib.request
+            req = urllib.request.Request("https://dl-cdn.alpinelinux.org/alpine/releases/", headers={"User-Agent": "ANK/2.0"})
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                html = resp.read().decode("utf-8", errors="ignore")
+            import re
+            versions = re.findall(r'href="v(\d+\.\d+)/"', html)
+            versions.sort(key=lambda v: [int(x) for x in v.split('.')], reverse=True)
+            self.send_json(versions[:10])
+        except Exception as e:
+            self.send_json(["3.20", "3.19", "3.18"])
+
     # ============================================================
     # Image Templates
     # ============================================================
@@ -3246,6 +3273,8 @@ small{color:#334155}
         global _building
         ankfile_content = data.get("content", "")
         container_name = data.get("name", "")
+        save_as_image = data.get("save_as_image", False)
+        image_name = data.get("image_name", "")
         if not ankfile_content:
             self.send_error(400, "Ankfile content required")
             return
@@ -3449,6 +3478,19 @@ small{color:#334155}
                         for p in ports:
                             _write_portfwd(merged, p)
                     save_container_config(container_name, config)
+                # Save as image if requested
+                if save_as_image and image_name:
+                    try:
+                        img_dir = os.path.join(IMAGES_DIR, image_name)
+                        import shutil
+                        if os.path.exists(img_dir):
+                            shutil.rmtree(img_dir)
+                        shutil.copytree(merged, img_dir, symlinks=True)
+                        log(f"Saved image '{image_name}' from ankfile build")
+                        with open(log_path, "a") as lf:
+                            lf.write(f"Saved as image: {image_name}\n")
+                    except Exception as e:
+                        log(f"ERROR: save image {image_name}: {e}")
                 log(f"Ankfile built as '{container_name}'")
                 with open(log_path, "a") as lf:
                     lf.write(f"Build complete.\n")
@@ -4818,6 +4860,17 @@ small{color:#334155}
             except Exception:
                 pass
 
+        # Add cache info for Settings > Cache
+        rootfs_size = "-"
+        containers_size = "-"
+        total_size = "-"
+        try:
+            rootfs_size = self._du_human("/data/local/ank/ankfs")
+            containers_size = self._du_human("/data/local/ank/containers")
+            total_size = self._du_human("/data/local/ank")
+        except Exception:
+            pass
+
         self.send_json({
             "mode": mode,
             "kernel": _device_cache["kernel"],
@@ -4835,7 +4888,10 @@ small{color:#334155}
                 "gateway": net.get("gateway", "10.20.30.1"),
                 "bridge": net.get("bridge", "ank0")
             },
-            "device_free": f"{_disk_usage_cache['free']:.1f} GB" if _disk_usage_cache.get("free") else "-"
+            "device_free": f"{_disk_usage_cache['free']:.1f} GB" if _disk_usage_cache.get("free") else "-",
+            "rootfs_size": rootfs_size,
+            "containers_size": containers_size,
+            "total_size": total_size
         })
 
     def _fmt_size(self, size):
@@ -5358,6 +5414,45 @@ small{color:#334155}
             return
         logs = nm.get_container_logs_on_node(node_id, container_name)
         self.send_json(logs if logs else {"logs": []})
+
+    def api_node_container_detail(self, node_id, container_name):
+        nm = self._get_node_manager()
+        if not nm:
+            self.send_json({"error": "node_manager not available"}, 500)
+            return
+        try:
+            container = nm._node_api_get(node_id, f"/api/containers/{container_name}")
+            if container:
+                container["node"] = node_id
+                node = nm.get_node(node_id)
+                container["node_alias"] = node.get("alias", node_id) if node else node_id
+            logs = nm._node_api_get(node_id, f"/api/containers/{container_name}/logs") or {}
+            container["log"] = logs.get("logs", "")
+            self.send_json(container)
+        except Exception as e:
+            self.send_json({"error": str(e)}, 500)
+
+    def api_node_container_services(self, node_id, container_name):
+        nm = self._get_node_manager()
+        if not nm:
+            self.send_json({"services": []})
+            return
+        try:
+            result = nm._node_api_get(node_id, f"/api/containers/{container_name}/services")
+            self.send_json(result if result else {"services": []})
+        except Exception as e:
+            self.send_json({"services": [], "error": str(e)})
+
+    def api_node_container_health(self, node_id, container_name):
+        nm = self._get_node_manager()
+        if not nm:
+            self.send_json({"error": "node_manager not available"}, 500)
+            return
+        try:
+            result = nm._node_api_get(node_id, f"/api/containers/{container_name}/health")
+            self.send_json(result if result else {"status": "unknown"})
+        except Exception as e:
+            self.send_json({"status": "unknown", "error": str(e)})
 
     def api_node_container_action(self, node_id, container_name, action):
         nm = self._get_node_manager()

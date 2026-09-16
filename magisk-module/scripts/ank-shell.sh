@@ -74,9 +74,9 @@ _api_get() {
     local path="$1"
     _ensure_token
     if [ -n "$ANK_TOKEN" ]; then
-        curl -s -H "Authorization: Bearer $ANK_TOKEN" "http://127.0.0.1:${ANK_PORT:-8001}${path}" 2>/dev/null
+        curl -s -H "Authorization: Bearer $ANK_TOKEN" -H "X-ANK-Client: ank-cli" "http://127.0.0.1:${ANK_PORT:-8001}${path}" 2>/dev/null
     else
-        curl -s "http://127.0.0.1:${ANK_PORT:-8001}${path}" 2>/dev/null
+        curl -s -H "X-ANK-Client: ank-cli" "http://127.0.0.1:${ANK_PORT:-8001}${path}" 2>/dev/null
     fi
 }
 
@@ -84,17 +84,17 @@ _api_post() {
     local path="$1" data="$2"
     _ensure_token
     if [ -n "$ANK_TOKEN" ]; then
-        local resp=$(curl -s -X POST -H "Content-Type: application/json" -H "Authorization: Bearer $ANK_TOKEN" -d "$data" "http://127.0.0.1:${ANK_PORT:-8001}${path}" 2>/dev/null)
-        if echo "$resp" | grep -q '"error".*[Uu]nauthorized'; then
+        local resp=$(curl -s -X POST -H "Content-Type: application/json" -H "Authorization: Bearer $ANK_TOKEN" -H "X-ANK-Client: ank-cli" -d "$data" "http://127.0.0.1:${ANK_PORT:-8001}${path}" 2>/dev/null)
+        if echo "$resp" | grep -q '[Uu]nauthorized'; then
             ANK_TOKEN=""
             _ensure_token
             if [ -n "$ANK_TOKEN" ]; then
-                resp=$(curl -s -X POST -H "Content-Type: application/json" -H "Authorization: Bearer $ANK_TOKEN" -d "$data" "http://127.0.0.1:${ANK_PORT:-8001}${path}" 2>/dev/null)
+                resp=$(curl -s -X POST -H "Content-Type: application/json" -H "Authorization: Bearer $ANK_TOKEN" -H "X-ANK-Client: ank-cli" -d "$data" "http://127.0.0.1:${ANK_PORT:-8001}${path}" 2>/dev/null)
             fi
         fi
         echo "$resp"
     else
-        curl -s -X POST -H "Content-Type: application/json" -d "$data" "http://127.0.0.1:${ANK_PORT:-8001}${path}" 2>/dev/null
+        curl -s -X POST -H "Content-Type: application/json" -H "X-ANK-Client: ank-cli" -d "$data" "http://127.0.0.1:${ANK_PORT:-8001}${path}" 2>/dev/null
     fi
 }
 
@@ -102,17 +102,17 @@ _api_delete() {
     local path="$1"
     _ensure_token
     if [ -n "$ANK_TOKEN" ]; then
-        local resp=$(curl -s -X DELETE -H "Authorization: Bearer $ANK_TOKEN" "http://127.0.0.1:${ANK_PORT:-8001}${path}" 2>/dev/null)
-        if echo "$resp" | grep -q '"error".*[Uu]nauthorized'; then
+        local resp=$(curl -s -X DELETE -H "Authorization: Bearer $ANK_TOKEN" -H "X-ANK-Client: ank-cli" "http://127.0.0.1:${ANK_PORT:-8001}${path}" 2>/dev/null)
+        if echo "$resp" | grep -q '[Uu]nauthorized'; then
             ANK_TOKEN=""
             _ensure_token
             if [ -n "$ANK_TOKEN" ]; then
-                resp=$(curl -s -X DELETE -H "Authorization: Bearer $ANK_TOKEN" "http://127.0.0.1:${ANK_PORT:-8001}${path}" 2>/dev/null)
+                resp=$(curl -s -X DELETE -H "Authorization: Bearer $ANK_TOKEN" -H "X-ANK-Client: ank-cli" "http://127.0.0.1:${ANK_PORT:-8001}${path}" 2>/dev/null)
             fi
         fi
         echo "$resp"
     else
-        curl -s -X DELETE "http://127.0.0.1:${ANK_PORT:-8001}${path}" 2>/dev/null
+        curl -s -X DELETE -H "X-ANK-Client: ank-cli" "http://127.0.0.1:${ANK_PORT:-8001}${path}" 2>/dev/null
     fi
 }
 
@@ -584,8 +584,18 @@ ank_stop() {
     local node=$(_find_container_node "$name")
     if [ "$node" != "local" ]; then
         echo "Stopping '$name' on node $(_node_alias "$node")..."
-        _api_post "/api/nodes/${node}/containers/${name}/stop" "{}"
-        echo "Stop command sent"
+        local resp=$(_api_post "/api/nodes/${node}/containers/${name}/stop" "{}")
+        if echo "$resp" | grep -q '[Uu]nauthorized'; then
+            echo "ERROR: Unauthorized — token invalid, retrying login..."
+            ANK_TOKEN=""
+            _ank_login 2>/dev/null
+            resp=$(_api_post "/api/nodes/${node}/containers/${name}/stop" "{}")
+        fi
+        if echo "$resp" | grep -qi "error"; then
+            echo "ERROR: $resp"
+        else
+            echo "Stop command sent"
+        fi
     else
         sh "$SCRIPTS_DIR/container.sh" stop "$name" 2>&1 | tail -5
     fi

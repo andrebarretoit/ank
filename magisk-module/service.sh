@@ -236,7 +236,6 @@ if [ "$SSH_ENABLED" = "1" ] && [ -f "$ROOTFS/usr/sbin/sshd" ]; then
         -o "PasswordAuthentication=yes" \
         -o "PermitRootLogin=yes" \
         -o "ChallengeResponseAuthentication=no" \
-        -o "UsePAM=no" \
         -e 2>&1 | while IFS= read -r line; do log "  sshd: $line"; done &
     SSHD_PID=$!
     sleep 2
