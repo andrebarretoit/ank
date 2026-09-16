@@ -98,41 +98,54 @@ cleanup() {
 cp_log_to_sdcard() { mkdir -p "$ANK_SDCARD/logs"; cp "$LOG_FILE" "$ANK_SDCARD/logs/install.log" 2>/dev/null; }
 
 detect_arch() {
-    local raw=$(uname -m)
-    case "$raw" in
-        aarch64|arm64) ARCH_NAME="aarch64" ;;
-        armv8*) ARCH_NAME="aarch64" ;;
-        armv7*|armhf) ARCH_NAME="armv7" ;;
-        x86_64) ARCH_NAME="x86_64" ;;
-        *) ARCH_NAME="$raw" ;;
+    ARCH_NAME=$(uname -m)
+    # Map uname -m to Alpine repo arch for downloads
+    case "$ARCH_NAME" in
+        aarch64|arm64) ALPINE_ARCH="aarch64" ;;
+        armv8*) ALPINE_ARCH="armhf" ;;
+        armv7*|armhf) ALPINE_ARCH="armv7" ;;
+        x86_64) ALPINE_ARCH="x86_64" ;;
+        *) ALPINE_ARCH="$ARCH_NAME" ;;
     esac
 }
 
-# Universal chroot: tries toybox chroot, busybox chroot, musl direct exec
+# Universal chroot: host tools first, then rootfs fallbacks
 _chroot_rootfs() {
     local ROOTFS="$1"; shift
     local CMD="$*"
-    local MUSL=$(ls "$ROOTFS"/lib/ld-musl-*.so* 2>/dev/null | head -1)
 
-    # 1. System chroot (toybox/busybox)
+    # 1. Host busybox chroot (most reliable on Android)
+    if command -v busybox >/dev/null 2>&1; then
+        busybox chroot "$ROOTFS" /bin/sh -c "$CMD" 2>>"$LOG_FILE" && return 0
+    fi
+    if [ -x /system/bin/busybox ]; then
+        /system/bin/busybox chroot "$ROOTFS" /bin/sh -c "$CMD" 2>>"$LOG_FILE" && return 0
+    fi
+
+    # 2. Host musl direct exec (no chroot, runs rootfs binaries via host linker)
+    local MUSL=$(ls "$ROOTFS"/lib/ld-musl-*.so* 2>/dev/null | head -1)
+    if [ -n "$MUSL" ] && [ -x "$MUSL" ]; then
+        local SH=""
+        for s in "$ROOTFS/bin/sh" "$ROOTFS/bin/busybox"; do
+            [ -e "$s" ] || [ -L "$s" ] && { SH="$s"; break; }
+        done
+        [ -z "$SH" ] && SH="$ROOTFS/bin/sh"
+        env -i HOME=/root PATH=/sbin:/usr/sbin:/bin:/usr/bin \
+            LD_LIBRARY_PATH="$ROOTFS/lib" \
+            "$MUSL" "$SH" -c "$CMD" 2>>"$LOG_FILE" && return 0
+    fi
+
+    # 3. System chroot (toybox — may segfault on some devices)
     if command -v chroot >/dev/null 2>&1; then
         chroot "$ROOTFS" /bin/sh -c "$CMD" 2>>"$LOG_FILE" && return 0
     fi
-
-    # 2. /system/bin/chroot (Android toybox)
     if [ -x /system/bin/chroot ]; then
         /system/bin/chroot "$ROOTFS" /bin/sh -c "$CMD" 2>>"$LOG_FILE" && return 0
     fi
 
-    # 3. busybox chroot (if busybox is in buildroot)
+    # 4. Rootfs busybox chroot (if busybox was already installed in rootfs)
     if [ -x "$ROOTFS/bin/busybox" ]; then
         "$ROOTFS/bin/busybox" chroot "$ROOTFS" /bin/sh -c "$CMD" 2>>"$LOG_FILE" && return 0
-    fi
-
-    # 4. musl direct exec (no chroot needed)
-    if [ -n "$MUSL" ] && [ -x "$MUSL" ]; then
-        env -i HOME=/root PATH=/sbin:/usr/sbin:/bin:/usr/bin \
-            "$MUSL" /bin/sh -c "$CMD" 2>>"$LOG_FILE" && return 0
     fi
 
     return 1
@@ -159,12 +172,12 @@ download_alpine() {
     for VER in "3.20.2" "3.20.1" "3.20.0" "3.19.1"; do
         # Multiple mirrors for faster download (ordered by reliability)
         for BASE_URL in \
-            "https://dl-cdn.alpinelinux.org/alpine/v3.20/releases/${ARCH_NAME}" \
-            "https://mirror.init7.net/alpine/v3.20/releases/${ARCH_NAME}" \
-            "https://uk.alpinelinux.org/alpine/v3.20/releases/${ARCH_NAME}" \
-            "https://mirror.uepg.br/alpine/v3.20/releases/${ARCH_NAME}" \
-            "https://alpine.mirror.lstn.net/alpine/v3.20/releases/${ARCH_NAME}"; do
-            local URL="${BASE_URL}/alpine-minirootfs-${VER}-${ARCH_NAME}.tar.gz"
+            "https://dl-cdn.alpinelinux.org/alpine/v3.20/releases/${ALPINE_ARCH}" \
+            "https://mirror.init7.net/alpine/v3.20/releases/${ALPINE_ARCH}" \
+            "https://uk.alpinelinux.org/alpine/v3.20/releases/${ALPINE_ARCH}" \
+            "https://mirror.uepg.br/alpine/v3.20/releases/${ALPINE_ARCH}" \
+            "https://alpine.mirror.lstn.net/alpine/v3.20/releases/${ALPINE_ARCH}"; do
+            local URL="${BASE_URL}/alpine-minirootfs-${VER}-${ALPINE_ARCH}.tar.gz"
             log INFO "Downloading Alpine ${VER} for ${ARCH_NAME}..."
             rm -f "$OUT_TAR"
             $DL "$OUT_TAR" "$URL" 2>&1
@@ -271,7 +284,7 @@ log INFO "Mode: $MODE (chroot=$CHROOT netns=$NETNS pidns=$PIDNS overlay=$OVERLAY
 log STEP "2/4 > ANK-Engine..."
 
 TARBALL="$ANK_DIR/cache/ank-prebuild-${ARCH_NAME}.tar.gz"
-ALPINE_CACHE="$ANK_DIR/cache/alpine-minirootfs-${ARCH_NAME}.tar.gz"
+ALPINE_CACHE="$ANK_DIR/cache/alpine-minirootfs-${ALPINE_ARCH}.tar.gz"
 
 # Try prebuild from ZIP
 PREBUILD="$MODPATH/ankfs/ank-prebuild-${ARCH_NAME}.tar.gz"
