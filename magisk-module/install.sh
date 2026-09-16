@@ -114,15 +114,44 @@ _chroot_rootfs() {
     local ROOTFS="$1"; shift
     local CMD="$*"
 
-    # 1. Host busybox chroot (most reliable on Android)
-    if command -v busybox >/dev/null 2>&1; then
-        busybox chroot "$ROOTFS" /bin/sh -c "$CMD" 2>>"$LOG_FILE" && return 0
-    fi
-    if [ -x /system/bin/busybox ]; then
-        /system/bin/busybox chroot "$ROOTFS" /bin/sh -c "$CMD" 2>>"$LOG_FILE" && return 0
+    # Discover host tools dynamically via which/command -v
+    local HOST_BUSYBOX=""
+    local HOST_TOYBOX=""
+    local HOST_CHROOT=""
+    for b in $(command -v busybox 2>/dev/null) /system/xbin/busybox /system/bin/busybox; do
+        [ -x "$b" ] && HOST_BUSYBOX="$b" && break
+    done
+    for t in $(command -v toybox 2>/dev/null) /system/bin/toybox /system/xbin/toybox; do
+        [ -x "$t" ] && HOST_TOYBOX="$t" && break
+    done
+    for c in $(command -v chroot 2>/dev/null) /system/bin/chroot /system/xbin/chroot; do
+        [ -x "$c" ] && HOST_CHROOT="$c" && break
+    done
+
+    log INFO "Host tools: busybox=${HOST_BUSYBOX:-none} toybox=${HOST_TOYBOX:-none} chroot=${HOST_CHROOT:-none}"
+
+    # 1. Host busybox chroot
+    if [ -n "$HOST_BUSYBOX" ]; then
+        log INFO "Trying: $HOST_BUSYBOX chroot $ROOTFS /bin/sh -c ..."
+        "$HOST_BUSYBOX" chroot "$ROOTFS" /bin/sh -c "$CMD" 2>>"$LOG_FILE" && return 0
+        log WARN "Host busybox chroot failed"
     fi
 
-    # 2. Host musl direct exec (no chroot, runs rootfs binaries via host linker)
+    # 2. Host toybox chroot
+    if [ -n "$HOST_TOYBOX" ]; then
+        log INFO "Trying: $HOST_TOYBOX chroot $ROOTFS /bin/sh -c ..."
+        "$HOST_TOYBOX" chroot "$ROOTFS" /bin/sh -c "$CMD" 2>>"$LOG_FILE" && return 0
+        log WARN "Host toybox chroot failed"
+    fi
+
+    # 3. Host chroot (standalone)
+    if [ -n "$HOST_CHROOT" ]; then
+        log INFO "Trying: $HOST_CHROOT $ROOTFS /bin/sh -c ..."
+        "$HOST_CHROOT" "$ROOTFS" /bin/sh -c "$CMD" 2>>"$LOG_FILE" && return 0
+        log WARN "Host chroot failed"
+    fi
+
+    # 4. Host musl direct exec (no chroot, runs rootfs binaries via host linker)
     local MUSL=$(ls "$ROOTFS"/lib/ld-musl-*.so* 2>/dev/null | head -1)
     if [ -n "$MUSL" ] && [ -x "$MUSL" ]; then
         local SH=""
@@ -130,24 +159,21 @@ _chroot_rootfs() {
             [ -e "$s" ] || [ -L "$s" ] && { SH="$s"; break; }
         done
         [ -z "$SH" ] && SH="$ROOTFS/bin/sh"
+        log INFO "Trying: musl direct exec $MUSL $SH ..."
         env -i HOME=/root PATH=/sbin:/usr/sbin:/bin:/usr/bin \
             LD_LIBRARY_PATH="$ROOTFS/lib" \
             "$MUSL" "$SH" -c "$CMD" 2>>"$LOG_FILE" && return 0
+        log WARN "Musl direct exec failed"
     fi
 
-    # 3. System chroot (toybox — may segfault on some devices)
-    if command -v chroot >/dev/null 2>&1; then
-        chroot "$ROOTFS" /bin/sh -c "$CMD" 2>>"$LOG_FILE" && return 0
-    fi
-    if [ -x /system/bin/chroot ]; then
-        /system/bin/chroot "$ROOTFS" /bin/sh -c "$CMD" 2>>"$LOG_FILE" && return 0
-    fi
-
-    # 4. Rootfs busybox chroot (if busybox was already installed in rootfs)
+    # 5. Rootfs busybox chroot (last resort)
     if [ -x "$ROOTFS/bin/busybox" ]; then
+        log INFO "Trying: rootfs busybox chroot ..."
         "$ROOTFS/bin/busybox" chroot "$ROOTFS" /bin/sh -c "$CMD" 2>>"$LOG_FILE" && return 0
+        log WARN "Rootfs busybox chroot failed"
     fi
 
+    log WARN "All chroot methods exhausted"
     return 1
 }
 
@@ -332,9 +358,20 @@ else
     chmod 666 "$BUILDROOT/dev/null" "$BUILDROOT/dev/urandom" "$BUILDROOT/dev/random" "$BUILDROOT/dev/tty" "$BUILDROOT/dev/ptmx" 2>/dev/null
     mount --bind /dev/null "$BUILDROOT/dev/null" 2>/dev/null
     mount --bind /dev/urandom "$BUILDROOT/dev/urandom" 2>/dev/null
-    umount "$BUILDROOT/dev/null" 2>/dev/null
-    umount "$BUILDROOT/dev/urandom" 2>/dev/null
+    mount --bind /dev/random "$BUILDROOT/dev/random" 2>/dev/null
     mount -t proc proc "$BUILDROOT/proc" 2>/dev/null
+
+    # Inject host busybox into buildroot so chroot has a shell
+    local HOST_BB=""
+    for b in $(command -v busybox 2>/dev/null) /system/xbin/busybox /system/bin/busybox; do
+        [ -x "$b" ] && HOST_BB="$b" && break
+    done
+    if [ -n "$HOST_BB" ]; then
+        mkdir -p "$BUILDROOT/bin"
+        cp -f "$HOST_BB" "$BUILDROOT/bin/busybox" 2>/dev/null
+        chmod 755 "$BUILDROOT/bin/busybox" 2>/dev/null
+        [ -L "$BUILDROOT/bin/sh" ] || ln -sf /bin/busybox "$BUILDROOT/bin/sh" 2>/dev/null
+    fi
 
     # Install ALL packages — universal chroot (tries toybox, busybox, musl)
     log INFO "Installing packages..."
@@ -342,6 +379,9 @@ else
     _chroot_rootfs "$BUILDROOT" "$APK_CMD"
     RET=$?
     umount "$BUILDROOT/proc" 2>/dev/null
+    umount "$BUILDROOT/dev/null" 2>/dev/null
+    umount "$BUILDROOT/dev/urandom" 2>/dev/null
+    umount "$BUILDROOT/dev/random" 2>/dev/null
     [ $RET -ne 0 ] && die "Failed to install packages (all chroot methods failed)"
     log OK "All packages installed"
 
