@@ -432,7 +432,9 @@ def _ankd_port_open(name):
         return None
     port = config.get("ankd_port")
     if not port:
-        return None
+        # Fallback: check if ankd is running via PID
+        pid_alive = _pid_alive(name)
+        return bool(pid_alive) if pid_alive is not None else None
     import socket
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -4487,9 +4489,11 @@ small{color:#334155}
         threading.Thread(target=_do, daemon=True).start()
 
     def _sync_ankfs_password(self, password):
-        """Sync root password to ankfs /etc/shadow for SSH auth."""
+        """Sync root password to ankfs /etc/shadow for SSH auth.
+        pfSense-style: both 'admin' and 'root' work, both map to uid 0."""
         ankfs = os.path.join(ANK_DIR, "ankfs")
-        if os.path.isfile(os.path.join(ankfs, "sbin/chpasswd")):
+        shadow = os.path.join(ankfs, "etc/shadow")
+        if os.path.isfile(shadow):
             try:
                 import subprocess
                 proc = subprocess.Popen(
@@ -4499,6 +4503,31 @@ small{color:#334155}
                     stderr=subprocess.DEVNULL
                 )
                 proc.communicate(input=f"root:{password}".encode(), timeout=5)
+                # Also set admin password (same as root)
+                proc2 = subprocess.Popen(
+                    ["chroot", ankfs, "/sbin/chpasswd"],
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL
+                )
+                proc2.communicate(input=f"admin:{password}".encode(), timeout=5)
+            except Exception:
+                pass
+        # Ensure admin user exists in /etc/passwd (uid 0 = root)
+        passwd = os.path.join(ankfs, "etc/passwd")
+        if os.path.isfile(passwd):
+            try:
+                with open(passwd, "r") as f:
+                    lines = f.readlines()
+                has_admin = any(l.startswith("admin:") for l in lines)
+                if not has_admin:
+                    # Add admin user with uid=0, same as root
+                    root_line = next((l for l in lines if l.startswith("root:")), None)
+                    if root_line:
+                        parts = root_line.strip().split(":")
+                        admin_line = f"admin:x:{parts[2]}:{parts[3]}::/root:/bin/sh\n"
+                        with open(passwd, "a") as f:
+                            f.write(admin_line)
             except Exception:
                 pass
 

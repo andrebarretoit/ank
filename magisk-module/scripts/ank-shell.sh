@@ -84,7 +84,15 @@ _api_post() {
     local path="$1" data="$2"
     _ensure_token
     if [ -n "$ANK_TOKEN" ]; then
-        curl -s -X POST -H "Content-Type: application/json" -H "Authorization: Bearer $ANK_TOKEN" -d "$data" "http://127.0.0.1:${ANK_PORT:-8001}${path}" 2>/dev/null
+        local resp=$(curl -s -X POST -H "Content-Type: application/json" -H "Authorization: Bearer $ANK_TOKEN" -d "$data" "http://127.0.0.1:${ANK_PORT:-8001}${path}" 2>/dev/null)
+        if echo "$resp" | grep -q '"error".*[Uu]nauthorized'; then
+            ANK_TOKEN=""
+            _ensure_token
+            if [ -n "$ANK_TOKEN" ]; then
+                resp=$(curl -s -X POST -H "Content-Type: application/json" -H "Authorization: Bearer $ANK_TOKEN" -d "$data" "http://127.0.0.1:${ANK_PORT:-8001}${path}" 2>/dev/null)
+            fi
+        fi
+        echo "$resp"
     else
         curl -s -X POST -H "Content-Type: application/json" -d "$data" "http://127.0.0.1:${ANK_PORT:-8001}${path}" 2>/dev/null
     fi
@@ -94,7 +102,15 @@ _api_delete() {
     local path="$1"
     _ensure_token
     if [ -n "$ANK_TOKEN" ]; then
-        curl -s -X DELETE -H "Authorization: Bearer $ANK_TOKEN" "http://127.0.0.1:${ANK_PORT:-8001}${path}" 2>/dev/null
+        local resp=$(curl -s -X DELETE -H "Authorization: Bearer $ANK_TOKEN" "http://127.0.0.1:${ANK_PORT:-8001}${path}" 2>/dev/null)
+        if echo "$resp" | grep -q '"error".*[Uu]nauthorized'; then
+            ANK_TOKEN=""
+            _ensure_token
+            if [ -n "$ANK_TOKEN" ]; then
+                resp=$(curl -s -X DELETE -H "Authorization: Bearer $ANK_TOKEN" "http://127.0.0.1:${ANK_PORT:-8001}${path}" 2>/dev/null)
+            fi
+        fi
+        echo "$resp"
     else
         curl -s -X DELETE "http://127.0.0.1:${ANK_PORT:-8001}${path}" 2>/dev/null
     fi
@@ -114,7 +130,8 @@ try:
     data = json.load(sys.stdin)
     for c in data:
         if c.get('name') == '$name':
-            print(c.get('node', 'local'))
+            node = c.get('node', '') or 'local'
+            print(node)
             sys.exit(0)
     print('local')
 except: print('local')

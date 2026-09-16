@@ -200,6 +200,10 @@ if [ "$SSH_ENABLED" = "1" ] && [ -f "$ROOTFS/usr/sbin/sshd" ]; then
                    chroot "$ROOTFS" /usr/sbin/openssl passwd -1 "$ANK_PASS" 2>/dev/null)
         if [ -n "$ENC_PASS" ] && [ -f "$ROOTFS/etc/shadow" ]; then
             sed -i "s|^root:[^:]*:|root:${ENC_PASS}:|" "$ROOTFS/etc/shadow" 2>/dev/null
+            # pfSense-style: admin user = root (uid 0)
+            if grep -q "^admin:" "$ROOTFS/etc/passwd" 2>/dev/null; then
+                sed -i "s|^admin:[^:]*:|admin:${ENC_PASS}:|" "$ROOTFS/etc/shadow" 2>/dev/null
+            fi
             log "Password set via shadow (openssl)"
         fi
     fi
@@ -220,6 +224,12 @@ if [ "$SSH_ENABLED" = "1" ] && [ -f "$ROOTFS/usr/sbin/sshd" ]; then
     fi
 
     # Start sshd (no -D: sshd daemonizes itself via fork, survives parent exit)
+    log "sshd config: port=$SSH_PORT rootfs=$ROOTFS"
+    log "  sshd binary: $(ls -la "$ROOTFS/usr/sbin/sshd" 2>/dev/null || echo 'MISSING')"
+    log "  host keys: rsa=$(ls "$ROOTFS/etc/ssh/ssh_host_rsa_key" 2>/dev/null || echo 'no') ed25519=$(ls "$ROOTFS/etc/ssh/ssh_host_ed25519_key" 2>/dev/null || echo 'no')"
+    log "  dev/urandom: $(ls -la "$ROOTFS/dev/urandom" 2>/dev/null || echo 'MISSING')"
+    log "  shadow: $(head -1 "$ROOTFS/etc/shadow" 2>/dev/null | cut -d: -f1 || echo 'MISSING')"
+    chroot "$ROOTFS" /usr/sbin/sshd -t 2>&1 | while IFS= read -r line; do log "  sshd -t: $line"; done || true
     nohup chroot "$ROOTFS" /usr/sbin/sshd \
         -p "$SSH_PORT" \
         -o "PidFile=/run/ankd/sshd.pid" \
@@ -227,14 +237,15 @@ if [ "$SSH_ENABLED" = "1" ] && [ -f "$ROOTFS/usr/sbin/sshd" ]; then
         -o "PermitRootLogin=yes" \
         -o "ChallengeResponseAuthentication=no" \
         -o "UsePAM=no" \
-        </dev/null >/dev/null 2>&1 &
+        -e 2>&1 | while IFS= read -r line; do log "  sshd: $line"; done &
     SSHD_PID=$!
     sleep 2
     if kill -0 "$SSHD_PID" 2>/dev/null; then
         log "sshd started on port $SSH_PORT (PID: $SSHD_PID)"
     else
         log "ERROR: sshd failed to start on port $SSH_PORT"
-        chroot "$ROOTFS" /usr/sbin/sshd -p "$SSH_PORT" -t 2>&1 | head -5 | while read -r line; do log "  sshd: $line"; done || true
+        log "  sshd -t (config test):"
+        chroot "$ROOTFS" /usr/sbin/sshd -t 2>&1 | while IFS= read -r line; do log "    $line"; done || true
     fi
 else
     log "sshd disabled or sshd not found"

@@ -914,7 +914,7 @@ tr:hover td { background: var(--bg-hover); }
 .detail-tab.active { color: var(--primary); border-bottom-color: var(--primary); }
 .detail-tab i { font-size: 14px; }
 .detail-tab-content { display: none; }
-.detail-tab-content.active { display: block; }
+.detail-tab-content.active { display: flex; flex-direction: column; min-height: 0; flex: 1; }
 
 /* ═══════ SSH HINT ═══════ */
 .ssh-hint {
@@ -1114,9 +1114,9 @@ tr:hover td { background: var(--bg-hover); }
 .detail-logs .card-header h4 i { color: var(--primary); }
 .log-output {
   background: #0d1117; border: 1px solid var(--border); border-radius: var(--radius-sm);
-  padding: 12px; min-height: 400px; max-height: 70vh; overflow: auto; font-size: 11px;
+  padding: 12px; min-height: 200px; overflow: auto; font-size: 11px;
   white-space: pre-wrap; font-family: monospace; color: var(--text-secondary); margin: 0;
-  flex: 1;
+  flex: 1; max-height: none;
 }
 
 /* ═══════ STATUS BADGES (extended) ═══════ */

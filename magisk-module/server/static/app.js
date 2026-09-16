@@ -1672,10 +1672,18 @@ function showSettingsSection(section) {
       </div>
     </div></div>`;
   } else if (section === 'about') {
+    const sysInfo = settingsInfo || {};
+    const diskFree = sysInfo.device_free || '-';
     el.innerHTML = `<div class="card"><div class="card-header"><h3><i class="bi bi-info-circle"></i> About</h3></div><div class="card-body">
       <div class="info-grid">
         <div class="info-item"><span class="info-label">Version</span><span>2.0.0</span></div>
-        <div class="info-item"><span class="info-label">Panel Port</span><span>8001</span></div>
+        <div class="info-item"><span class="info-label">Panel Port</span><span>${sysInfo.panel_port||8001}</span></div>
+        <div class="info-item"><span class="info-label">Device</span><span>${esc(sysInfo.device||'unknown')}</span></div>
+        <div class="info-item"><span class="info-label">Kernel</span><span>${esc(sysInfo.kernel||'unknown')}</span></div>
+        <div class="info-item"><span class="info-label">CPU Cores</span><span>${sysInfo.cpu_cores||'-'}</span></div>
+        <div class="info-item"><span class="info-label">Free Storage</span><span>${diskFree}</span></div>
+        <div class="info-item"><span class="info-label">Mode</span><span>${esc((sysInfo.mode||{}).mode||'unknown')}</span></div>
+        <div class="info-item"><span class="info-label">Node Name</span><span>${esc(sysInfo.node_name||'local')}</span></div>
         <div class="info-item" style="grid-column:span 2"><span class="info-label">Credentials</span><span style="font-size:11px">/sdcard/AndroidKonteiner/CREDENCIAIS.txt</span></div>
       </div>
       <hr style="border-color:var(--border);margin:16px 0">
@@ -2291,10 +2299,9 @@ async function loadNotchPreview(page) {
     } else if (page === 'images') {
       const [img, tpl] = await Promise.all([api('GET', '/images/all').catch(()=>[]), api('GET', '/images/templates').catch(()=>[])]);
       const templates = Array.isArray(tpl) ? tpl : (tpl.templates || []);
-      if (templates.length) {
-        html += `<div style="margin-bottom:8px;font-size:11px;font-weight:600;color:var(--text-muted);text-transform:uppercase">Quick Deploy</div>`;
-        html += templates.map(t => `<div class="np-row" onclick="notchPreviewHide();navigateTo('images')" style="cursor:pointer"><i class="bi ${t.icon||'bi-box-seam'}" style="color:${t.color||'var(--primary)'};font-size:12px"></i><span class="np-name">${esc(t.name)}</span><span class="template-badge ${t.base_ready?'ready':'pending'}" style="font-size:9px">${t.base_ready?'Ready':'Pull'}</span></div>`).join('');
-      }
+      html += `<div style="margin-bottom:8px;font-size:11px;font-weight:600;color:var(--text-muted);text-transform:uppercase">Quick Deploy</div>`;
+      html += templates.map(t => `<div class="np-row" onclick="notchPreviewHide();deployTemplate('${esc(t.id)}','${esc(t.name)}',${t.base_ready})" style="cursor:pointer"><i class="bi ${t.icon||'bi-box-seam'}" style="color:${t.color||'var(--primary)'};font-size:12px"></i><span class="np-name">${esc(t.name)}</span><span class="template-badge ${t.base_ready?'ready':'pending'}" style="font-size:9px">${t.base_ready?'Ready':'Pull'}</span></div>`).join('');
+      html += `<div class="np-row" onclick="notchPreviewHide();navigateTo('images');setTimeout(()=>showImageSection('ankfile'),100)" style="cursor:pointer"><i class="bi bi-file-earmark-code" style="color:var(--accent);font-size:12px"></i><span class="np-name">Ankfile Builder</span><span class="text-muted text-sm">Custom image</span></div>`;
       if (img.length) {
         html += `<div style="margin:12px 0 8px;font-size:11px;font-weight:600;color:var(--text-muted);text-transform:uppercase">Ank Images (${img.length})</div>`;
         html += img.map(x => `<div class="np-row" onclick="notchPreviewHide();navigateTo('images')" style="cursor:pointer"><i class="bi bi-hdd-stack" style="color:var(--accent);font-size:12px"></i><span class="np-name">${esc(x.name)}</span><span class="text-muted text-sm">${x.size_human||''}</span></div>`).join('');
