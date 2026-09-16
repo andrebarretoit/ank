@@ -182,10 +182,21 @@
       </div>
       <div class="split-layout">
         <div class="split-left" id="images-list">
-          <div class="skeleton skeleton-card"></div>
+          <div class="split-list-card selected" data-section="quick-deploy" onclick="showImageSection('quick-deploy')">
+            <div class="slc-top"><span class="slc-name"><i class="bi bi-lightning-charge" style="color:var(--accent)"></i>Quick Deploy</span></div>
+            <div class="slc-meta"><span>One-click container templates</span></div>
+          </div>
+          <div class="split-list-card" data-section="ankfile" onclick="showImageSection('ankfile')">
+            <div class="slc-top"><span class="slc-name"><i class="bi bi-file-earmark-code" style="color:var(--accent)"></i>Ankfile Build</span></div>
+            <div class="slc-meta"><span>Build from custom Ankfile</span></div>
+          </div>
+          <div class="split-list-card" data-section="images" onclick="showImageSection('images')">
+            <div class="slc-top"><span class="slc-name"><i class="bi bi-hdd-stack" style="color:var(--accent)"></i>Ank Images</span></div>
+            <div class="slc-meta"><span id="images-count-label">0 images</span></div>
+          </div>
         </div>
         <div class="split-right" id="image-detail">
-          <div class="split-right-empty"><div><i class="bi bi-hdd-stack"></i><p>Select an image or template to view details</p></div></div>
+          <div class="split-right-empty"><div><i class="bi bi-lightning-charge"></i><p>Select an option on the left</p></div></div>
         </div>
       </div>
     </div>

@@ -656,48 +656,35 @@ async function pollRemoteContainerStatus(nodeId, name, attempt) {
 }
 
 /* ═══════ IMAGES ═══════ */
+let cachedTemplates = [];
+let cachedImages = [];
+
 async function loadImages() {
-  const el = document.getElementById('images-list');
-  if (!el) return;
-  el.innerHTML = '<div class="skeleton skeleton-card"></div>';
   try {
-    const [images, tplData] = await Promise.all([
+    const [images, templates] = await Promise.all([
       api('GET', '/images/all').catch(() => []),
-      api('GET', '/images/templates').catch(() => null)
+      api('GET', '/images/templates').catch(() => [])
     ]);
-    const templates = tplData?.templates || [];
-    const imgArr = Array.isArray(images) ? images : [];
-    let html = '';
+    cachedImages = Array.isArray(images) ? images : [];
+    cachedTemplates = Array.isArray(templates) ? templates : [];
+    document.getElementById('images-count-label').textContent = cachedImages.length + ' images';
+    showImageSection('quick-deploy');
+  } catch (e) { console.error('Images load failed:', e); }
+}
 
-    // Quick Deploy section
-    html += `<div class="img-section"><div class="img-section-header" onclick="this.parentElement.classList.toggle('collapsed')"><i class="bi bi-lightning-charge" style="color:var(--accent)"></i> Quick Deploy <i class="bi bi-chevron-down img-chevron"></i></div><div class="img-section-body">`;
-    if (templates.length) {
-      html += `<div class="templates-grid">${templates.map(t => `<div class="template-card" style="border-left:3px solid ${t.color||'var(--primary)'}" onclick="deployTemplate('${esc(t.id)}','${esc(t.name)}',${t.base_ready})"><div class="template-icon" style="color:${t.color||'var(--primary)'}"><i class="bi ${t.icon||'bi-box-seam'}"></i></div><div class="template-name">${esc(t.name)}</div><div class="template-desc">${esc(t.description||'')}</div><span class="template-badge ${t.base_ready?'ready':'pending'}">${t.base_ready?'Ready':'Pull base first'}</span></div>`).join('')}</div>`;
+function showImageSection(section) {
+  document.querySelectorAll('#images-list .split-list-card').forEach(c => c.classList.toggle('selected', c.dataset.section === section));
+  const el = document.getElementById('image-detail');
+  if (!el) return;
+
+  if (section === 'quick-deploy') {
+    if (cachedTemplates.length) {
+      el.innerHTML = `<div class="sr-header"><h2><i class="bi bi-lightning-charge" style="color:var(--accent)"></i> Quick Deploy</h2></div><p style="font-size:13px;color:var(--text-muted);margin-bottom:16px">One-click containers — pick a template, name it, deploy.</p><div class="templates-grid">${cachedTemplates.map(t => `<div class="template-card" style="border-left:3px solid ${t.color||'var(--primary)'}" onclick="deployTemplate('${esc(t.id)}','${esc(t.name)}',${t.base_ready})"><div class="template-icon" style="color:${t.color||'var(--primary)'}"><i class="bi ${t.icon||'bi-box-seam'}"></i></div><div class="template-name">${esc(t.name)}</div><div class="template-desc">${esc(t.description||'')}</div><span class="template-badge ${t.base_ready?'ready':'pending'}">${t.base_ready?'Ready':'Pull base first'}</span></div>`).join('')}</div>`;
     } else {
-      html += `<div class="empty-state" style="padding:16px"><i class="bi bi-cloud-download" style="font-size:24px;color:var(--text-muted)"></i><p style="margin-top:8px;color:var(--text-muted)">No templates available. Pull an Alpine image first.</p></div>`;
+      el.innerHTML = `<div class="sr-header"><h2><i class="bi bi-lightning-charge" style="color:var(--accent)"></i> Quick Deploy</h2></div><div class="empty-state" style="padding:40px"><i class="bi bi-cloud-download" style="font-size:32px;color:var(--text-muted)"></i><p style="margin-top:8px;color:var(--text-muted)">No templates available.<br>Pull an Alpine image first.</p></div>`;
     }
-    html += '</div></div>';
-
-    // Ankfile Build section
-    html += `<div class="img-section"><div class="img-section-header" onclick="this.parentElement.classList.toggle('collapsed')"><i class="bi bi-file-earmark-code" style="color:var(--accent)"></i> Ankfile Build <i class="bi bi-chevron-down img-chevron"></i></div><div class="img-section-body"><div class="card" style="border:1px solid var(--accent)"><div class="card-body"><div class="form-group"><label class="form-label">Container Name</label><input type="text" class="form-input" id="ankfile-name" placeholder="my-app" value="ank-build"></div><div class="form-group"><label class="form-label">Ankfile</label><textarea class="ankfile-editor" id="ankfile-content" rows="8" placeholder="# Example Ankfile&#10;FROM alpine-3.20&#10;PASSWD ank123&#10;RUN apk add --allow-untrusted nginx&#10;EXPOSE 8080">FROM alpine-3.20
-PASSWD ank123
-RUN apk add --allow-untrusted nginx
-RUN mkdir -p /var/www/html
-RUN echo "&lt;h1&gt;Custom ANK Image&lt;/h1&gt;" > /var/www/html/index.html
-EXPOSE 8080</textarea></div><div style="display:flex;gap:8px"><button type="button" class="btn btn-primary" id="ankfile-build-btn"><i class="bi bi-hammer"></i> Build</button><button type="button" class="btn btn-ghost" id="ankfile-example-btn"><i class="bi bi-filetype-json"></i> Load Example</button></div></div></div></div></div>`;
-
-    // Images section
-    html += `<div class="img-section"><div class="img-section-header" onclick="this.parentElement.classList.toggle('collapsed')"><i class="bi bi-hdd-stack" style="color:var(--accent)"></i> Ank Images (${imgArr.length}) <i class="bi bi-chevron-down img-chevron"></i></div><div class="img-section-body">`;
-    if (imgArr.length) {
-      html += imgArr.map(img => `<div class="split-list-card" data-id="${esc(img.name)}" onclick="showImageDetail('${esc(img.name)}')"><div class="slc-top"><span class="slc-name"><i class="bi bi-hdd-stack" style="color:var(--accent)"></i>${esc(img.name)}</span><button class="btn btn-danger btn-sm" onclick="event.stopPropagation();deleteImage('${esc(img.name)}')" title="Delete"><i class="bi bi-trash3"></i></button></div><div class="slc-meta"><span>${img.size_human || fmtBytes(img.size||0)}</span><span>${esc(img.version||'')}</span></div></div>`).join('');
-    } else {
-      html += '<div class="empty-state" style="padding:16px"><i class="bi bi-hdd-stack" style="font-size:24px;color:var(--text-muted)"></i><p style="margin-top:8px;color:var(--text-muted)">No images downloaded yet</p></div>';
-    }
-    html += '</div></div>';
-
-    el.innerHTML = html;
-
-    // Bind ankfile buttons
+  } else if (section === 'ankfile') {
+    el.innerHTML = `<div class="sr-header"><h2><i class="bi bi-file-earmark-code" style="color:var(--accent)"></i> Ankfile Build</h2></div><p style="font-size:13px;color:var(--text-muted);margin-bottom:16px">Build custom images from an Ankfile (like Dockerfile).</p><div class="card" style="border:1px solid var(--accent)"><div class="card-body"><div class="form-group"><label class="form-label">Container Name</label><input type="text" class="form-input" id="ankfile-name" placeholder="my-app" value="ank-build"></div><div class="form-group"><label class="form-label">Ankfile</label><textarea class="ankfile-editor" id="ankfile-content" rows="10" placeholder="# FROM alpine-3.20&#10;PASSWD ank123&#10;RUN apk add nginx">FROM alpine-3.20\nPASSWD ank123\nRUN apk add --allow-untrusted nginx\nRUN mkdir -p /var/www/html\nRUN echo "&lt;h1&gt;Custom ANK Image&lt;/h1&gt;" > /var/www/html/index.html\nEXPOSE 8080</textarea></div><div style="display:flex;gap:8px"><button type="button" class="btn btn-primary" id="ankfile-build-btn"><i class="bi bi-hammer"></i> Build</button><button type="button" class="btn btn-ghost" id="ankfile-example-btn"><i class="bi bi-filetype-json"></i> Load Example</button></div></div></div>`;
     document.getElementById('ankfile-build-btn')?.addEventListener('click', async () => {
       const content = document.getElementById('ankfile-content')?.value?.trim();
       const name = document.getElementById('ankfile-name')?.value?.trim() || 'ank-build';
@@ -710,11 +697,16 @@ EXPOSE 8080</textarea></div><div style="display:flex;gap:8px"><button type="butt
       document.getElementById('ankfile-name').value = 'cloudreve';
       toast('Example Ankfile loaded', 'info');
     });
-  } catch (e) { el.innerHTML = '<div class="empty-state"><p>Failed to load</p></div>'; }
+  } else if (section === 'images') {
+    if (cachedImages.length) {
+      el.innerHTML = `<div class="sr-header"><h2><i class="bi bi-hdd-stack" style="color:var(--accent)"></i> Ank Images (${cachedImages.length})</h2></div>${cachedImages.map(img => `<div class="split-list-card" data-id="${esc(img.name)}" onclick="showImageDetail('${esc(img.name)}')"><div class="slc-top"><span class="slc-name"><i class="bi bi-hdd-stack" style="color:var(--accent)"></i>${esc(img.name)}</span><button class="btn btn-danger btn-sm" onclick="event.stopPropagation();deleteImage('${esc(img.name)}')" title="Delete"><i class="bi bi-trash3"></i></button></div><div class="slc-meta"><span>${img.size_human || fmtBytes(img.size||0)}</span><span>${esc(img.version||'')}</span></div></div>`).join('')}`;
+    } else {
+      el.innerHTML = `<div class="sr-header"><h2><i class="bi bi-hdd-stack" style="color:var(--accent)"></i> Ank Images</h2></div><div class="empty-state" style="padding:40px"><i class="bi bi-hdd-stack" style="font-size:32px;color:var(--text-muted)"></i><p style="margin-top:8px;color:var(--text-muted)">No images downloaded yet</p></div>`;
+    }
+  }
 }
 
 function showImageDetail(name) {
-  document.querySelectorAll('#images-list .split-list-card').forEach(c => c.classList.toggle('selected', c.dataset.id === name));
   const el = document.getElementById('image-detail');
   if (!el) return;
   el.innerHTML = `
@@ -728,24 +720,6 @@ function showImageDetail(name) {
     <div class="sr-info-grid">
       <div class="sr-info-item"><div class="sr-label">Name</div><div class="sr-value">${esc(name)}</div></div>
     </div>`;
-}
-
-function showTemplateDetail(id, name, color, icon, desc, baseReady) {
-  document.querySelectorAll('#images-list .template-card').forEach(c => c.classList.toggle('selected', c.dataset.id === id));
-  const el = document.getElementById('image-detail');
-  if (!el) return;
-  el.innerHTML = `
-    <div class="sr-header">
-      <h2><i class="bi ${icon||'bi-box-seam'}" style="color:${color||'var(--primary)'}"></i>${esc(name)}</h2>
-      <div class="sr-actions">
-        <button class="btn btn-primary btn-sm" onclick="deployTemplate('${esc(id)}','${esc(name)}',${baseReady})"><i class="bi bi-rocket-takeoff"></i> Deploy</button>
-      </div>
-    </div>
-    <div class="sr-info-grid">
-      <div class="sr-info-item"><div class="sr-label">Template</div><div class="sr-value">${esc(name)}</div></div>
-      <div class="sr-info-item"><div class="sr-label">Status</div><div class="sr-value"><span class="template-badge ${baseReady?'ready':'pending'}">${baseReady?'Ready':'Pull base first'}</span></div></div>
-    </div>
-    <div style="margin-top:12px;color:var(--text-secondary);font-size:13px">${esc(desc||'No description')}</div>`;
 }
 
 async function pullImage() {
