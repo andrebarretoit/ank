@@ -206,18 +206,45 @@ async function loadAll() {
     animateCounter('stat-running', status.containers_running || 0);
     animateCounter('stat-stopped', status.containers_stopped || 0);
     animateCounter('stat-total', status.containers_total || 0);
-    document.getElementById('dash-uptime').textContent = 'Uptime: ' + fmtUptime(status.uptime || 0);
+    document.getElementById('dash-uptime').textContent = 'uptime ' + fmtUptime(status.uptime || 0);
+
     const cpuPct = info.cpu_usage != null ? Math.round(info.cpu_usage) : 0;
-    setGaugeDash('gauge-cpu', cpuPct, 'gauge-cpu-text', 175.9);
+    document.getElementById('gauge-cpu-text').textContent = cpuPct + '%';
+    document.getElementById('gauge-cpu').style.width = cpuPct + '%';
+    document.getElementById('cpu-cores').textContent = (info.cpu_cores || 0) > 0 ? info.cpu_cores + ' cores' : '';
+    pushSpark('cpu', cpuPct);
+    renderSparkline('spark-cpu', sparkHistory.cpu);
+
     const memT = info.memory?.total_kb || 0;
     const memA = info.memory?.available_kb || 0;
-    const memPct = memT > 0 ? Math.round((memT - memA) / memT * 100) : 0;
-    setGaugeDash('gauge-ram', memPct, 'gauge-ram-text', 175.9);
+    const memUsed = memT - memA;
+    const memPct = memT > 0 ? Math.round(memUsed / memT * 100) : 0;
+    document.getElementById('gauge-ram-text').textContent = memPct + '%';
+    document.getElementById('gauge-ram').style.width = memPct + '%';
+    document.getElementById('ram-detail').textContent = memT > 0 ? `${fmtBytes(memUsed * 1024)} / ${fmtBytes(memT * 1024)}` : '';
+    pushSpark('ram', memPct);
+    renderSparkline('spark-ram', sparkHistory.ram);
+
     const disk = status.disk || {};
     const diskTotal = disk.total || 0;
     const diskUsedNum = disk.used_num || 0;
     const diskPct = diskTotal > 0 ? Math.round(diskUsedNum / diskTotal * 100) : 0;
-    setGaugeDash('gauge-disk', diskPct, 'gauge-disk-text', 175.9);
+    document.getElementById('gauge-disk-text').textContent = diskPct + '%';
+    document.getElementById('gauge-disk').style.width = diskPct + '%';
+    document.getElementById('disk-detail').textContent = diskTotal > 0 ? `${disk.used || '-'} / ${diskTotal} GB` : '';
+    pushSpark('disk', diskPct);
+    renderSparkline('spark-disk', sparkHistory.disk);
+
+    // Identity
+    const cfg = await api('GET', '/config').catch(()=>({}));
+    document.getElementById('dash-device-name').textContent = cfg.node_name || info.device || 'ANK Device';
+    document.getElementById('info-device').textContent = info.device || '-';
+    document.getElementById('info-kernel').textContent = (info.device || '-') + ' \u00b7 ANK node';
+    document.getElementById('info-kernel-val').textContent = info.kernel || '-';
+    const bat = info.battery;
+    document.getElementById('info-battery').textContent = (bat != null && bat >= 0) ? bat + '%' : '-';
+    document.getElementById('info-subnet').textContent = (info.network?.subnet || '-') + '/24';
+
     renderDashboardContainers();
     renderDashboardNodes();
     cachedImages = Array.isArray(images) ? images : [];
@@ -226,6 +253,22 @@ async function loadAll() {
 }
 
 /* ═══════ DASHBOARD ═══════ */
+let sparkHistory = { cpu: [], ram: [], disk: [] };
+const SPARK_MAX = 10;
+
+function pushSpark(key, val) {
+  sparkHistory[key].push(val);
+  if (sparkHistory[key].length > SPARK_MAX) sparkHistory[key].shift();
+}
+
+function renderSparkline(id, data) {
+  const el = document.getElementById(id);
+  if (!el || !data.length) return;
+  const step = 64 / (SPARK_MAX - 1);
+  const points = data.map((v, i) => `${i * step},${22 - (v / 100 * 20)}`).join(' ');
+  el.setAttribute('points', points);
+}
+
 async function loadDashboard() {
   try {
     const [status, info, cfg] = await Promise.all([api('GET', '/status'), api('GET', '/system/info'), api('GET', '/config').catch(()=>({}))]);
@@ -233,39 +276,51 @@ async function loadDashboard() {
     animateCounter('stat-stopped', status.containers_stopped || 0);
     animateCounter('stat-total', status.containers_total || 0);
     document.getElementById('dash-device-name').textContent = cfg.node_name || info.device || 'ANK Device';
-    document.getElementById('dash-uptime').textContent = 'Uptime: ' + fmtUptime(status.uptime || 0);
+    document.getElementById('dash-uptime').textContent = 'uptime ' + fmtUptime(status.uptime || 0);
+
+    // Identity card
     document.getElementById('info-device').textContent = info.device || '-';
-    document.getElementById('info-kernel').textContent = info.kernel || '-';
+    document.getElementById('info-kernel').textContent = (info.device || '-') + ' \u00b7 ANK node';
+    document.getElementById('info-kernel-val').textContent = info.kernel || '-';
     const bat = info.battery;
     document.getElementById('info-battery').textContent = (bat != null && bat >= 0) ? bat + '%' : '-';
     document.getElementById('info-subnet').textContent = (info.network?.subnet || '-') + '/24';
+
+    // CPU
     const cpuPct = info.cpu_usage != null ? Math.round(info.cpu_usage) : 0;
     document.getElementById('cpu-cores').textContent = (info.cpu_cores || 0) > 0 ? info.cpu_cores + ' cores' : '';
+    document.getElementById('gauge-cpu-text').textContent = cpuPct + '%';
+    document.getElementById('gauge-cpu').style.width = cpuPct + '%';
+    pushSpark('cpu', cpuPct);
+    renderSparkline('spark-cpu', sparkHistory.cpu);
+
+    // RAM
     const memT = info.memory?.total_kb || 0;
     const memA = info.memory?.available_kb || 0;
     const memUsed = memT - memA;
     const memPct = memT > 0 ? Math.round(memUsed / memT * 100) : 0;
     document.getElementById('ram-detail').textContent = memT > 0 ? `${fmtBytes(memUsed * 1024)} / ${fmtBytes(memT * 1024)}` : '';
+    document.getElementById('gauge-ram-text').textContent = memPct + '%';
+    document.getElementById('gauge-ram').style.width = memPct + '%';
+    pushSpark('ram', memPct);
+    renderSparkline('spark-ram', sparkHistory.ram);
+
+    // Disk
     const disk = status.disk || {};
     const diskTotal = disk.total || 0;
     const diskUsedNum = disk.used_num || 0;
     const diskPct = diskTotal > 0 ? Math.round(diskUsedNum / diskTotal * 100) : 0;
     document.getElementById('disk-detail').textContent = diskTotal > 0 ? `${disk.used || '-'} / ${diskTotal} GB` : '';
-    setGaugeDash('gauge-cpu', cpuPct, 'gauge-cpu-text', 175.9);
-    setGaugeDash('gauge-ram', memPct, 'gauge-ram-text', 175.9);
-    setGaugeDash('gauge-disk', diskPct, 'gauge-disk-text', 175.9);
+    document.getElementById('gauge-disk-text').textContent = diskPct + '%';
+    document.getElementById('gauge-disk').style.width = diskPct + '%';
+    pushSpark('disk', diskPct);
+    renderSparkline('spark-disk', sparkHistory.disk);
+
     renderDashboardContainers();
     renderDashboardNodes();
   } catch (e) { console.error('Dashboard load failed:', e); }
 }
 
-function setGaugeDash(id, pct, textId, circ) {
-  const circle = document.getElementById(id);
-  const text = document.getElementById(textId);
-  if (!circle || !text) return;
-  circle.style.strokeDashoffset = circ - (circ * pct / 100);
-  text.textContent = pct + '%';
-}
 
 function animateCounter(id, target) {
   const el = document.getElementById(id);
@@ -286,18 +341,22 @@ async function renderDashboardContainers() {
   if (!el) return;
   try {
     const containers = await api('GET', '/containers/all');
-    if (!containers || !containers.length) { el.innerHTML = '<div class="empty-state" style="padding:30px"><p>No containers yet</p></div>'; return; }
-    el.innerHTML = containers.slice(0, 8).map(c => {
+    if (!containers || !containers.length) { el.innerHTML = '<div class="empty-state" style="padding:30px"><i class="bi bi-box-seam"></i> No containers yet</div>'; return; }
+    el.innerHTML = containers.map(c => {
       const s = c.status;
-      const color = s === 'running' ? 'var(--success)' : s === 'building' ? 'var(--warning)' : s === 'failed' ? 'var(--danger)' : 'var(--text-muted)';
-      const bc = getStatusBadgeClass(s);
-      return `<div class="dash-container-row" onclick="navigateTo('containers');setTimeout(()=>showContainerDetail('${esc(c.name)}','${c.node||'local'}'),100)">
-        <span class="dcr-dot" style="background:${color}"></span>
-        <span class="dcr-name">${esc(c.name)}</span>
-        <span class="badge ${bc}" style="font-size:9px">${getStatusLabel(s)}</span>
+      const statusClass = s === 'running' ? 'running' : s === 'building' ? 'building' : s === 'failed' ? 'failed' : 'stopped';
+      const img = c.template_name || c.image || '-';
+      const ports = (c.port_mappings || []).map(p => p.host_port).filter(Boolean).join(', ');
+      const sshHint = (c.ssh_port && s === 'running') ? `SSH :${c.ssh_port}` : '';
+      return `<div class="cbox ${statusClass}" onclick="navigateTo('containers');setTimeout(()=>showContainerDetail('${esc(c.name)}','${c.node||'local'}'),100)">
+        <div class="cbox-top"><span class="dot"></span><span class="nm">${esc(c.name)}</span><span class="st">${s}</span></div>
+        <div class="cbox-img">${esc(img)}</div>
+        <div class="cbox-meta">
+          <span><i class="bi bi-hdd-network"></i> ${ports || '\u2014'}</span>
+          <span><i class="bi bi-terminal"></i> ${sshHint || '\u2014'}</span>
+        </div>
       </div>`;
     }).join('');
-    if (containers.length > 8) el.innerHTML += `<div style="text-align:center;padding:8px;font-size:11px;color:var(--text-muted)">+${containers.length-8} more</div>`;
   } catch (e) { el.innerHTML = '<div class="empty-state" style="padding:20px"><p>Failed to load</p></div>'; }
 }
 
@@ -827,13 +886,12 @@ function updateContainerBadge(name, status) {
     b.className = `badge ${getStatusBadgeClass(status)}`;
     b.textContent = getStatusLabel(status);
   });
-  document.querySelectorAll(`#dashboard-containers .dash-container-row`).forEach(row => {
-    if (row.querySelector('.dcr-name')?.textContent === name) {
-      const dot = row.querySelector('.dcr-dot');
-      const badge = row.querySelector('.badge');
-      const color = status === 'running' ? 'var(--success)' : status === 'building' ? 'var(--warning)' : status === 'failed' ? 'var(--danger)' : 'var(--text-muted)';
-      if (dot) dot.style.background = color;
-      if (badge) { badge.className = `badge ${getStatusBadgeClass(status)}`; badge.textContent = status; }
+  document.querySelectorAll(`#dashboard-containers .cbox`).forEach(box => {
+    if (box.querySelector('.nm')?.textContent === name) {
+      const dot = box.querySelector('.dot');
+      const st = box.querySelector('.st');
+      box.className = `cbox ${status === 'running' ? 'running' : status === 'building' ? 'building' : status === 'failed' ? 'failed' : 'stopped'}`;
+      if (st) st.textContent = status;
     }
   });
   if (currentContainer && currentContainer.name === name) {
@@ -2009,15 +2067,29 @@ function startRefreshTimer() {
         animateCounter('stat-running', status.containers_running || 0);
         animateCounter('stat-stopped', status.containers_stopped || 0);
         animateCounter('stat-total', status.containers_total || 0);
-        document.getElementById('dash-uptime').textContent = 'Uptime: ' + fmtUptime(status.uptime || 0);
-        if (refreshCycle % 4 === 0) {
-          const cpuPct = info.cpu_usage != null ? Math.round(info.cpu_usage) : 0;
-          setGaugeDash('gauge-cpu', cpuPct, 'gauge-cpu-text', 175.9);
-          const memT = info.memory?.total_kb || 0;
-          const memA = info.memory?.available_kb || 0;
-          const memPct = memT > 0 ? Math.round((memT - memA) / memT * 100) : 0;
-          setGaugeDash('gauge-ram', memPct, 'gauge-ram-text', 175.9);
-        }
+        document.getElementById('dash-uptime').textContent = 'uptime ' + fmtUptime(status.uptime || 0);
+        const cpuPct = info.cpu_usage != null ? Math.round(info.cpu_usage) : 0;
+        document.getElementById('gauge-cpu-text').textContent = cpuPct + '%';
+        document.getElementById('gauge-cpu').style.width = cpuPct + '%';
+        pushSpark('cpu', cpuPct);
+        renderSparkline('spark-cpu', sparkHistory.cpu);
+        const memT = info.memory?.total_kb || 0;
+        const memA = info.memory?.available_kb || 0;
+        const memPct = memT > 0 ? Math.round((memT - memA) / memT * 100) : 0;
+        document.getElementById('gauge-ram-text').textContent = memPct + '%';
+        document.getElementById('gauge-ram').style.width = memPct + '%';
+        document.getElementById('ram-detail').textContent = memT > 0 ? `${fmtBytes((memT-memA) * 1024)} / ${fmtBytes(memT * 1024)}` : '';
+        pushSpark('ram', memPct);
+        renderSparkline('spark-ram', sparkHistory.ram);
+        const disk = status.disk || {};
+        const diskTotal = disk.total || 0;
+        const diskUsedNum = disk.used_num || 0;
+        const diskPct = diskTotal > 0 ? Math.round(diskUsedNum / diskTotal * 100) : 0;
+        document.getElementById('gauge-disk-text').textContent = diskPct + '%';
+        document.getElementById('gauge-disk').style.width = diskPct + '%';
+        document.getElementById('disk-detail').textContent = diskTotal > 0 ? `${disk.used || '-'} / ${diskTotal} GB` : '';
+        pushSpark('disk', diskPct);
+        renderSparkline('spark-disk', sparkHistory.disk);
         renderDashboardContainers();
         renderDashboardNodes();
       } else if (pageId === 'page-containers') {

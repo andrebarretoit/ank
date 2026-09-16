@@ -7,6 +7,9 @@
   <link rel="stylesheet" href="style.css">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700;800&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <link rel="icon" href="favicon.svg" type="image/svg+xml">
 </head>
 <body>
@@ -105,8 +108,8 @@
       </div>
       <div class="dash-hero">
         <div class="dash-hero-top">
-          <div class="dash-hero-title" id="dash-device-name">Loading...</div>
-          <div class="text-sm text-muted" id="dash-uptime"></div>
+          <div class="dash-hero-node"><span class="badge-live"></span><span class="nm">node <b id="dash-device-name">Loading...</b> &middot; <span id="dash-node-status">online</span></span></div>
+          <div class="uptime-tag" id="dash-uptime"></div>
         </div>
         <div class="dash-hero-stats">
           <div class="dash-hero-stat"><div class="dhs-value green" id="stat-running">-</div><div class="dhs-label">Running</div></div>
@@ -114,42 +117,49 @@
           <div class="dash-hero-stat"><div class="dhs-value blue" id="stat-total">-</div><div class="dhs-label">Total</div></div>
         </div>
       </div>
-      <div class="dash-body">
-        <div class="dash-section">
-          <div class="dash-section-header"><h3><i class="bi bi-cpu"></i> Resources</h3></div>
-          <div class="dash-metrics">
-            <div class="dash-metric">
-              <div class="dm-gauge"><svg viewBox="0 0 64 64"><circle class="gauge-bg" cx="32" cy="32" r="28"/><circle class="gauge-fill cpu" id="gauge-cpu" cx="32" cy="32" r="28"/></svg><div class="dm-pct" id="gauge-cpu-text">0%</div></div>
-              <div class="dm-label">CPU</div><div class="dm-detail" id="cpu-cores"></div>
+      <div class="dash-layout">
+        <div class="dash-identity">
+          <div class="identity-head">
+            <div class="ic"><i class="bi bi-phone"></i></div>
+            <div><div class="nm" id="info-device">-</div><div class="sub" id="info-kernel">-</div></div>
+          </div>
+          <div class="id-body">
+            <div class="id-row"><span class="k">kernel</span><span class="v" id="info-kernel-val">-</span></div>
+            <div class="id-row"><span class="k">battery</span><span class="v bat" id="info-battery">-</span></div>
+            <div class="id-row"><span class="k">subnet</span><span class="v" id="info-subnet">-</span></div>
+          </div>
+        </div>
+        <div class="dash-meters">
+          <div class="meters-head">Resources</div>
+          <div class="dash-meter">
+            <div class="meter-top"><span class="lbl">CPU</span><span class="detail" id="cpu-cores"></span><span class="pct" id="gauge-cpu-text">0%</span></div>
+            <div class="meter-body">
+              <div class="meter-track"><div class="meter-fill cpu" id="gauge-cpu" style="width:0%"></div></div>
+              <svg class="spark" viewBox="0 0 64 22"><polyline id="spark-cpu" points="0,11 64,11" fill="none" stroke="#3b82f6" stroke-width="1.5"></polyline></svg>
             </div>
-            <div class="dash-metric">
-              <div class="dm-gauge"><svg viewBox="0 0 64 64"><circle class="gauge-bg" cx="32" cy="32" r="28"/><circle class="gauge-fill ram" id="gauge-ram" cx="32" cy="32" r="28"/></svg><div class="dm-pct" id="gauge-ram-text">0%</div></div>
-              <div class="dm-label">RAM</div><div class="dm-detail" id="ram-detail"></div>
+          </div>
+          <div class="dash-meter">
+            <div class="meter-top"><span class="lbl">RAM</span><span class="detail" id="ram-detail"></span><span class="pct" id="gauge-ram-text">0%</span></div>
+            <div class="meter-body">
+              <div class="meter-track"><div class="meter-fill ram" id="gauge-ram" style="width:0%"></div></div>
+              <svg class="spark" viewBox="0 0 64 22"><polyline id="spark-ram" points="0,11 64,11" fill="none" stroke="#10b981" stroke-width="1.5"></polyline></svg>
             </div>
-            <div class="dash-metric">
-              <div class="dm-gauge"><svg viewBox="0 0 64 64"><circle class="gauge-bg" cx="32" cy="32" r="28"/><circle class="gauge-fill disk" id="gauge-disk" cx="32" cy="32" r="28"/></svg><div class="dm-pct" id="gauge-disk-text">0%</div></div>
-              <div class="dm-label">Disk</div><div class="dm-detail" id="disk-detail"></div>
+          </div>
+          <div class="dash-meter">
+            <div class="meter-top"><span class="lbl">Disk</span><span class="detail" id="disk-detail"></span><span class="pct" id="gauge-disk-text">0%</span></div>
+            <div class="meter-body">
+              <div class="meter-track"><div class="meter-fill disk" id="gauge-disk" style="width:0%"></div></div>
+              <svg class="spark" viewBox="0 0 64 22"><polyline id="spark-disk" points="0,11 64,11" fill="none" stroke="#f59e0b" stroke-width="1.5"></polyline></svg>
             </div>
           </div>
         </div>
-        <div class="dash-section">
-          <div class="dash-section-header"><h3><i class="bi bi-phone"></i> Device</h3></div>
-          <div class="dash-device-grid">
-            <div class="dash-device-item"><div class="ddi-icon blue"><i class="bi bi-phone"></i></div><div><div class="ddi-label">Device</div><div class="ddi-value" id="info-device">-</div></div></div>
-            <div class="dash-device-item"><div class="ddi-icon purple"><i class="bi bi-motherboard"></i></div><div><div class="ddi-label">Kernel</div><div class="ddi-value font-mono" id="info-kernel">-</div></div></div>
-            <div class="dash-device-item"><div class="ddi-icon green"><i class="bi bi-battery-half"></i></div><div><div class="ddi-label">Battery</div><div class="ddi-value" id="info-battery">-</div></div></div>
-            <div class="dash-device-item"><div class="ddi-icon yellow"><i class="bi bi-wifi"></i></div><div><div class="ddi-label">Subnet</div><div class="ddi-value font-mono" id="info-subnet">-</div></div></div>
-          </div>
-        </div>
-        <div class="dash-section dash-section-full">
-          <div class="dash-section-header"><h3><i class="bi bi-box-seam"></i> Containers</h3><button class="btn btn-secondary btn-sm" onclick="navigateTo('containers')">View All</button></div>
-          <div class="dash-containers-list" id="dashboard-containers"><div class="skeleton skeleton-card"></div></div>
-        </div>
-        <div class="dash-section dash-section-full" id="cluster-card" style="display:none">
-          <div class="dash-section-header"><h3><i class="bi bi-hdd-network"></i> Cluster <span class="badge badge-info" id="mode-badge" style="font-size:10px;display:none"></span></h3><button class="btn btn-secondary btn-sm" onclick="navigateTo('nodes')">View All</button></div>
-          <div id="mode-notice" style="display:none;padding:6px 12px;background:rgba(255,193,7,0.1);border:1px solid rgba(255,193,7,0.3);border-radius:6px;font-size:11px;color:var(--warning);margin-bottom:12px"></div>
-          <div class="dash-cluster-list" id="cluster-info"></div>
-        </div>
+      </div>
+      <div class="pslist-head"><span>Containers</span><span class="cmd" id="dash-cluster-stats"></span></div>
+      <div class="box-grid" id="dashboard-containers"><div class="empty-state" style="padding:20px"><i class="bi bi-box-seam"></i> Loading...</div></div>
+      <div id="cluster-card" style="display:none;margin-top:18px">
+        <div class="pslist-head"><span>Cluster <span class="badge badge-info" id="mode-badge" style="font-size:10px;display:none"></span></span><button class="btn btn-secondary btn-sm" onclick="navigateTo('nodes')">View All</button></div>
+        <div id="mode-notice" style="display:none;padding:6px 12px;background:rgba(255,193,7,0.1);border:1px solid rgba(255,193,7,0.3);border-radius:6px;font-size:11px;color:var(--warning);margin-bottom:12px"></div>
+        <div class="dash-cluster-list" id="cluster-info"></div>
       </div>
     </div>
 
