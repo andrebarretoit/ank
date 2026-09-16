@@ -191,7 +191,38 @@ function logout() {
 function showApp() {
   document.getElementById('login-screen').style.display = 'none';
   document.getElementById('app').classList.remove('hidden');
-  loadDashboard();
+  loadAll();
+}
+
+/* ═══════ LOAD ALL ═══════ */
+async function loadAll() {
+  try {
+    const [containers, images, status, info] = await Promise.all([
+      api('GET', '/containers/all').catch(() => []),
+      api('GET', '/images/all').catch(() => []),
+      api('GET', '/status').catch(() => ({})),
+      api('GET', '/system/info').catch(() => ({}))
+    ]);
+    animateCounter('stat-running', status.containers_running || 0);
+    animateCounter('stat-stopped', status.containers_stopped || 0);
+    animateCounter('stat-total', status.containers_total || 0);
+    document.getElementById('dash-uptime').textContent = 'Uptime: ' + fmtUptime(status.uptime || 0);
+    const cpuPct = info.cpu_usage != null ? Math.round(info.cpu_usage) : 0;
+    setGaugeDash('gauge-cpu', cpuPct, 'gauge-cpu-text', 175.9);
+    const memT = info.memory?.total_kb || 0;
+    const memA = info.memory?.available_kb || 0;
+    const memPct = memT > 0 ? Math.round((memT - memA) / memT * 100) : 0;
+    setGaugeDash('gauge-ram', memPct, 'gauge-ram-text', 175.9);
+    const disk = status.disk || {};
+    const diskTotal = disk.total || 0;
+    const diskUsedNum = disk.used_num || 0;
+    const diskPct = diskTotal > 0 ? Math.round(diskUsedNum / diskTotal * 100) : 0;
+    setGaugeDash('gauge-disk', diskPct, 'gauge-disk-text', 175.9);
+    renderDashboardContainers();
+    renderDashboardNodes();
+    cachedImages = Array.isArray(images) ? images : [];
+    startRefreshTimer();
+  } catch (e) { console.error('loadAll failed:', e); }
 }
 
 /* ═══════ DASHBOARD ═══════ */
@@ -258,11 +289,12 @@ async function renderDashboardContainers() {
     if (!containers || !containers.length) { el.innerHTML = '<div class="empty-state" style="padding:30px"><p>No containers yet</p></div>'; return; }
     el.innerHTML = containers.slice(0, 8).map(c => {
       const s = c.status;
-      const color = s === 'running' ? 'var(--success)' : s === 'building' ? 'var(--warning)' : 'var(--text-muted)';
+      const color = s === 'running' ? 'var(--success)' : s === 'building' ? 'var(--warning)' : s === 'failed' ? 'var(--danger)' : 'var(--text-muted)';
+      const bc = getStatusBadgeClass(s);
       return `<div class="dash-container-row" onclick="navigateTo('containers');setTimeout(()=>showContainerDetail('${esc(c.name)}','${c.node||'local'}'),100)">
         <span class="dcr-dot" style="background:${color}"></span>
         <span class="dcr-name">${esc(c.name)}</span>
-        <span class="badge badge-neutral" style="font-size:9px">${s}</span>
+        <span class="badge ${bc}" style="font-size:9px">${getStatusLabel(s)}</span>
       </div>`;
     }).join('');
     if (containers.length > 8) el.innerHTML += `<div style="text-align:center;padding:8px;font-size:11px;color:var(--text-muted)">+${containers.length-8} more</div>`;
@@ -277,12 +309,53 @@ async function renderDashboardNodes() {
     const dashboard = await api('GET', '/system/dashboard');
     if (!dashboard.is_manager || !dashboard.nodes || !dashboard.nodes.length) { card.style.display = 'none'; return; }
     card.style.display = '';
-    info.innerHTML = dashboard.nodes.map(n => {
+    const nodes = dashboard.nodes;
+    let totalCpu = 0, totalMemUsed = 0, totalMemTotal = 0, totalDiskUsed = 0, totalDiskTotal = 0, totalContainers = 0, onlineCount = 0;
+    nodes.forEach(n => {
+      if (n.status === 'online') {
+        onlineCount++;
+        totalCpu += n.cpu_percent || 0;
+        totalMemUsed += n.mem_used_gb || 0;
+        totalMemTotal += n.mem_total_gb || 0;
+        totalDiskUsed += n.disk_used || 0;
+        totalDiskTotal += n.disk_total || 0;
+        totalContainers += n.containers_total || 0;
+      }
+    });
+    const avgCpu = onlineCount > 0 ? Math.round(totalCpu / onlineCount) : 0;
+    const memPct = totalMemTotal > 0 ? Math.round(totalMemUsed / totalMemTotal * 100) : 0;
+    const diskPct = totalDiskTotal > 0 ? Math.round(totalDiskUsed / totalDiskTotal * 100) : 0;
+
+    const clusterStatsHtml = `<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px">
+      <div class="dash-cluster-stat"><div class="dcs-label">CPU Avg</div><div class="dcs-value">${avgCpu}%</div></div>
+      <div class="dash-cluster-stat"><div class="dcs-label">Memory</div><div class="dcs-value">${totalMemUsed.toFixed(1)}/${totalMemTotal.toFixed(1)}GB</div></div>
+      <div class="dash-cluster-stat"><div class="dcs-label">Disk</div><div class="dcs-value">${totalDiskUsed.toFixed(0)}/${totalDiskTotal.toFixed(0)}GB</div></div>
+      <div class="dash-cluster-stat"><div class="dcs-label">Containers</div><div class="dcs-value">${totalContainers}</div></div>
+    </div>`;
+
+    const modeBadge = document.getElementById('mode-badge');
+    const modeNotice = document.getElementById('mode-notice');
+    if (modeBadge && dashboard.mode) {
+      modeBadge.textContent = dashboard.mode;
+      modeBadge.style.display = '';
+    }
+    if (modeNotice && dashboard.mode) {
+      const notices = {
+        shared_host: 'No namespace isolation. Containers share host network and PID.',
+        shared_network: 'PID namespace + overlay active. Host networking.',
+        isolated: ''
+      };
+      const msg = notices[dashboard.mode] || '';
+      if (msg) { modeNotice.textContent = msg; modeNotice.style.display = ''; }
+      else { modeNotice.style.display = 'none'; }
+    }
+
+    info.innerHTML = clusterStatsHtml + nodes.map(n => {
       const color = n.status === 'online' ? 'var(--success)' : 'var(--danger)';
       return `<div class="dash-cluster-row">
         <span class="dcl-dot" style="background:${color}"></span>
         <span class="dcl-name">${esc(n.alias||n.ip)}</span>
-        <span class="dcl-stats">CPU ${Math.round(n.cpu_percent||0)}% · RAM ${(n.mem_used_gb||0).toFixed(1)}/${(n.mem_total_gb||0).toFixed(1)}GB</span>
+        <span class="dcl-stats">CPU ${Math.round(n.cpu_percent||0)}% · RAM ${(n.mem_used_gb||0).toFixed(1)}/${(n.mem_total_gb||0).toFixed(1)}GB · ${(n.containers_total||0)} ctrs</span>
       </div>`;
     }).join('');
   } catch (e) { card.style.display = 'none'; }
@@ -307,11 +380,19 @@ function renderContainers(containers, nodeId) {
     const name = c.name || '';
     const node = c.node || 'local';
     const s = c.status;
-    const bc = s === 'running' ? 'badge-success' : s === 'building' ? 'badge-warning' : s === 'failed' ? 'badge-danger' : 'badge-neutral';
+    const bc = getStatusBadgeClass(s);
+    const isRunning = s === 'running';
+    const isBuilding = s === 'building';
+    const isFailed = s === 'failed';
+    const isTransient = isBuilding || isFailed || s === 'starting' || s === 'stopping';
     const nodeTag = node !== 'local' ? `<span class="badge badge-info" style="font-size:9px">${esc(c.node_alias||node.slice(0,6))}</span>` : '';
     const mem = c.stats && c.stats.memory_bytes ? fmtBytes(c.stats.memory_bytes) : '';
+    const startDisabled = isRunning || isBuilding || isFailed;
+    const stopDisabled = !isRunning;
+    const restartDisabled = isTransient;
+    const deleteDisabled = isRunning || isBuilding;
     return `<div class="split-list-card" data-name="${esc(name)}" onclick="showContainerDetail('${esc(name)}','${node}')">
-      <div class="slc-top"><span class="slc-name"><i class="bi bi-box-seam" style="color:var(--accent)"></i>${esc(name)}${nodeTag}</span><span class="badge ${bc}" style="font-size:10px">${s}</span></div>
+      <div class="slc-top"><span class="slc-name"><i class="bi bi-box-seam" style="color:var(--accent)"></i>${esc(name)}${nodeTag}</span><span class="badge ${bc}" style="font-size:10px">${getStatusLabel(s)}</span></div>
       <div class="slc-meta"><span><i class="bi bi-image"></i> ${esc(c.template_name||c.image||'-')}</span><span><i class="bi bi-globe2"></i> ${esc(c.ip_address||'N/A')}</span>${mem?`<span>${mem}</span>`:''}</div>
     </div>`;
   }).join('');
@@ -323,6 +404,7 @@ let detailLogTimer = null;
 
 async function showContainerDetail(name, nodeId) {
   if (detailLogTimer) { clearInterval(detailLogTimer); detailLogTimer = null; }
+  closeContainerTerminal();
   selectedContainerName = name;
   document.querySelectorAll('#containers-list .split-list-card').forEach(c => c.classList.toggle('selected', c.dataset.name === name));
   const el = document.getElementById('container-detail');
@@ -340,7 +422,6 @@ async function showContainerDetail(name, nodeId) {
     currentContainer = c;
     currentContainer._nodeId = nodeId || 'local';
     const s = c.status;
-    const bc = s === 'running' ? 'badge-success' : s === 'building' ? 'badge-warning' : s === 'failed' ? 'badge-danger' : 'badge-neutral';
     const isBuilding = s === 'building';
     const isFailed = s === 'failed';
     const isTransient = isBuilding || isFailed || s === 'starting' || s === 'stopping';
@@ -350,16 +431,17 @@ async function showContainerDetail(name, nodeId) {
 
     el.innerHTML = `
       <div class="sr-header">
-        <h2><i class="bi bi-box-seam" style="color:var(--accent)"></i>${esc(c.name)} <span class="badge ${bc}" style="font-size:11px">${s}</span></h2>
+        <h2><i class="bi bi-box-seam" style="color:var(--accent)"></i>${esc(c.name)} <span class="badge ${getStatusBadgeClass(s)}" style="font-size:11px">${getStatusLabel(s)}</span></h2>
         <div class="sr-actions">
           ${isRemote ? `
             ${s==='running'||s==='starting'?`<button class="btn btn-secondary btn-sm" onclick="remoteContainerAction('${nodeId}','${esc(name)}','stop')"><i class="bi bi-stop-fill"></i> Stop</button>`:`<button class="btn btn-success btn-sm" onclick="remoteContainerAction('${nodeId}','${esc(name)}','start')"><i class="bi bi-play-fill"></i> Start</button>`}
             <button class="btn btn-primary btn-sm" onclick="remoteContainerAction('${nodeId}','${esc(name)}','restart')"><i class="bi bi-arrow-repeat"></i></button>
             <button class="btn btn-danger btn-sm" onclick="remoteDeleteContainer('${nodeId}','${esc(name)}')"><i class="bi bi-trash3"></i></button>
           ` : `
-            ${s==='running'||s==='starting'?`<button class="btn btn-secondary btn-sm" id="detail-stop" onclick="stopContainer('${esc(name)}')"><i class="bi bi-stop-fill"></i> Stop</button>`:`<button class="btn btn-success btn-sm" id="detail-start" onclick="startContainer('${esc(name)}')"><i class="bi bi-play-fill"></i> Start</button>`}
-            <button class="btn btn-primary btn-sm" id="detail-restart" onclick="restartContainer('${esc(name)}')"><i class="bi bi-arrow-repeat"></i></button>
-            <button class="btn btn-danger btn-sm" id="detail-delete" onclick="deleteContainer('${esc(name)}')"><i class="bi bi-trash3"></i></button>
+            <button class="btn btn-success btn-sm" id="detail-start" onclick="startContainer('${esc(name)}')" ${(isRunning||s==='starting')?'disabled':''}><i class="bi bi-play-fill"></i> Start</button>
+            <button class="btn btn-secondary btn-sm" id="detail-stop" onclick="stopContainer('${esc(name)}')" ${(!isRunning)?'disabled':''}><i class="bi bi-stop-fill"></i> Stop</button>
+            <button class="btn btn-primary btn-sm" id="detail-restart" onclick="restartContainer('${esc(name)}')" ${isTransient?'disabled':''}><i class="bi bi-arrow-repeat"></i></button>
+            <button class="btn btn-danger btn-sm" id="detail-delete" onclick="deleteContainer('${esc(name)}')" ${(isRunning||isBuilding)?'disabled':''}><i class="bi bi-trash3"></i></button>
           `}
         </div>
       </div>
@@ -369,6 +451,7 @@ async function showContainerDetail(name, nodeId) {
         <div class="detail-tab" data-dtab="terminal"><i class="bi bi-terminal"></i> Terminal</div>
         <div class="detail-tab" data-dtab="files"><i class="bi bi-folder2-open"></i> Files</div>
         <div class="detail-tab" data-dtab="network"><i class="bi bi-hdd-network"></i> Networks</div>
+        <div class="detail-tab" data-dtab="backup"><i class="bi bi-cloud-arrow-up"></i> Backup</div>
         <div class="detail-tab" data-dtab="settings"><i class="bi bi-gear"></i> Settings</div>
         <div class="detail-tab" data-dtab="services"><i class="bi bi-cpu"></i> Services</div>
       </div>
@@ -445,6 +528,25 @@ async function showContainerDetail(name, nodeId) {
         </form>
       </div>
 
+      <div class="detail-tab-content" id="dtab-backup">
+        <form id="detail-backup-form">
+          <div class="settings-section">
+            <div class="settings-section-title"><i class="bi bi-cloud-arrow-up"></i> Create Backup Routine</div>
+            <div class="form-group"><label class="form-label">Source Path</label><input type="text" class="form-input" id="detail-backup-source" placeholder="/data" value="/data"></div>
+            <div class="form-group"><label class="form-label">Remote Host (SSH)</label><input type="text" class="form-input" id="detail-backup-host" placeholder="192.168.1.100"></div>
+            <div class="form-row">
+              <div class="form-group"><label class="form-label">Remote Path</label><input type="text" class="form-input" id="detail-backup-rpath" value="/backups/ank"></div>
+              <div class="form-group"><label class="form-label">SSH Password</label><input type="password" class="form-input" id="detail-backup-pass" placeholder="ssh password"></div>
+            </div>
+            <div class="form-row">
+              <div class="form-group"><label class="form-label">Schedule (cron)</label><input type="text" class="form-input" id="detail-backup-cron" placeholder="0 2 * * *" value="0 2 * * *"></div>
+              <div class="form-group"><label class="form-label">Retention (days)</label><input type="number" class="form-input" id="detail-backup-retention" value="30" min="1"></div>
+            </div>
+          </div>
+          <button type="submit" class="btn btn-primary"><i class="bi bi-cloud-arrow-up"></i> Create Backup Routine</button>
+        </form>
+      </div>
+
       <div class="detail-tab-content" id="dtab-settings">
         <form id="detail-settings-form">
           <div class="settings-section">
@@ -502,6 +604,7 @@ async function showContainerDetail(name, nodeId) {
         el.querySelectorAll('.detail-tab-content').forEach(t => t.classList.remove('active'));
         tab.classList.add('active');
         document.getElementById(`dtab-${tab.dataset.dtab}`).classList.add('active');
+        if (tab.dataset.dtab !== 'terminal') closeContainerTerminal();
         if (tab.dataset.dtab === 'terminal' && currentContainer) initContainerTerminal();
         if (tab.dataset.dtab === 'files' && currentContainer) { fileContainerName = currentContainer.name; fileCurrentPath = '/'; closeEditor(); loadFiles(); }
         if (tab.dataset.dtab === 'services' && currentContainer) loadTaskManager();
@@ -593,6 +696,26 @@ async function showContainerDetail(name, nodeId) {
     document.getElementById('file-btn-upload')?.addEventListener('click', () => document.getElementById('file-upload-input')?.click());
     document.getElementById('file-upload-input')?.addEventListener('change', (e) => { uploadToContainer(e.target.files); e.target.value = ''; });
 
+    // Backup form handler
+    document.getElementById('detail-backup-form')?.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      if (!currentContainer) return;
+      const routineName = `${currentContainer.name}-backup`;
+      try {
+        await api('POST', '/backups', {
+          name: routineName,
+          source: document.getElementById('detail-backup-source')?.value || '/data',
+          remote_host: document.getElementById('detail-backup-host')?.value || '',
+          remote_path: document.getElementById('detail-backup-rpath')?.value || '/backups/ank',
+          ssh_user: 'root',
+          ssh_pass: document.getElementById('detail-backup-pass')?.value || '',
+          schedule: document.getElementById('detail-backup-cron')?.value || '0 2 * * *',
+          retention: parseInt(document.getElementById('detail-backup-retention')?.value || '30')
+        });
+        toast(`Backup routine "${routineName}" created`, 'success');
+      } catch (e) { toast(`Failed: ${e.message}`, 'error'); }
+    });
+
     // Start log polling for running containers
     if (!isRemote && s === 'running') {
       detailLogTimer = setInterval(async () => {
@@ -603,6 +726,25 @@ async function showContainerDetail(name, nodeId) {
           const el = document.getElementById('detail-log-output');
           if (el) el.textContent = logText || 'No logs available';
         } catch (e) { clearInterval(detailLogTimer); detailLogTimer = null; }
+      }, 3000);
+    }
+
+    // Build-in-polling: auto-refresh detail when container is building
+    if (!isRemote && isBuilding) {
+      let pollAttempt = 0;
+      const pollBuilding = setInterval(async () => {
+        pollAttempt++;
+        if (pollAttempt > 60) { clearInterval(pollBuilding); return; }
+        try {
+          const updated = await api('GET', `/containers/${name}`);
+          if (updated.status !== 'building' && updated.status !== 'starting') {
+            clearInterval(pollBuilding);
+            showContainerDetail(name, nodeId);
+            loadContainers();
+          } else {
+            updateContainerBadge(name, updated.status);
+          }
+        } catch(e) {}
       }, 3000);
     }
   } catch (e) { el.innerHTML = `<div style="color:var(--danger);padding:20px;text-align:center"><i class="bi bi-exclamation-triangle"></i> ${esc(e.message)}</div>`; }
@@ -629,19 +771,86 @@ function removePort(idx) {
 async function startContainer(name) { setContainerLoading(name,'start'); try { await api('POST',`/containers/${name}/start`); toast(`Starting "${name}"...`,'info'); pollContainerStatus(name,0); } catch(e) { toast(`Failed: ${e.message}`,'error'); clearContainerLoading(name); } }
 async function stopContainer(name) { setContainerLoading(name,'stop'); try { await api('POST',`/containers/${name}/stop`); toast(`Stopping "${name}"...`,'info'); pollContainerStatus(name,0); } catch(e) { toast(`Failed: ${e.message}`,'error'); clearContainerLoading(name); } }
 async function restartContainer(name) { setContainerLoading(name,'restart'); try { await api('POST',`/containers/${name}/restart`); toast(`Restarting "${name}"...`,'info'); pollContainerStatus(name,0); } catch(e) { toast(`Failed: ${e.message}`,'error'); clearContainerLoading(name); } }
-async function deleteContainer(name) { const ok = await confirmAction('Delete Container',`Delete "${name}"? This cannot be undone.`); if (!ok) return; try { await api('DELETE',`/containers/${name}`); if(detailLogTimer){clearInterval(detailLogTimer);detailLogTimer=null;} currentContainer=null; toast(`Deleted "${name}"`,'success'); loadContainers(); document.getElementById('container-detail').innerHTML='<div class="split-right-empty"><div><i class="bi bi-box-seam"></i><p>Select a container to manage</p></div></div>'; } catch(e) { toast(`Failed: ${e.message}`,'error'); } }
+async function deleteContainer(name) { const ok = await confirmAction('Delete Container',`Delete "${name}"? This cannot be undone.`); if (!ok) return; try { await api('DELETE',`/containers/${name}`); if(detailLogTimer){clearInterval(detailLogTimer);detailLogTimer=null;} closeContainerTerminal(); currentContainer=null; toast(`Deleted "${name}"`,'success'); loadContainers(); document.getElementById('container-detail').innerHTML='<div class="split-right-empty"><div><i class="bi bi-box-seam"></i><p>Select a container to manage</p></div></div>'; } catch(e) { toast(`Failed: ${e.message}`,'error'); } }
 
 let containerBusy = {};
-function setContainerLoading(name, action) { containerBusy[name] = action; }
-function clearContainerLoading(name) { delete containerBusy[name]; pollContainerStatus(name, 0); }
+
+function setContainerLoading(name, action) {
+  containerBusy[name] = action;
+  const label = { start: 'Starting...', stop: 'Stopping...', restart: 'Restarting...', delete: 'Deleting...' }[action] || 'Loading...';
+  document.querySelectorAll(`#containers-list .split-list-card[data-name="${CSS.escape(name)}"] button`).forEach(b => b.disabled = true);
+  document.querySelectorAll(`#containers-list .split-list-card[data-name="${CSS.escape(name)}"] .badge`).forEach(b => { b.className = 'badge badge-warning'; b.textContent = label; });
+  if (currentContainer && currentContainer.name === name) {
+    ['detail-start','detail-stop','detail-restart','detail-delete'].forEach(id => { const b = document.getElementById(id); if (b) b.disabled = true; });
+    const detailBadge = document.querySelector('#container-detail .sr-header .badge');
+    if (detailBadge) { detailBadge.className = 'badge badge-warning'; detailBadge.textContent = label; }
+  }
+}
+
+function clearContainerLoading(name) {
+  delete containerBusy[name];
+  pollContainerStatus(name, 0);
+}
+
+function getStatusBadgeClass(status) {
+  return { running: 'badge-success', starting: 'badge-info', building: 'badge-warning', stopping: 'badge-info', stopped: 'badge-neutral', failed: 'badge-danger', deleting: 'badge-danger' }[status] || 'badge-neutral';
+}
+
+function getStatusLabel(status) {
+  return { building: 'building', starting: 'starting', running: 'running', stopping: 'stopping', stopped: 'stopped', failed: 'failed', deleting: 'deleting' }[status] || status;
+}
+
+function updateContainerBadge(name, status) {
+  document.querySelectorAll(`#containers-list .split-list-card[data-name="${CSS.escape(name)}"] .badge`).forEach(b => {
+    b.className = `badge ${getStatusBadgeClass(status)}`;
+    b.textContent = getStatusLabel(status);
+  });
+  document.querySelectorAll(`#dashboard-containers .dash-container-row`).forEach(row => {
+    if (row.querySelector('.dcr-name')?.textContent === name) {
+      const dot = row.querySelector('.dcr-dot');
+      const badge = row.querySelector('.badge');
+      const color = status === 'running' ? 'var(--success)' : status === 'building' ? 'var(--warning)' : status === 'failed' ? 'var(--danger)' : 'var(--text-muted)';
+      if (dot) dot.style.background = color;
+      if (badge) { badge.className = `badge ${getStatusBadgeClass(status)}`; badge.textContent = status; }
+    }
+  });
+  if (currentContainer && currentContainer.name === name) {
+    const detailBadge = document.querySelector('#container-detail .sr-header .badge');
+    if (detailBadge) { detailBadge.className = `badge ${getStatusBadgeClass(status)}`; detailBadge.textContent = getStatusLabel(status); }
+    updateDetailButtons(name, status);
+  }
+}
+
+function updateDetailButtons(name, status) {
+  const isRunning = status === 'running';
+  const isBuilding = status === 'building';
+  const isFailed = status === 'failed';
+  const isTransient = isBuilding || isFailed || status === 'starting' || status === 'stopping';
+  const startBtn = document.getElementById('detail-start');
+  const stopBtn = document.getElementById('detail-stop');
+  const restartBtn = document.getElementById('detail-restart');
+  const deleteBtn = document.getElementById('detail-delete');
+  if (startBtn) startBtn.disabled = isRunning || status === 'starting';
+  if (stopBtn) stopBtn.disabled = !isRunning && !status === 'running';
+  if (restartBtn) restartBtn.disabled = isTransient;
+  if (deleteBtn) deleteBtn.disabled = isRunning || isBuilding;
+}
 
 async function pollContainerStatus(name, attempt) {
   if (attempt > 30) { loadContainers(); return; }
   try {
     const c = await api('GET', `/containers/${name}`);
+    updateContainerBadge(name, c.status);
     if (c.status === 'building' || c.status === 'starting' || c.status === 'stopping') {
       setTimeout(() => pollContainerStatus(name, attempt + 1), 2000);
-    } else { loadContainers(); }
+    } else {
+      clearContainerLoading(name);
+      loadContainers();
+      if (currentContainer && currentContainer.name === name) {
+        currentContainer = c;
+        updateDetailButtons(name, c.status);
+      }
+    }
   } catch (e) { loadContainers(); }
 }
 
@@ -653,6 +862,55 @@ async function pollRemoteContainerStatus(nodeId, name, attempt) {
       setTimeout(() => pollRemoteContainerStatus(nodeId, name, attempt + 1), 3000);
     } else { loadContainers(); }
   } catch (e) { setTimeout(() => pollRemoteContainerStatus(nodeId, name, attempt + 1), 3000); }
+}
+
+/* ═══════ APK FAILURE MODAL ═══════ */
+function showApkFailureModal(name, failedPackages, log) {
+  const host = location.hostname || 'localhost';
+  const sshCmd = currentContainer?.ssh_port ? `ssh root@${host} -p ${currentContainer.ssh_port}` : '';
+  openModal('Package Installation Failed', `
+    <div style="text-align:center;margin-bottom:16px">
+      <i class="bi bi-exclamation-triangle" style="font-size:48px;color:var(--warning)"></i>
+      <h3 style="margin:12px 0 4px">Build Partially Failed</h3>
+      <p style="color:var(--text-secondary);font-size:13px">Container <strong>${esc(name)}</strong> was created but packages failed to install.</p>
+    </div>
+    <div class="settings-section">
+      <div class="settings-section-title"><i class="bi bi-list-check"></i> Failed Packages</div>
+      <pre style="font-size:12px;background:rgba(10,15,30,0.4);padding:10px;border-radius:6px;max-height:120px;overflow:auto;margin:0">${esc(failedPackages)}</pre>
+    </div>
+    ${sshCmd ? `<div class="settings-section">
+      <div class="settings-section-title"><i class="bi bi-terminal"></i> Manual Install</div>
+      <div class="ssh-hint"><code class="ssh-hint-cmd">${esc(sshCmd)}</code><button class="btn btn-sm btn-ghost" onclick="copyText('${esc(sshCmd)}');toast('Copied!','success')"><i class="bi bi-clipboard"></i></button></div>
+      <p style="font-size:12px;color:var(--text-muted);margin-top:8px">Run inside container: <code>apk add --allow-untrusted ${esc(failedPackages)}</code></p>
+    </div>` : ''}
+    <div style="display:flex;gap:8px;justify-content:center;margin-top:16px">
+      <button class="btn btn-danger" onclick="closeModal();deleteContainer('${esc(name)}')"><i class="bi bi-trash3"></i> Cancel & Remove</button>
+      <button class="btn btn-primary" onclick="closeModal()"><i class="bi bi-play-fill"></i> Continue Build</button>
+    </div>
+  `);
+}
+
+/* ═══════ CONTAINER TERMINAL CLEANUP ═══════ */
+function closeContainerTerminal() {
+  if (xtermWs) { try { xtermWs.close(); } catch(e){} xtermWs = null; }
+  if (xtermTerminal) { try { xtermTerminal.dispose(); } catch(e){} xtermTerminal = null; }
+  if (detailLogTimer) { clearInterval(detailLogTimer); detailLogTimer = null; }
+}
+
+/* ═══════ IMAGE TRANSFER ═══════ */
+async function transferImage(imageName) {
+  let nodes = [];
+  try { const d = await api('GET', '/system/dashboard'); nodes = (d.nodes || []).filter(n => n.status === 'online'); } catch(e) {}
+  if (!nodes.length) { toast('No online nodes available', 'warning'); return; }
+  const result = await customModal('Transfer Image', [
+    { id: 'target', label: 'Target Node', type: 'select', options: nodes.map(n => `<option value="${esc(n.id)}">${esc(n.alias || n.ip)}</option>`).join('') }
+  ]);
+  if (!result) return;
+  try {
+    toast(`Transferring "${imageName}" to node...`, 'info');
+    await api('POST', `/nodes/${encodeURIComponent(result.target)}/images/transfer`, { image: imageName });
+    toast('Image transferred successfully', 'success');
+  } catch (e) { toast(`Transfer failed: ${e.message}`, 'error'); }
 }
 
 /* ═══════ IMAGES ═══════ */
@@ -806,9 +1064,12 @@ async function loadNodes() {
       const label = n.status === 'online' ? 'Online' : n.status === 'pending' ? 'Pending' : 'Offline';
       const isOnline = n.status === 'online';
       const roleTag = n.role === 'manager' ? '<span class="badge badge-info" style="font-size:10px">MANAGER</span>' : '';
+      const diskInfo = isOnline && n.disk_total ? `<span>Disk ${n.disk_used||0}/${n.disk_total}GB</span>` : '';
+      const uptimeInfo = isOnline && n.uptime_seconds ? `<span>Up ${fmtUptime(n.uptime_seconds)}</span>` : '';
+      const managedBy = n.managed_by ? `<span style="color:var(--text-muted)">by ${esc(n.managed_by)}</span>` : '';
       return `<div class="split-list-card" data-id="${esc(n.id)}" onclick="showNodeDetail('${esc(n.id)}','${esc(n.alias||n.ip)}','${esc(n.status)}')">
-        <div class="slc-top"><span class="slc-name"><i class="bi bi-hdd-network" style="color:var(--primary)"></i>${esc(n.alias||n.ip)}${roleTag}</span><span class="badge ${n.status==='online'?'badge-success':n.status==='pending'?'badge-warning':'badge-danger'}" style="font-size:10px">${label}</span></div>
-        <div class="slc-meta"><span>CPU ${isOnline?Math.round(n.cpu_percent||0)+'%':'-'}</span><span>RAM ${isOnline?(n.mem_used_gb||0).toFixed(1)+'GB':'-'}</span><span>${isOnline?(n.containers_total||0):'-'} containers</span></div>
+        <div class="slc-top"><span class="slc-name"><i class="bi bi-hdd-network" style="color:var(--primary)"></i>${esc(n.alias||n.ip)}${roleTag}</span><div style="display:flex;align-items:center;gap:6px"><span class="badge ${n.status==='online'?'badge-success':n.status==='pending'?'badge-warning':'badge-danger'}" style="font-size:10px">${label}</span>${isOnline?`<button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();refreshNode('${esc(n.id)}')" title="Refresh"><i class="bi bi-arrow-clockwise"></i></button>`:''}</div></div>
+        <div class="slc-meta"><span>CPU ${isOnline?Math.round(n.cpu_percent||0)+'%':'-'}</span><span>RAM ${isOnline?(n.mem_used_gb||0).toFixed(1)+'GB':'-'}</span>${diskInfo}${uptimeInfo}<span>${isOnline?(n.containers_total||0):'-'} containers</span>${managedBy}</div>
       </div>`;
     }).join('');
     updateNodeSelectors(nodes);
@@ -859,9 +1120,9 @@ async function showNodeDetail(nodeId, name, status) {
       <div style="margin-bottom:12px"><h4 style="margin-bottom:8px;font-size:13px;color:var(--text-muted)"><i class="bi bi-terminal"></i> Kernel</h4><code style="font-size:12px;background:rgba(10,15,30,0.4);padding:6px 10px;border-radius:6px;display:block">${esc(kernel)}</code></div>
       <div style="font-size:12px;font-weight:600;color:var(--text-secondary);margin-bottom:10px">Containers (${contArr.length})</div>
       ${contArr.length ? contArr.map(c => {
-        const sc = c.status==='running'?'badge-success':c.status==='building'?'badge-warning':'badge-neutral';
+        const sc = getStatusBadgeClass(c.status);
         return `<div style="display:flex;align-items:center;justify-content:space-between;padding:8px 12px;border:1px solid var(--border);border-radius:8px;margin-bottom:6px">
-          <span style="font-size:13px">${esc(c.name)} <span class="badge ${sc}" style="font-size:9px">${c.status}</span></span>
+          <span style="font-size:13px">${esc(c.name)} <span class="badge ${sc}" style="font-size:9px">${getStatusLabel(c.status)}</span></span>
           <div style="display:flex;gap:4px">
             ${c.status==='running'?`<button class="btn btn-icon btn-ghost sm" onclick="remoteContainerAction('${nodeId}','${esc(c.name)}','stop')"><i class="bi bi-stop-fill"></i></button>`:`<button class="btn btn-icon btn-ghost sm" onclick="remoteContainerAction('${nodeId}','${esc(c.name)}','start')"><i class="bi bi-play-fill"></i></button>`}
             <button class="btn btn-icon btn-ghost sm" onclick="remoteDeleteContainer('${nodeId}','${esc(c.name)}')"><i class="bi bi-trash3"></i></button>
@@ -908,17 +1169,22 @@ async function revokeManager() {
   try { await api('DELETE', '/nodes/manager'); toast('Manager access revoked', 'success'); loadNodes(); } catch(e) { toast(`Failed: ${e.message}`, 'error'); }
 }
 
+async function refreshNode(id) {
+  try { toast('Refreshing node...', 'info'); await api('POST', `/nodes/${encodeURIComponent(id)}/refresh`); loadNodes(); toast('Node refreshed', 'success'); } catch(e) { toast(`Failed: ${e.message}`, 'error'); }
+}
+
 document.getElementById('btn-add-node')?.addEventListener('click', sendPairingRequest);
 
 async function sendPairingRequest() {
   const result = await customModal('Add Node', [
     { id: 'ip', label: 'Panel IP', type: 'text' },
     { id: 'port', label: 'Port', type: 'text', value: '8001' },
+    { id: 'user', label: 'Username', type: 'text', value: 'admin' },
     { id: 'password', label: 'Password', type: 'text' },
     { id: 'alias', label: 'Alias', type: 'text' }
   ]);
   if (!result) return;
-  try { await api('POST', '/nodes/pairing/send', { ip: result.ip, port: parseInt(result.port), password: result.password, alias: result.alias }); toast('Pairing request sent', 'success'); loadNodes(); } catch(e) { toast(`Failed: ${e.message}`, 'error'); }
+  try { await api('POST', '/nodes/pairing/send', { ip: result.ip, port: parseInt(result.port), user: result.user || 'admin', password: result.password, alias: result.alias }); toast('Pairing request sent', 'success'); loadNodes(); } catch(e) { toast(`Failed: ${e.message}`, 'error'); }
 }
 
 async function remoteContainerAction(nodeId, name, action) {
@@ -964,7 +1230,7 @@ async function loadStacks() {
     el.innerHTML = stacks.map(s => {
       const running = (s.containers||[]).filter(c => c.status==='running').length;
       const total = (s.containers||[]).length;
-      const bc = running===total&&total>0 ? 'badge-success' : running>0 ? 'badge-warning' : 'badge-danger';
+      const bc = running===total&&total>0 ? 'badge-success' : running>0 ? 'badge-warning' : total>0 ? 'badge-danger' : 'badge-neutral';
       const tpl = s.template === 'ankfile' ? '<i class="bi bi-filetype-json"></i> Ankfile' : esc(s.template||s.image||'');
       const lbPort = s.port || s.lb_port || '-';
       return `<div class="split-list-card" data-name="${esc(s.name)}" onclick="showStackDetail('${esc(s.name)}')">
@@ -1001,9 +1267,9 @@ function showStackDetail(name) {
       </div>
       <div style="font-size:12px;font-weight:600;color:var(--text-secondary);margin-bottom:10px">Containers</div>
       ${(s.containers||[]).map(c => {
-        const sc = c.status==='running'?'badge-success':c.status==='building'?'badge-warning':'badge-neutral';
+        const sc = getStatusBadgeClass(c.status);
         return `<div style="display:flex;align-items:center;justify-content:space-between;padding:8px 12px;border:1px solid var(--border);border-radius:8px;margin-bottom:6px">
-          <span style="font-size:13px">${esc(c.name)} <span class="badge ${sc}" style="font-size:9px">${c.status}</span></span>
+          <span style="font-size:13px">${esc(c.name)} <span class="badge ${sc}" style="font-size:9px">${getStatusLabel(c.status)}</span></span>
         </div>`;
       }).join('') || '<div style="text-align:center;padding:16px;color:var(--text-muted);font-size:12px">No containers</div>'}`;
   }).catch(e => { el.innerHTML = `<div style="color:var(--danger);padding:20px">${esc(e.message)}</div>`; });
@@ -1269,20 +1535,43 @@ async function saveRemoteSSHSettings() {
 document.getElementById('restart-device-btn')?.addEventListener('click', async () => {
   const ok = await confirmAction('Restart Device', 'This will reboot the Android device. Continue?');
   if (!ok) return;
-  try { toast('Rebooting device...', 'warning'); await api('POST', '/system/restart-device'); } catch(e) {}
+  try {
+    document.body.innerHTML = '<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;background:var(--bg-primary);color:var(--text-primary);font-family:system-ui"><i class="bi bi-arrow-clockwise spin" style="font-size:48px;color:var(--accent);margin-bottom:16px"></i><h2>Device Rebooting...</h2><p style="color:var(--text-secondary);margin-top:8px">Please wait for the device to come back online.</p></div>';
+    await api('POST', '/system/restart-device');
+  } catch(e) {}
 });
 
 document.getElementById('restart-server-btn')?.addEventListener('click', async () => {
   const ok = await confirmAction('Restart Server', 'Restart the ANK server?');
   if (!ok) return;
-  try { await api('POST', '/system/restart-server'); } catch(e) {}
-  toast('Server restarting...', 'info');
-  setTimeout(() => { window.location.reload(); }, 5000);
+  try {
+    const overlay = document.createElement('div');
+    overlay.id = 'restart-overlay';
+    overlay.style.cssText = 'position:fixed;inset:0;z-index:10000;background:rgba(10,15,30,0.95);display:flex;flex-direction:column;align-items:center;justify-content:center;color:var(--text-primary)';
+    overlay.innerHTML = '<i class="bi bi-arrow-clockwise spin" style="font-size:48px;color:var(--accent);margin-bottom:16px"></i><h2>Restarting ANK Server...</h2><div id="restart-steps" style="margin-top:20px;width:300px"></div><div class="progress-bar" style="width:300px;margin-top:12px"><div class="progress-bar-fill" id="restart-progress" style="width:0%;transition:width 1s"></div></div>';
+    document.body.appendChild(overlay);
+    const steps = document.getElementById('restart-steps');
+    const progress = document.getElementById('restart-progress');
+    const addStep = (text, status) => { const div = document.createElement('div'); div.style.cssText = 'display:flex;align-items:center;gap:8px;padding:6px 0;font-size:13px'; const icon = status === 'done' ? '<i class="bi bi-check-circle-fill" style="color:var(--success)"></i>' : status === 'active' ? '<i class="bi bi-arrow-repeat spin" style="color:var(--accent)"></i>' : '<i class="bi bi-circle" style="color:var(--text-muted)"></i>'; div.innerHTML = icon + text; steps.appendChild(div); return div; };
+    addStep('Stopping running containers...', 'done');
+    progress.style.width = '30%';
+    await api('POST', '/system/restart-server');
+    addStep('Restarting ANK server...', 'active');
+    progress.style.width = '60%';
+    let attempts = 0;
+    const checkHealth = setInterval(async () => {
+      attempts++;
+      if (attempts > 60) { clearInterval(checkHealth); window.location.reload(); return; }
+      try { const res = await fetch('/api/health'); if (res.ok) { clearInterval(checkHealth); addStep('Server is back online!', 'done'); progress.style.width = '100%'; setTimeout(() => { window.location.href = '/login'; }, 1500); } } catch(e) {}
+    }, 3000);
+  } catch(e) {}
 });
 
 document.getElementById('uninstall-btn')?.addEventListener('click', async () => {
   const ok = await confirmAction('Uninstall ANK', 'This will PERMANENTLY delete ALL containers, images, configs. This cannot be undone.');
   if (!ok) return;
+  const ok2 = await confirmAction('Final Warning', 'Are you absolutely sure? All data will be lost forever.');
+  if (!ok2) return;
   try { toast('Uninstalling ANK...', 'warning'); await api('POST', '/system/uninstall'); } catch(e) {}
 });
 
@@ -1658,17 +1947,34 @@ document.getElementById('log-filter')?.addEventListener('change', () => { logsOf
 /* ═══════ REFRESH TIMER ═══════ */
 let refreshSeconds = parseInt(localStorage.getItem('ank_refresh') || '15');
 let refreshTimer = null;
+let refreshCycle = 0;
 
 function startRefreshTimer() {
   if (refreshTimer) clearInterval(refreshTimer);
   if (refreshSeconds <= 0) return;
   refreshTimer = setInterval(async () => {
     if (!isLoggedIn || document.getElementById('app').classList.contains('hidden') || document.hidden) return;
+    refreshCycle++;
     try {
-      const status = await api('GET', '/status');
+      const [status, info] = await Promise.all([api('GET', '/status'), api('GET', '/system/info')]);
       animateCounter('stat-running', status.containers_running || 0);
       animateCounter('stat-stopped', status.containers_stopped || 0);
       animateCounter('stat-total', status.containers_total || 0);
+      document.getElementById('dash-uptime').textContent = 'Uptime: ' + fmtUptime(status.uptime || 0);
+      if (refreshCycle % 4 === 0) {
+        const cpuPct = info.cpu_usage != null ? Math.round(info.cpu_usage) : 0;
+        setGaugeDash('gauge-cpu', cpuPct, 'gauge-cpu-text', 175.9);
+        const memT = info.memory?.total_kb || 0;
+        const memA = info.memory?.available_kb || 0;
+        const memPct = memT > 0 ? Math.round((memT - memA) / memT * 100) : 0;
+        setGaugeDash('gauge-ram', memPct, 'gauge-ram-text', 175.9);
+      }
+      const activePage = document.querySelector('.page.active');
+      if (activePage) {
+        const pageId = activePage.id;
+        if (pageId === 'page-containers') loadContainers();
+        if (pageId === 'page-dashboard') { renderDashboardContainers(); renderDashboardNodes(); }
+      }
     } catch(e) {}
   }, refreshSeconds * 1000);
 }
@@ -1768,20 +2074,21 @@ async function loadNotchPreview(page) {
       const c = await api('GET', '/containers/all');
       if (!c.length) { html += '<div class="np-empty">No containers</div>'; }
       else { html += c.map(x => {
-        const color = x.status === 'running' ? 'var(--success)' : x.status === 'building' ? 'var(--warning)' : 'var(--text-muted)';
-        return `<div class="np-row"><span class="dot" style="background:${color}"></span><span class="np-name">${esc(x.name)}</span><span class="badge badge-neutral" style="font-size:9px">${x.status}</span></div>`;
+        const color = x.status === 'running' ? 'var(--success)' : x.status === 'building' ? 'var(--warning)' : x.status === 'failed' ? 'var(--danger)' : 'var(--text-muted)';
+        return `<div class="np-row"><span class="dot" style="background:${color}"></span><span class="np-name">${esc(x.name)}</span><span class="badge ${getStatusBadgeClass(x.status)}" style="font-size:9px">${getStatusLabel(x.status)}</span></div>`;
       }).join(''); }
     } else if (page === 'images') {
-      const [img, tpl] = await Promise.all([api('GET', '/images/all').catch(()=>[]), api('GET', '/images/templates').catch(()=>({templates:[]}))]);
-      if (tpl.templates?.length) {
+      const [img, tpl] = await Promise.all([api('GET', '/images/all').catch(()=>[]), api('GET', '/images/templates').catch(()=>[])]);
+      const templates = Array.isArray(tpl) ? tpl : (tpl.templates || []);
+      if (templates.length) {
         html += `<div style="margin-bottom:8px;font-size:11px;font-weight:600;color:var(--text-muted);text-transform:uppercase">Quick Deploy</div>`;
-        html += tpl.templates.map(t => `<div class="np-row"><i class="bi ${t.icon||'bi-box-seam'}" style="color:${t.color||'var(--primary)'};font-size:12px"></i><span class="np-name">${esc(t.name)}</span><span class="template-badge ${t.base_ready?'ready':'pending'}" style="font-size:9px">${t.base_ready?'Ready':'Pull'}</span></div>`).join('');
+        html += templates.map(t => `<div class="np-row"><i class="bi ${t.icon||'bi-box-seam'}" style="color:${t.color||'var(--primary)'};font-size:12px"></i><span class="np-name">${esc(t.name)}</span><span class="template-badge ${t.base_ready?'ready':'pending'}" style="font-size:9px">${t.base_ready?'Ready':'Pull'}</span></div>`).join('');
       }
       if (img.length) {
         html += `<div style="margin:12px 0 8px;font-size:11px;font-weight:600;color:var(--text-muted);text-transform:uppercase">Ank Images (${img.length})</div>`;
         html += img.map(x => `<div class="np-row"><i class="bi bi-hdd-stack" style="color:var(--accent);font-size:12px"></i><span class="np-name">${esc(x.name)}</span><span class="text-muted text-sm">${x.size_human||''}</span></div>`).join('');
       }
-      if (!img.length && !tpl.templates?.length) html += '<div class="np-empty">No images</div>';
+      if (!img.length && !templates.length) html += '<div class="np-empty">No images</div>';
     } else if (page === 'nodes') {
       const d = await api('GET', '/nodes').catch(()=>({nodes:[]}));
       const nodes = d.nodes || [];
@@ -1823,8 +2130,8 @@ async function loadNotchPreview(page) {
       if (containers.length) {
         html += `<div style="margin:12px 0 8px;font-size:11px;font-weight:600;color:var(--text-muted);text-transform:uppercase">Containers (${containers.length})</div>`;
         html += containers.slice(0, 8).map(x => {
-          const color = x.status === 'running' ? 'var(--success)' : x.status === 'building' ? 'var(--warning)' : 'var(--text-muted)';
-          return `<div class="np-row"><span class="dot" style="background:${color}"></span><span class="np-name">${esc(x.name)}</span><span class="badge badge-neutral" style="font-size:9px">${x.status}</span></div>`;
+          const color = x.status === 'running' ? 'var(--success)' : x.status === 'building' ? 'var(--warning)' : x.status === 'failed' ? 'var(--danger)' : 'var(--text-muted)';
+          return `<div class="np-row"><span class="dot" style="background:${color}"></span><span class="np-name">${esc(x.name)}</span><span class="badge ${getStatusBadgeClass(x.status)}" style="font-size:9px">${getStatusLabel(x.status)}</span></div>`;
         }).join('');
         if (containers.length > 8) html += `<div class="np-empty">+${containers.length - 8} more</div>`;
       }
@@ -1896,5 +2203,14 @@ function openFooterModal() {
   `);
 }
 
+/* ═══════ THEME TOGGLE ═══════ */
+function getTheme() { return localStorage.getItem('ank_theme') || document.documentElement.getAttribute('data-theme') || 'dark'; }
+function setTheme(theme) { document.documentElement.setAttribute('data-theme', theme); localStorage.setItem('ank_theme', theme); document.querySelector('meta[name="theme-color"]')?.setAttribute('content', theme === 'dark' ? '#0a0d12' : '#ffffff'); }
+function toggleTheme() { setTheme(getTheme() === 'dark' ? 'light' : 'dark'); }
+
 /* ═══════ INIT ═══════ */
 if (isLoggedIn) { showApp(); detectWsProtocol().then(() => startRefreshTimer()); }
+// Theme toggle listeners
+document.getElementById('theme-toggle-login')?.addEventListener('click', toggleTheme);
+document.getElementById('theme-toggle-mobile')?.addEventListener('click', toggleTheme);
+document.getElementById('theme-toggle-desktop')?.addEventListener('click', toggleTheme);

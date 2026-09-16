@@ -749,6 +749,16 @@ tr:hover td { background: var(--bg-hover); }
 .dash-cluster-row .dcl-name { flex: 1; font-size: 13px; font-weight: 500; }
 .dash-cluster-row .dcl-stats { font-size: 11px; color: var(--text-muted); }
 
+.dash-cluster-stat {
+  background: rgba(10, 15, 30, 0.3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  text-align: center;
+}
+.dash-cluster-stat .dcs-label { font-size: 10px; color: var(--text-muted); text-transform: uppercase; margin-bottom: 4px; }
+.dash-cluster-stat .dcs-value { font-size: 16px; font-weight: 600; color: var(--text-primary); }
+
 /* ═══════ RESPONSIVE ═══════ */
 @media (max-width: 768px) {
   .notch { display: none; }
