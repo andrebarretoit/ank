@@ -120,8 +120,14 @@ PidFile /run/sshd.pid
 Subsystem sftp internal-sftp
 SSHEOF
 
-    # Generate SSH host keys
-    chroot "$ANKBASE" /usr/bin/ssh-keygen -A 2>/dev/null || true
+    # Generate SSH host keys on host (no chroot needed)
+    if command -v ssh-keygen >/dev/null 2>&1; then
+        ssh-keygen -t rsa -b 3072 -f "$ANKBASE/etc/ssh/ssh_host_rsa_key" -N "" -q 2>/dev/null
+        ssh-keygen -t ed25519 -f "$ANKBASE/etc/ssh/ssh_host_ed25519_key" -N "" -q 2>/dev/null
+    elif [ -x /system/bin/ssh-keygen ]; then
+        /system/bin/ssh-keygen -t rsa -b 3072 -f "$ANKBASE/etc/ssh/ssh_host_rsa_key" -N "" -q 2>/dev/null
+        /system/bin/ssh-keygen -t ed25519 -f "$ANKBASE/etc/ssh/ssh_host_ed25519_key" -N "" -q 2>/dev/null
+    fi
 
     # SSH dir
     mkdir -p "$ANKBASE/root/.ssh" 2>/dev/null

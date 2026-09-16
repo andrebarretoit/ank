@@ -296,17 +296,21 @@ if [ "$SSH_ENABLED" = "1" ] && [ -f "$ROOTFS/usr/sbin/sshd" ]; then
             log "Password set via shadow (openssl)"
         fi
     fi
-    # Generate host keys if missing (needs /dev/urandom + /proc)
-    mkdir -p "$ROOTFS/dev" 2>/dev/null
-    [ -e "$ROOTFS/dev/null" ] || mknod "$ROOTFS/dev/null" c 1 3 2>/dev/null
-    [ -e "$ROOTFS/dev/urandom" ] || mknod "$ROOTFS/dev/urandom" c 1 9 2>/dev/null
-    [ -e "$ROOTFS/dev/random" ] || mknod "$ROOTFS/dev/random" c 1 8 2>/dev/null
-    chmod 666 "$ROOTFS/dev/null" "$ROOTFS/dev/urandom" "$ROOTFS/dev/random" 2>/dev/null
-    # Ensure /proc is mounted (ssh-keygen needs it)
-    mountpoint -q "$ROOTFS/proc" 2>/dev/null || mount -t proc proc "$ROOTFS/proc" 2>/dev/null
-    [ ! -f "$ROOTFS/etc/ssh/ssh_host_rsa_key" ] && \
-        chroot "$ROOTFS" /usr/bin/ssh-keygen -A 2>&1 || true
-    umount "$ROOTFS/proc" 2>/dev/null
+    # Generate host keys on the HOST (no chroot needed — avoids segfault)
+    # Host ssh-keygen writes keys directly into ankfs/etc/ssh/
+    mkdir -p "$ROOTFS/etc/ssh" 2>/dev/null
+    if [ ! -f "$ROOTFS/etc/ssh/ssh_host_rsa_key" ]; then
+        if command -v ssh-keygen >/dev/null 2>&1; then
+            ssh-keygen -t rsa -b 3072 -f "$ROOTFS/etc/ssh/ssh_host_rsa_key" -N "" -q 2>/dev/null
+            ssh-keygen -t ed25519 -f "$ROOTFS/etc/ssh/ssh_host_ed25519_key" -N "" -q 2>/dev/null
+        elif [ -x /system/bin/ssh-keygen ]; then
+            /system/bin/ssh-keygen -t rsa -b 3072 -f "$ROOTFS/etc/ssh/ssh_host_rsa_key" -N "" -q 2>/dev/null
+            /system/bin/ssh-keygen -t ed25519 -f "$ROOTFS/etc/ssh/ssh_host_ed25519_key" -N "" -q 2>/dev/null
+        else
+            log "WARN: No ssh-keygen found on host, host keys not generated"
+        fi
+        [ -f "$ROOTFS/etc/ssh/ssh_host_rsa_key" ] && log "Host keys generated on host" || log "WARN: Host key generation failed"
+    fi
 
     # Start sshd (no -D: sshd daemonizes itself via fork, survives parent exit)
     nohup chroot "$ROOTFS" /usr/sbin/sshd \

@@ -101,10 +101,41 @@ detect_arch() {
     local raw=$(uname -m)
     case "$raw" in
         aarch64|arm64) ARCH_NAME="aarch64" ;;
-        armv7*|armhf|armv8*) ARCH_NAME="armv7" ;;
+        armv8*) ARCH_NAME="aarch64" ;;
+        armv7*|armhf) ARCH_NAME="armv7" ;;
         x86_64) ARCH_NAME="x86_64" ;;
         *) ARCH_NAME="$raw" ;;
     esac
+}
+
+# Universal chroot: tries toybox chroot, busybox chroot, musl direct exec
+_chroot_rootfs() {
+    local ROOTFS="$1"; shift
+    local CMD="$*"
+    local MUSL=$(ls "$ROOTFS"/lib/ld-musl-*.so* 2>/dev/null | head -1)
+
+    # 1. System chroot (toybox/busybox)
+    if command -v chroot >/dev/null 2>&1; then
+        chroot "$ROOTFS" /bin/sh -c "$CMD" 2>>"$LOG_FILE" && return 0
+    fi
+
+    # 2. /system/bin/chroot (Android toybox)
+    if [ -x /system/bin/chroot ]; then
+        /system/bin/chroot "$ROOTFS" /bin/sh -c "$CMD" 2>>"$LOG_FILE" && return 0
+    fi
+
+    # 3. busybox chroot (if busybox is in buildroot)
+    if [ -x "$ROOTFS/bin/busybox" ]; then
+        "$ROOTFS/bin/busybox" chroot "$ROOTFS" /bin/sh -c "$CMD" 2>>"$LOG_FILE" && return 0
+    fi
+
+    # 4. musl direct exec (no chroot needed)
+    if [ -n "$MUSL" ] && [ -x "$MUSL" ]; then
+        env -i HOME=/root PATH=/sbin:/usr/sbin:/bin:/usr/bin \
+            "$MUSL" /bin/sh -c "$CMD" 2>>"$LOG_FILE" && return 0
+    fi
+
+    return 1
 }
 
 find_dl_tool() {
@@ -286,41 +317,23 @@ else
     [ -e "$BUILDROOT/dev/tty" ] || mknod "$BUILDROOT/dev/tty" c 5 0 2>/dev/null
     [ -e "$BUILDROOT/dev/ptmx" ] || mknod "$BUILDROOT/dev/ptmx" c 5 2 2>/dev/null
     chmod 666 "$BUILDROOT/dev/null" "$BUILDROOT/dev/urandom" "$BUILDROOT/dev/random" "$BUILDROOT/dev/tty" "$BUILDROOT/dev/ptmx" 2>/dev/null
+    mount --bind /dev/null "$BUILDROOT/dev/null" 2>/dev/null
+    mount --bind /dev/urandom "$BUILDROOT/dev/urandom" 2>/dev/null
+    umount "$BUILDROOT/dev/null" 2>/dev/null
+    umount "$BUILDROOT/dev/urandom" 2>/dev/null
     mount -t proc proc "$BUILDROOT/proc" 2>/dev/null
 
-    # Install ALL packages using apk --root (no chroot needed)
+    # Install ALL packages — universal chroot (tries toybox, busybox, musl)
     log INFO "Installing packages..."
-    REPO_MAIN="https://dl-cdn.alpinelinux.org/alpine/v3.20/main"
-    REPO_COMMUNITY="https://dl-cdn.alpinelinux.org/alpine/v3.20/community"
-    LD_PATH=$(ls "$BUILDROOT"/lib/ld-musl-*.so.* 2>/dev/null | head -1)
-    APK="$BUILDROOT/sbin/apk"
-    if [ -n "$LD_PATH" ] && [ -x "$LD_PATH" ] && [ -x "$APK" ]; then
-        "$LD_PATH" "$APK" --root "$BUILDROOT" \
-            --repository "$REPO_MAIN" \
-            --repository "$REPO_COMMUNITY" \
-            --allow-untrusted \
-            add --no-cache python3 openssl openssh bash busybox shadow sshpass nginx 2>>"$LOG_FILE"
-        RET=$?
-    elif [ -x "$APK" ]; then
-        "$APK" --root "$BUILDROOT" \
-            --repository "$REPO_MAIN" \
-            --repository "$REPO_COMMUNITY" \
-            --allow-untrusted \
-            add --no-cache python3 openssl openssh bash busybox shadow sshpass nginx 2>>"$LOG_FILE"
-        RET=$?
-    else
-        die "apk not found in buildroot"
-    fi
+    APK_CMD="export PATH=/sbin:/usr/sbin:/bin:/usr/bin; apk update && apk add --no-cache python3 openssl openssh bash busybox shadow sshpass nginx"
+    _chroot_rootfs "$BUILDROOT" "$APK_CMD"
+    RET=$?
     umount "$BUILDROOT/proc" 2>/dev/null
-    [ $RET -ne 0 ] && die "Failed to install packages"
+    [ $RET -ne 0 ] && die "Failed to install packages (all chroot methods failed)"
     log OK "All packages installed"
 
     # Setup busybox symlinks
-    if [ -f "$BUILDROOT/bin/busybox" ]; then
-        if [ -n "$LD_PATH" ] && [ -x "$LD_PATH" ]; then
-            "$LD_PATH" "$BUILDROOT/bin/busybox" --install -s "$BUILDROOT/bin" 2>/dev/null || true
-        fi
-    fi
+    _chroot_rootfs "$BUILDROOT" "/bin/busybox --install -s /bin" 2>/dev/null || true
     [ ! -f "$BUILDROOT/bin/sh" ] && ln -sf /bin/busybox "$BUILDROOT/bin/sh" 2>/dev/null
 
     # Save as tarball
@@ -409,7 +422,7 @@ Subsystem sftp internal-sftp
 SSHEOF
 # Generate SSH host keys (needs /dev/urandom)
 mount -t proc proc "$ANKBASE/proc" 2>/dev/null
-chroot "$ANKBASE" /usr/bin/ssh-keygen -A 2>>"$LOG_FILE" || true
+_chroot_rootfs "$ANKBASE" "/usr/bin/ssh-keygen -A" 2>/dev/null || true
 umount "$ANKBASE/proc" 2>/dev/null
 mkdir -p "$ANKBASE/root/.ssh"
 chmod 700 "$ANKBASE/root/.ssh"
@@ -469,7 +482,7 @@ if [ -d "$ANKFS/etc/ssh" ]; then
     sed -i 's/^#\?ChallengeResponseAuthentication.*/ChallengeResponseAuthentication no/' "$ANKFS/etc/ssh/sshd_config" 2>/dev/null
     sed -i '/^UsePAM/d' "$ANKFS/etc/ssh/sshd_config" 2>/dev/null
     [ ! -f "$ANKFS/etc/ssh/ssh_host_rsa_key" ] && \
-        chroot "$ANKFS" /usr/bin/ssh-keygen -A 2>>"$LOG_FILE" || true
+        _chroot_rootfs "$ANKFS" "/usr/bin/ssh-keygen -A" 2>/dev/null || true
     mkdir -p "$ANKFS/root/.ssh"
     chmod 700 "$ANKFS/root/.ssh"
     touch "$ANKFS/root/.ssh/authorized_keys"
@@ -523,8 +536,8 @@ fi
 ANK_PASS=$(grep -o '"password":"[^"]*"' "$ANK_DIR/config.json" 2>/dev/null | head -1 | cut -d'"' -f4)
 [ -z "$ANK_PASS" ] && ANK_PASS="ank123"
 if [ -f "$ANKFS/usr/sbin/chpasswd" ] || [ -f "$ANKFS/usr/bin/chpasswd" ]; then
-    echo "root:${ANK_PASS}" | chroot "$ANKFS" /bin/sh -c "cat > /tmp/pw && chpasswd" 2>/dev/null || \
-    echo "root:${ANK_PASS}" | chroot "$ANKFS" /sbin/chpasswd 2>/dev/null || true
+    echo "root:${ANK_PASS}" | _chroot_rootfs "$ANKFS" "cat > /tmp/pw && chpasswd" 2>/dev/null || \
+    echo "root:${ANK_PASS}" | _chroot_rootfs "$ANKFS" "/sbin/chpasswd" 2>/dev/null || true
     log OK "root password set in ankfs"
 fi
 
