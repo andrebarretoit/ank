@@ -67,6 +67,7 @@
         <a class="notch-item" data-page="stacks"><i class="bi bi-layers"></i><span class="nav-label">Stacks</span></a>
         <a class="notch-item" data-page="backups"><i class="bi bi-cloud-arrow-up"></i><span class="nav-label">Backups</span></a>
         <a class="notch-item" data-page="networks"><i class="bi bi-globe2"></i><span class="nav-label">Networks</span></a>
+        <a class="notch-item" data-page="logs"><i class="bi bi-journal-text"></i><span class="nav-label">Logs</span></a>
         <a class="notch-item" data-page="settings"><i class="bi bi-gear"></i><span class="nav-label">Settings</span></a>
         <a class="notch-item" data-page="shell"><i class="bi bi-terminal"></i><span class="nav-label">Shell</span></a>
       </div>
@@ -90,6 +91,7 @@
       <a class="mobile-bar-item" data-page="stacks"><i class="bi bi-layers"></i><span>Stacks</span></a>
       <a class="mobile-bar-item" data-page="backups"><i class="bi bi-cloud-arrow-up"></i><span>Backups</span></a>
       <a class="mobile-bar-item" data-page="networks"><i class="bi bi-globe2"></i><span>Networks</span></a>
+      <a class="mobile-bar-item" data-page="logs"><i class="bi bi-journal-text"></i><span>Logs</span></a>
       <a class="mobile-bar-item" data-page="shell"><i class="bi bi-terminal"></i><span>Shell</span></a>
     </div>
 
@@ -156,10 +158,6 @@
       <div class="page-header">
         <div class="ph-left"><div class="ph-icon">ANK</div><h1>Containers</h1></div>
         <div class="header-actions">
-          <select class="form-select" id="container-node-filter" style="width:auto" onchange="loadContainers()">
-            <option value="all">All Nodes</option>
-            <option value="local">Local Only</option>
-          </select>
           <button class="btn btn-primary btn-sm" id="btn-create-container"><i class="bi bi-plus-lg"></i> Create</button>
           <button class="btn btn-secondary btn-sm" onclick="loadContainers()"><i class="bi bi-arrow-clockwise"></i></button>
           <button class="btn-logout" onclick="logout()"><i class="bi bi-box-arrow-right"></i> Logout</button>
@@ -264,6 +262,30 @@
       </div>
     </div>
 
+    <!-- ═══════ LOGS ═══════ -->
+    <div class="page" id="page-logs">
+      <div class="page-header">
+        <div class="ph-left"><div class="ph-icon">ANK</div><h1>Logs</h1></div>
+        <div class="header-actions">
+          <select class="form-select" id="log-node-selector" style="width:auto" onchange="loadLogs(false)">
+            <option value="local">Local</option>
+          </select>
+          <select class="form-select" id="log-filter" style="width:auto">
+            <option value="all">All logs</option>
+            <option value="server">Server</option>
+            <option value="container">Containers</option>
+          </select>
+          <button class="btn btn-secondary btn-sm" id="logs-pause-btn"><i class="bi bi-pause-fill"></i> Pause</button>
+          <button class="btn btn-secondary btn-sm" id="logs-clear-btn"><i class="bi bi-trash3"></i> Clear</button>
+          <button class="btn btn-secondary btn-sm" onclick="logsOffset=0;loadLogs(false)"><i class="bi bi-arrow-clockwise"></i></button>
+          <button class="btn-logout" onclick="logout()"><i class="bi bi-box-arrow-right"></i> Logout</button>
+        </div>
+      </div>
+      <div class="log-viewer" id="log-viewer">
+        <div class="log-empty"><i class="bi bi-terminal"></i><p>No logs yet</p></div>
+      </div>
+    </div>
+
     <!-- ═══════ SETTINGS ═══════ -->
     <div class="page" id="page-settings">
       <div class="page-header">
@@ -272,13 +294,77 @@
           <button class="btn-logout" onclick="logout()"><i class="bi bi-box-arrow-right"></i> Logout</button>
         </div>
       </div>
-      <div class="tabs" id="settings-tabs">
-        <div class="tab active" data-tab="general">General</div>
-        <div class="tab" data-tab="remote">Remote</div>
-        <div class="tab" data-tab="security">Security</div>
-        <div class="tab" data-tab="system">System</div>
+      <div class="settings-grid">
+        <div class="card">
+          <div class="card-header"><h3><i class="bi bi-person-gear"></i> Account</h3></div>
+          <div class="card-body">
+            <form id="password-form">
+              <div class="form-group"><label class="form-label">Current Password</label><input type="password" class="form-input" id="current-password" required></div>
+              <div class="form-group"><label class="form-label">Username</label><input type="text" class="form-input" id="new-username" autocomplete="off"></div>
+              <div class="form-group"><label class="form-label">New Password</label><input type="password" class="form-input" id="new-password" minlength="6"></div>
+              <button type="submit" class="btn btn-primary"><i class="bi bi-check-lg"></i> Save</button>
+            </form>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-header"><h3><i class="bi bi-server"></i> Server</h3></div>
+          <div class="card-body">
+            <form id="panel-settings-form">
+              <div class="form-group"><label class="form-label">Node Name</label><input type="text" class="form-input" id="setting-node-name" placeholder="e.g. ank-prod01" maxlength="30"><small class="form-hint">Identifies this server in the sidebar and on remote nodes</small></div>
+              <div class="form-row">
+                <div class="form-group"><label class="form-label">Bind Address</label><select class="form-select" id="setting-bind"><option value="0.0.0.0">0.0.0.0 (all)</option><option value="127.0.0.1">127.0.0.1</option></select></div>
+                <div class="form-group"><label class="form-label">Auto-Refresh</label><select class="form-select" id="setting-refresh"><option value="5">5s</option><option value="10" selected>10s</option><option value="30">30s</option><option value="60">60s</option><option value="0">Off</option></select></div>
+              </div>
+              <div class="form-group"><label class="checkbox-label" style="display:flex;align-items:center;gap:8px;cursor:pointer"><input type="checkbox" id="setting-autostart" style="width:18px;height:18px;accent-color:var(--accent)"><i class="bi bi-power" style="color:var(--accent)"></i> Start server on device boot</label></div>
+              <div class="form-group"><label class="form-label">Default Container Password</label><input type="password" class="form-input" id="setting-default-pass" placeholder="ank123" minlength="4"><small class="form-hint">Used when creating containers without specifying a password</small></div>
+              <button type="submit" class="btn btn-primary"><i class="bi bi-check-lg"></i> Save</button>
+            </form>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-header"><h3><i class="bi bi-diagram-3"></i> Remote Management & SSH</h3></div>
+          <div class="card-body">
+            <div class="form-group"><label class="checkbox-label" style="display:flex;align-items:center;gap:8px;cursor:pointer"><input type="checkbox" id="setting-remote-mgmt" style="width:18px;height:18px;accent-color:var(--accent)"><i class="bi bi-diagram-3" style="color:var(--accent)"></i> Enable Remote Management</label><small class="form-hint">Allow other ANK instances to pair with this node</small></div>
+            <div class="form-group" id="manager-ip-group" style="display:none"><label class="form-label">Manager IP / Range</label><input type="text" class="form-input" id="setting-manager-ip" placeholder="192.168.0.0/24 or 0.0.0.0" maxlength="30"><small class="form-hint">Single IP, CIDR range, or 0.0.0.0 (any)</small></div>
+            <hr style="border-color:var(--border);margin:12px 0">
+            <div class="form-group"><label class="checkbox-label" style="display:flex;align-items:center;gap:8px;cursor:pointer"><input type="checkbox" id="setting-ssh-enabled" checked style="width:18px;height:18px;accent-color:var(--accent)"><i class="bi bi-terminal" style="color:var(--accent)"></i> Enable SSH (Android host)</label><small class="form-hint">SSH server on port <span id="setting-ssh-port-display">2200</span> — same password as this panel</small></div>
+            <div class="form-group"><label class="form-label">SSH Port</label><input type="number" class="form-input" id="setting-ssh-port" value="2200" min="1024" max="65535"></div>
+            <button type="button" class="btn btn-primary" onclick="saveRemoteSSHSettings()"><i class="bi bi-check-lg"></i> Save</button>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-header"><h3><i class="bi bi-info-circle"></i> About</h3></div>
+          <div class="card-body">
+            <div class="info-grid">
+              <div class="info-item"><span class="info-label">Version</span><span>2.0.0</span></div>
+              <div class="info-item"><span class="info-label">Panel Port</span><span>8001</span></div>
+              <div class="info-item" style="grid-column:span 2"><span class="info-label">Credentials</span><span style="font-size:11px">/sdcard/AndroidKonteiner/CREDENCIAIS.txt</span></div>
+            </div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-header"><h3><i class="bi bi-database"></i> Cache</h3></div>
+          <div class="card-body">
+            <div class="info-grid">
+              <div class="info-item"><span class="info-label">Rootfs Size</span><span id="info-rootfs">-</span></div>
+              <div class="info-item"><span class="info-label">Containers Data</span><span id="info-containers-size">-</span></div>
+              <div class="info-item"><span class="info-label">Total Used</span><span id="info-total-size">-</span></div>
+              <div class="info-item"><span class="info-label">Device Free</span><span id="info-device-free">-</span></div>
+            </div>
+          </div>
+        </div>
+        <div class="card" style="border:1px solid var(--danger)">
+          <div class="card-header"><h3 style="color:var(--danger)"><i class="bi bi-exclamation-triangle"></i> Danger Zone</h3></div>
+          <div class="card-body">
+            <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">
+              <button type="button" class="btn btn-secondary" id="restart-server-btn"><i class="bi bi-arrow-repeat"></i> Restart Server</button>
+              <button type="button" class="btn btn-secondary" id="restart-device-btn"><i class="bi bi-phone"></i> Restart Device</button>
+            </div>
+            <p style="color:var(--text-secondary);font-size:13px;margin-bottom:12px">Completely remove ANK: all containers, images, configs, and network rules. This cannot be undone.</p>
+            <button type="button" class="btn btn-danger" id="uninstall-btn"><i class="bi bi-trash3"></i> Uninstall ANK</button>
+          </div>
+        </div>
       </div>
-      <div id="settings-content"></div>
     </div>
 
     <!-- ═══════ SHELL ═══════ -->
@@ -314,6 +400,140 @@
       </div>
       <div class="modal-body" id="modal-body"></div>
       <div class="modal-footer" id="modal-footer"></div>
+    </div>
+  </div>
+
+  <!-- CREATE CONTAINER MODAL -->
+  <div class="modal-overlay" id="create-modal-overlay">
+    <div class="modal wide">
+      <div class="modal-header">
+        <h3><i class="bi bi-plus-circle"></i> New Container</h3>
+        <button class="btn-icon btn-ghost" onclick="closeCreateModal()"><i class="bi bi-x-lg"></i></button>
+      </div>
+      <div class="modal-body">
+        <form id="create-form">
+          <div class="form-group"><label class="form-label">Node</label><select class="form-select" id="container-target-node"><option value="local">Local</option></select></div>
+          <div class="form-group"><label class="form-label">Name</label><input type="text" class="form-input" id="container-name" placeholder="my-container" required></div>
+          <div class="form-group"><label class="form-label">Image</label><select class="form-select" id="container-image"></select></div>
+          <div class="form-row">
+            <div class="form-group"><label class="form-label">Root Password</label><input type="password" class="form-input" id="container-root-password" placeholder="min 4 chars" required minlength="4"></div>
+            <div class="form-group"><label class="form-label">SSH Port</label><input type="number" class="form-input" id="container-ssh-port" placeholder="auto" min="1024" max="65535"></div>
+          </div>
+          <div class="form-row">
+            <div class="form-group"><label class="form-label">Memory Limit</label><select class="form-select" id="mem-limit"><option value="128M">128 MB</option><option value="256M" selected>256 MB</option><option value="512M">512 MB</option><option value="1G">1 GB</option></select></div>
+            <div class="form-group"><label class="form-label">CPU %</label><input type="number" class="form-input" id="cpu-limit" value="50" min="1" max="100"></div>
+          </div>
+          <div class="form-group"><label class="checkbox-label" style="display:flex;align-items:center;gap:8px;cursor:pointer"><input type="checkbox" id="container-autostart" style="width:18px;height:18px;accent-color:var(--accent)"><i class="bi bi-power" style="color:var(--accent)"></i> Autostart</label></div>
+          <div class="form-group">
+            <label class="form-label">Network Policies</label>
+            <div class="checkbox-group">
+              <label class="checkbox-label"><input type="checkbox" id="policy-p2p" style="accent-color:var(--accent)"><i class="bi bi-diagram-3"></i> P2P</label>
+              <label class="checkbox-label"><input type="checkbox" id="policy-host" style="accent-color:var(--accent)"><i class="bi bi-phone"></i> Host</label>
+              <label class="checkbox-label"><input type="checkbox" id="policy-internet" checked style="accent-color:var(--accent)"><i class="bi bi-globe"></i> Internet</label>
+            </div>
+          </div>
+          <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
+            <button type="button" class="btn btn-secondary" onclick="closeCreateModal()">Cancel</button>
+            <button type="submit" class="btn btn-primary"><i class="bi bi-plus-lg"></i> Create</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- NETWORK CONFIG MODAL -->
+  <div class="modal-overlay" id="network-modal-overlay">
+    <div class="modal">
+      <div class="modal-header">
+        <h3><i class="bi bi-hdd-network"></i> Configure Network</h3>
+        <button class="btn-icon btn-ghost" onclick="closeModalById('network-modal-overlay')"><i class="bi bi-x-lg"></i></button>
+      </div>
+      <div class="modal-body">
+        <form id="network-form">
+          <div class="form-group"><label class="form-label">Bridge Name</label><input type="text" class="form-input" id="net-bridge" value="ank0" required></div>
+          <div class="form-group"><label class="form-label">Subnet (CIDR /24)</label><input type="text" class="form-input" id="net-subnet" placeholder="10.20.30.0" required></div>
+          <div class="form-group"><label class="form-label">Gateway</label><input type="text" class="form-input" id="net-gateway" placeholder="10.20.30.1" required></div>
+          <div class="form-group"><label class="checkbox-label" style="display:flex;align-items:center;gap:8px;cursor:pointer"><input type="checkbox" id="net-nat" checked style="width:18px;height:18px;accent-color:var(--accent)"><i class="bi bi-arrow-left-right" style="color:var(--accent)"></i> Enable NAT (internet access)</label></div>
+          <p class="form-hint"><i class="bi bi-info-circle"></i> Subnet must not conflict with your LAN. Examples: 192.168.100.0, 10.20.30.0, 172.16.0.0</p>
+          <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
+            <button type="button" class="btn btn-secondary" onclick="closeModalById('network-modal-overlay')">Cancel</button>
+            <button type="submit" class="btn btn-primary"><i class="bi bi-check-lg"></i> Apply</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- CREATE STACK MODAL -->
+  <div class="modal-overlay" id="stack-modal-overlay">
+    <div class="modal">
+      <div class="modal-header">
+        <h3><i class="bi bi-stack"></i> New Stack</h3>
+        <button class="btn-icon btn-ghost" onclick="closeModalById('stack-modal-overlay')"><i class="bi bi-x-lg"></i></button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group"><label class="form-label">Stack Name</label><input type="text" class="form-input" id="stack-name" placeholder="my-stack" required></div>
+        <div class="form-group"><label class="form-label">Image</label><select class="form-select" id="stack-image" onchange="toggleStackAnkfile()"><option value="nginx">nginx</option><option value="apache">apache</option><option value="php">php</option><option value="node">node</option><option value="python">python</option><option value="ankfile">Custom (Ankfile)</option></select></div>
+        <div id="stack-ankfile-section" style="display:none"><div class="form-group"><label class="form-label">Ankfile</label><textarea class="ankfile-editor" id="stack-ankfile" rows="8" placeholder="FROM alpine-3.20&#10;PASSWD ank123&#10;RUN apk add --allow-untrusted nginx&#10;EXPOSE 8080"></textarea></div></div>
+        <div class="form-group"><label class="form-label">Instances</label><input type="number" class="form-input" id="stack-instances" value="1" min="1" max="10"></div>
+        <div class="form-group"><label class="form-label">LB Port (30000-39999)</label><input type="number" class="form-input" id="stack-lb-port" value="30000" min="30000" max="39999"></div>
+        <div class="form-group"><label class="checkbox-label" style="display:flex;align-items:center;gap:8px;cursor:pointer"><input type="checkbox" id="stack-volume" checked style="width:18px;height:18px;accent-color:var(--accent)"><i class="bi bi-hdd" style="color:var(--accent)"></i> Mount shared data/ volume</label></div>
+        <div class="form-group"><label class="form-label">Trigger (auto-scale)</label><select class="form-select" id="stack-trigger"><option value="none">Disabled</option><option value="requests">Requests/sec</option><option value="cpu">CPU</option><option value="mem">Memory</option></select></div>
+        <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
+          <button type="button" class="btn btn-secondary" onclick="closeModalById('stack-modal-overlay')">Cancel</button>
+          <button type="button" class="btn btn-primary" onclick="createStack()"><i class="bi bi-check-lg"></i> Create</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- CREATE BACKUP MODAL -->
+  <div class="modal-overlay" id="backup-modal-overlay">
+    <div class="modal">
+      <div class="modal-header">
+        <h3><i class="bi bi-cloud-arrow-up"></i> New Backup Routine</h3>
+        <button class="btn-icon btn-ghost" onclick="closeModalById('backup-modal-overlay')"><i class="bi bi-x-lg"></i></button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group"><label class="form-label">Routine Name</label><input type="text" class="form-input" id="backup-name" placeholder="routine-1" required></div>
+        <div class="form-group"><label class="form-label">Source Path</label><input type="text" class="form-input" id="backup-source" placeholder="/data/local/ank/stacks"></div>
+        <div class="form-group"><label class="form-label">Remote Host</label><input type="text" class="form-input" id="backup-remote-host" placeholder="192.168.1.100"></div>
+        <div class="form-group"><label class="form-label">Remote Path</label><input type="text" class="form-input" id="backup-remote-path" placeholder="/backups/ank"></div>
+        <div class="form-row">
+          <div class="form-group"><label class="form-label">SSH User</label><input type="text" class="form-input" id="backup-ssh-user" value="root"></div>
+          <div class="form-group"><label class="form-label">SSH Password</label><input type="password" class="form-input" id="backup-ssh-pass"></div>
+        </div>
+        <div class="form-row">
+          <div class="form-group"><label class="form-label">Schedule (cron)</label><input type="text" class="form-input" id="backup-schedule" placeholder="0 2 * * *"></div>
+          <div class="form-group"><label class="form-label">Retention (days)</label><input type="number" class="form-input" id="backup-retention" value="30" min="1"></div>
+        </div>
+        <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
+          <button type="button" class="btn btn-secondary" onclick="closeModalById('backup-modal-overlay')">Cancel</button>
+          <button type="button" class="btn btn-primary" onclick="createBackup()"><i class="bi bi-check-lg"></i> Create</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- UPLOAD MODAL -->
+  <div class="modal-overlay" id="upload-modal-overlay">
+    <div class="modal">
+      <div class="modal-header">
+        <h3><i class="bi bi-cloud-upload"></i> Upload to <span id="upload-container-name">-</span></h3>
+        <button class="btn-icon btn-ghost" onclick="closeModalById('upload-modal-overlay')"><i class="bi bi-x-lg"></i></button>
+      </div>
+      <div class="modal-body">
+        <div id="upload-drop-area" class="upload-area">
+          <i class="bi bi-cloud-arrow-up"></i>
+          <p>Drop files here or click to browse</p>
+          <p style="font-size:11px;color:var(--text-muted)">HTML, CSS, JS, images, or ZIP (auto-extracts)</p>
+          <input type="file" id="upload-file-input" multiple accept=".html,.css,.js,.json,.png,.jpg,.svg,.zip,.txt,.md" style="display:none">
+        </div>
+        <div id="upload-result" class="upload-progress"></div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" onclick="closeModalById('upload-modal-overlay')">Close</button>
+      </div>
     </div>
   </div>
 
