@@ -58,7 +58,7 @@ _ank_login() {
     local resp=$(curl -s -X POST -H "Content-Type: application/json" \
         -d "{\"username\":\"$user\",\"password\":\"$pass\"}" \
         "http://127.0.0.1:${ANK_PORT:-8001}/api/auth/login" 2>/dev/null)
-    ANK_TOKEN=$(echo "$resp" | python3 -c "import sys,json; print(json.load(sys.stdin).get('token',''))" 2>/dev/null)
+    ANK_TOKEN=$(echo "$resp" | grep -o '"token"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"token"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
     [ -n "$ANK_TOKEN" ] && return 0 || return 1
 }
 
@@ -124,18 +124,9 @@ _find_container_node() {
     local name="$1"
     local json=$(_api_get "/api/containers/all")
     [ -z "$json" ] && echo "local" && return
-    echo "$json" | python3 -c "
-import sys, json
-try:
-    data = json.load(sys.stdin)
-    for c in data:
-        if c.get('name') == '$name':
-            node = c.get('node', '') or 'local'
-            print(node)
-            sys.exit(0)
-    print('local')
-except: print('local')
-" 2>/dev/null
+    local node=$(echo "$json" | sed 's/},{/}\n{/g' | grep "\"name\"[[:space:]]*:[[:space:]]*\"$name\"" | grep -o '"node"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"$/\1/')
+    [ -z "$node" ] && node="local"
+    echo "$node"
 }
 
 # ============================================================
@@ -515,16 +506,16 @@ ank_ps() {
     local found=0
     if command -v curl >/dev/null 2>&1; then
         local json=$(_api_get "/api/containers/all")
-        if [ -n "$json" ] && [ "$json" != "null" ]; then
-            local i=0
-            while true; do
-                local name=$(echo "$json" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d[$i]['name'] if $i<len(d) else '');" 2>/dev/null)
-                [ -z "$name" ] && break
-                local status=$(echo "$json" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d[$i].get('status',''))" 2>/dev/null)
-                local ip=$(echo "$json" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d[$i].get('ip_address','N/A'))" 2>/dev/null)
-                local image=$(echo "$json" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d[$i].get('template_name') or d[$i].get('image',''))" 2>/dev/null)
-                local pid=$(echo "$json" | python3 -c "import sys,json; d=json.load(sys.stdin); p=d[$i].get('pid'); print(p if p else '-')" 2>/dev/null)
-                local node=$(echo "$json" | python3 -c "import sys,json; d=json.load(sys.stdin); n=d[$i].get('node','local'); print('local' if n=='local' else d[$i].get('node_alias',n[:8]))" 2>/dev/null)
+        if [ -n "$json" ] && echo "$json" | grep -q '"name"'; then
+            echo "$json" | sed 's/},{/}\n{/g' | while IFS= read -r obj; do
+                [ -z "$obj" ] && continue
+                local name=$(echo "$obj" | grep -o '"name"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"$/\1/')
+                local status=$(echo "$obj" | grep -o '"status"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"$/\1/')
+                local ip=$(echo "$obj" | grep -o '"ip_address"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"$/\1/')
+                local image=$(echo "$obj" | grep -o '"template_name"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"$/\1/')
+                [ -z "$image" ] && image=$(echo "$obj" | grep -o '"image"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"$/\1/')
+                local pid=$(echo "$obj" | grep -o '"pid"[[:space:]]*:[[:space:]]*[0-9]*' | head -1 | grep -o '[0-9]*$')
+                local node=$(echo "$obj" | grep -o '"node"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"$/\1/')
                 [ -z "$ip" ] && ip="N/A"
                 [ -z "$pid" ] && pid="-"
                 if [ "$node" != "local" ] && [ -n "$node" ]; then
@@ -533,7 +524,6 @@ ank_ps() {
                     _print_row "$name" "$status" "$ip" "$image" "$pid"
                 fi
                 found=1
-                i=$((i + 1))
             done
         fi
     fi
@@ -664,17 +654,7 @@ ank_logs() {
     if [ "$node" != "local" ]; then
         local json=$(_api_get "/api/nodes/${node}/containers/${name}/logs")
         if [ -n "$json" ]; then
-            echo "$json" | python3 -c "
-import sys, json
-try:
-    d = json.load(sys.stdin)
-    logs = d.get('logs', [])
-    if isinstance(logs, list):
-        for l in logs: print(l)
-    else:
-        print(logs)
-except: pass
-" 2>/dev/null
+            echo "$json" | grep -o '"logs"[[:space:]]*:[[:space:]]*"[^"]*"' | sed 's/.*"\([^"]*\)".*/\1/' | sed 's/\\n/\n/g'
         else
             echo "No logs for '$name' on remote node"
         fi
@@ -703,14 +683,10 @@ ank_exec() {
     if [ "$node" != "local" ]; then
         local json=$(_api_post "/api/nodes/${node}/containers/${name}/exec" "{\"command\":\"$cmd\"}")
         if [ -n "$json" ]; then
-            echo "$json" | python3 -c "
-import sys, json
-try:
-    d = json.load(sys.stdin)
-    print(d.get('stdout', ''))
-    if d.get('stderr'): print(d['stderr'], file=sys.stderr)
-except: pass
-" 2>/dev/null
+            local _stdout=$(echo "$json" | grep -o '"stdout"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"$/\1/')
+            local _stderr=$(echo "$json" | grep -o '"stderr"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"$/\1/')
+            echo "$_stdout"
+            [ -n "$_stderr" ] && echo "$_stderr" >&2
         else
             echo "Exec failed on remote node"
         fi
@@ -743,23 +719,31 @@ ank_inspect() {
     if [ "$node" != "local" ]; then
         local json=$(_api_get "/api/nodes/${node}/containers/${name}")
         if [ -n "$json" ] && [ "$json" != "{}" ]; then
-            echo "$json" | python3 -c "
-import sys, json
-try:
-    d = json.load(sys.stdin)
-    print(f'Name:       {d.get(\"name\", \"-\")}')
-    print(f'Status:     {d.get(\"status\", \"-\")}')
-    print(f'Node:       {_node_alias(\"$node\")}')
-    print(f'Image:      {d.get(\"template_name\") or d.get(\"image\", \"-\")}')
-    print(f'Mode:       {d.get(\"mode\", \"-\")}')
-    print(f'IP:         {d.get(\"ip_address\", \"N/A\")}')
-    print(f'PID:        {d.get(\"pid\") or \"N/A\"}')
-    r = d.get('resources', {})
-    print(f'Memory:     {r.get(\"memory_limit\", \"N/A\")}')
-    print(f'CPU:        {r.get(\"cpu_limit_percent\", \"N/A\")}%')
-    print(f'Created:    {d.get(\"created_at\", \"?\")}')
-except Exception as e: print(f'Error: {e}')
-" 2>/dev/null
+            local _name=$(echo "$json" | grep -o '"name"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"$/\1/')
+            local _status=$(echo "$json" | grep -o '"status"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"$/\1/')
+            local _image=$(echo "$json" | grep -o '"template_name"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"$/\1/')
+            [ -z "$_image" ] && _image=$(echo "$json" | grep -o '"image"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"$/\1/')
+            [ -z "$_image" ] && _image="-"
+            local _mode=$(echo "$json" | grep -o '"mode"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"$/\1/')
+            local _ip=$(echo "$json" | grep -o '"ip_address"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"$/\1/')
+            local _pid=$(echo "$json" | grep -o '"pid"[[:space:]]*:[[:space:]]*[0-9]*' | head -1 | grep -o '[0-9]*$')
+            [ -z "$_pid" ] && _pid="N/A"
+            local _mem=$(echo "$json" | grep -o '"memory_limit"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"$/\1/')
+            [ -z "$_mem" ] && _mem="N/A"
+            local _cpu=$(echo "$json" | grep -o '"cpu_limit_percent"[[:space:]]*:[[:space:]]*[0-9]*' | head -1 | grep -o '[0-9]*$')
+            [ -z "$_cpu" ] && _cpu="N/A"
+            local _created=$(echo "$json" | grep -o '"created_at"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"$/\1/')
+            [ -z "$_created" ] && _created="?"
+            printf "Name:       %s\n" "${_name:--}"
+            printf "Status:     %s\n" "${_status:--}"
+            printf "Node:       %s\n" "$(_node_alias "$node")"
+            printf "Image:      %s\n" "$_image"
+            printf "Mode:       %s\n" "${_mode:--}"
+            printf "IP:         %s\n" "${_ip:-N/A}"
+            printf "PID:        %s\n" "$_pid"
+            printf "Memory:     %s\n" "$_mem"
+            printf "CPU:        %s%%\n" "$_cpu"
+            printf "Created:    %s\n" "$_created"
         else
             echo "Container '$name' not found on remote node"
         fi
@@ -808,19 +792,24 @@ ank_images() {
     if [ -n "$json" ] && [ "$json" != "[]" ] && [ "$json" != "null" ]; then
         printf "%-25s %-12s %s\n" "NAME" "SIZE" "NODE"
         printf "%s\n" "--------------------------------------------------------------"
-        echo "$json" | python3 -c "
-import sys, json
-try:
-    data = json.load(sys.stdin)
-    for img in data:
-        name = img.get('name', img.get('id', '?'))
-        size = img.get('size', 0)
-        size_str = f'{size/(1024*1024):.1f} MB' if size and size > 0 else '-'
-        node = img.get('node', 'local')
-        node_str = 'local' if node == 'local' else img.get('node_alias', node[:8])
-        print(f'{name:25s} {size_str:12s} {node_str}')
-except: pass
-" 2>/dev/null
+        echo "$json" | sed 's/^\[{//;s/}\]$/\n/;s/},{/}\n{/g' | while IFS= read -r _obj; do
+            [ -z "$_obj" ] && continue
+            local _name=$(echo "$_obj" | grep -o '"name"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"$/\1/')
+            [ -z "$_name" ] && _name=$(echo "$_obj" | grep -o '"id"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"$/\1/')
+            [ -z "$_name" ] && _name="?"
+            local _size=$(echo "$_obj" | grep -o '"size"[[:space:]]*:[[:space:]]*[0-9]*' | head -1 | grep -o '[0-9]*$')
+            local _size_str="-"
+            if [ -n "$_size" ] && [ "$_size" -gt 0 ] 2>/dev/null; then
+                _size_str=$(awk "BEGIN {printf \"%.1f MB\", $_size/(1024*1024)}")
+            fi
+            local _node=$(echo "$_obj" | grep -o '"node"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"$/\1/')
+            local _node_str="local"
+            if [ -n "$_node" ] && [ "$_node" != "local" ]; then
+                _node_str=$(echo "$_obj" | grep -o '"node_alias"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"$/\1/')
+                [ -z "$_node_str" ] && _node_str="${_node:0:8}"
+            fi
+            printf '%-25s %-12s %s\n' "$_name" "$_size_str" "$_node_str"
+        done
     else
         echo "No images found."
     fi
@@ -1284,22 +1273,37 @@ ank_node_ls() {
     if [ -n "$json" ]; then
         printf "%-15s %-16s %-8s %-10s %-10s %s\n" "ALIAS" "IP" "PORT" "STATUS" "CPU" "RAM"
         printf "%s\n" "--------------------------------------------------------------------------"
-        echo "$json" | python3 -c "
-import sys, json
-try:
-    d = json.load(sys.stdin)
-    nodes = d.get('nodes', d) if isinstance(d, dict) else d
-    if not nodes: print('No nodes found.')
-    for n in nodes:
-        alias = n.get('alias') or n.get('ip', '?')
-        ip = n.get('ip', '?')
-        port = n.get('port', 8001)
-        status = n.get('status', '?')
-        cpu = f\"{n.get('cpu_percent', 0):.0f}%\" if status == 'online' else '-'
-        ram = f\"{n.get('mem_used_gb',0):.1f}/{n.get('mem_total_gb',0):.1f}GB\" if status == 'online' else '-'
-        print(f'{alias:15s} {ip:16s} {port:<8d} {status:10s} {cpu:10s} {ram}')
-except: print('No nodes found.')
-" 2>/dev/null
+        local _nodes_json=$(echo "$json" | grep -o '"nodes"[[:space:]]*:[[:space:]]*\[.*\]' 2>/dev/null)
+        if [ -n "$_nodes_json" ]; then
+            _nodes_json=$(echo "$_nodes_json" | sed 's/.*"nodes"[[:space:]]*:[[:space:]]*//')
+        else
+            _nodes_json="$json"
+        fi
+        local _found=0
+        echo "$_nodes_json" | sed 's/^\[{//;s/}\]$/\n/;s/},{/}\n{/g' | while IFS= read -r _obj; do
+            [ -z "$_obj" ] && continue
+            _found=1
+            local _alias=$(echo "$_obj" | grep -o '"alias"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"$/\1/')
+            [ -z "$_alias" ] && _alias=$(echo "$_obj" | grep -o '"ip"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"$/\1/')
+            [ -z "$_alias" ] && _alias="?"
+            local _ip=$(echo "$_obj" | grep -o '"ip"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"$/\1/')
+            [ -z "$_ip" ] && _ip="?"
+            local _port=$(echo "$_obj" | grep -o '"port"[[:space:]]*:[[:space:]]*[0-9]*' | head -1 | grep -o '[0-9]*$')
+            [ -z "$_port" ] && _port=8001
+            local _status=$(echo "$_obj" | grep -o '"status"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"$/\1/')
+            [ -z "$_status" ] && _status="?"
+            local _cpu="-"
+            local _ram="-"
+            if [ "$_status" = "online" ]; then
+                local _cpupct=$(echo "$_obj" | grep -o '"cpu_percent"[[:space:]]*:[[:space:]]*[0-9.]*' | head -1 | grep -o '[0-9.]*$')
+                [ -n "$_cpupct" ] && _cpu=$(printf "%.0f%%" "$_cpupct" 2>/dev/null || echo "${_cpupct}%")
+                local _mem_used=$(echo "$_obj" | grep -o '"mem_used_gb"[[:space:]]*:[[:space:]]*[0-9.]*' | head -1 | grep -o '[0-9.]*$')
+                local _mem_total=$(echo "$_obj" | grep -o '"mem_total_gb"[[:space:]]*:[[:space:]]*[0-9.]*' | head -1 | grep -o '[0-9.]*$')
+                _ram="${_mem_used:-0}/${_mem_total:-0}GB"
+            fi
+            printf '%-15s %-16s %-8s %-10s %-10s %s\n' "$_alias" "$_ip" "$_port" "$_status" "$_cpu" "$_ram"
+        done
+        [ -z "$_nodes_json" ] && echo "No nodes found."
     else
         echo "No nodes found."
     fi
@@ -1334,21 +1338,26 @@ ank_node_inspect() {
         echo "Fetching live status..."
         local info=$(_api_get "/api/nodes/${node_id}/status")
         if [ -n "$info" ]; then
-            echo "$info" | python3 -c "
-import sys, json
-try:
-    d = json.load(sys.stdin)
-    cpu = d.get('cpu_usage', '-')
-    disk = d.get('disk', {})
-    uptime = d.get('uptime', 0)
-    running = d.get('containers_running', 0)
-    total = d.get('containers_total', 0)
-    print(f'CPU:      {cpu}%')
-    print(f'Disk:     {disk.get(\"used\",\"?\")} / {disk.get(\"total\",\"?\")} GB')
-    print(f'Uptime:   {uptime}s')
-    print(f'Containers: {running} running / {total - running} stopped')
-except: pass
-" 2>/dev/null
+            local _cpu=$(echo "$info" | grep -o '"cpu_usage"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"$/\1/')
+            [ -z "$_cpu" ] && _cpu=$(echo "$info" | grep -o '"cpu_usage"[[:space:]]*:[[:space:]]*[0-9.]*' | head -1 | grep -o '[0-9.]*$')
+            [ -z "$_cpu" ] && _cpu="-"
+            local _disk_used=$(echo "$info" | grep -o '"used"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"$/\1/')
+            [ -z "$_disk_used" ] && _disk_used=$(echo "$info" | grep -o '"used"[[:space:]]*:[[:space:]]*[0-9.]*' | head -1 | grep -o '[0-9.]*$')
+            [ -z "$_disk_used" ] && _disk_used="?"
+            local _disk_total=$(echo "$info" | grep -o '"total"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"$/\1/')
+            [ -z "$_disk_total" ] && _disk_total=$(echo "$info" | grep -o '"total"[[:space:]]*:[[:space:]]*[0-9.]*' | head -1 | grep -o '[0-9.]*$')
+            [ -z "$_disk_total" ] && _disk_total="?"
+            local _uptime=$(echo "$info" | grep -o '"uptime"[[:space:]]*:[[:space:]]*[0-9]*' | head -1 | grep -o '[0-9]*$')
+            [ -z "$_uptime" ] && _uptime=0
+            local _running=$(echo "$info" | grep -o '"containers_running"[[:space:]]*:[[:space:]]*[0-9]*' | head -1 | grep -o '[0-9]*$')
+            [ -z "$_running" ] && _running=0
+            local _total=$(echo "$info" | grep -o '"containers_total"[[:space:]]*:[[:space:]]*[0-9]*' | head -1 | grep -o '[0-9]*$')
+            [ -z "$_total" ] && _total=0
+            local _stopped=$(( _total - _running ))
+            printf 'CPU:      %s%%\n' "$_cpu"
+            printf 'Disk:     %s / %s GB\n' "$_disk_used" "$_disk_total"
+            printf 'Uptime:   %ss\n' "$_uptime"
+            printf 'Containers: %s running / %s stopped\n' "$_running" "$_stopped"
         fi
     fi
 }
@@ -1990,35 +1999,47 @@ _validate_ankfile() {
 ank_core_status() {
     local json=$(_api_get "/api/system/dashboard")
     if [ -n "$json" ]; then
-        echo "$json" | python3 -c "
-import sys, json
-try:
-    d = json.load(sys.stdin)
-    local = d.get('local', {})
-    cluster = d.get('cluster')
-    nodes = d.get('nodes', [])
-    ver = d.get('version', '?')
+        local _ver=$(echo "$json" | grep -o '"version"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"$/\1/')
+        [ -z "$_ver" ] && _ver="?"
+        local _local=$(echo "$json" | grep -o '"local"[[:space:]]*:[[:space:]]*{[^}]*}')
+        local _cluster=$(echo "$json" | grep -o '"cluster"[[:space:]]*:[[:space:]]*{[^}]*}')
 
-    print(f'ANK Engine v{ver}')
-    print(f'')
-    print(f'--- Local ---')
-    print(f'Containers: {local.get(\"containers_running\",0)} running / {local.get(\"containers_stopped\",0)} stopped')
-    print(f'CPU:        {local.get(\"cpu_cores\",0)} cores @ {local.get(\"cpu_percent\",0)}%')
-    print(f'Stacks:     {local.get(\"stacks\",0)}')
+        echo "ANK Engine v${_ver}"
+        echo ""
+        echo "--- Local ---"
+        local _lr=$(echo "$_local" | grep -o '"containers_running"[[:space:]]*:[[:space:]]*[0-9]*' | head -1 | grep -o '[0-9]*$')
+        local _ls=$(echo "$_local" | grep -o '"containers_stopped"[[:space:]]*:[[:space:]]*[0-9]*' | head -1 | grep -o '[0-9]*$')
+        printf "Containers: %s running / %s stopped\n" "${_lr:-0}" "${_ls:-0}"
+        local _lcc=$(echo "$_local" | grep -o '"cpu_cores"[[:space:]]*:[[:space:]]*[0-9]*' | head -1 | grep -o '[0-9]*$')
+        local _lcp=$(echo "$_local" | grep -o '"cpu_percent"[[:space:]]*:[[:space:]]*[0-9]*' | head -1 | grep -o '[0-9]*$')
+        printf "CPU:        %s cores @ %s%%\n" "${_lcc:-0}" "${_lcp:-0}"
+        local _lsk=$(echo "$_local" | grep -o '"stacks"[[:space:]]*:[[:space:]]*[0-9]*' | head -1 | grep -o '[0-9]*$')
+        printf "Stacks:     %s\n" "${_lsk:-0}"
 
-    if cluster:
-        print(f'')
-        print(f'--- Cluster ---')
-        print(f'Nodes:      {len(nodes)} total')
-        print(f'Containers: {cluster.get(\"containers_running\",0)} running / {cluster.get(\"containers_total\",0) - cluster.get(\"containers_running\",0)} stopped ({cluster.get(\"containers_total\",0)} total)')
-        print(f'CPU:        {cluster.get(\"cpu_cores\",0)} cores @ {cluster.get(\"cpu_percent\",0)}% avg')
-        print(f'RAM:        {cluster.get(\"ram_used_gb\",0):.1f} / {cluster.get(\"ram_total_gb\",0):.1f} GB ({cluster.get(\"ram_percent\",0):.0f}% avg)')
-        print(f'Disk:       {cluster.get(\"disk_used_gb\",0):.1f} / {cluster.get(\"disk_total_gb\",0):.1f} GB ({cluster.get(\"disk_percent\",0):.0f}% avg)')
-    else:
-        print(f'')
-        print(f'Cluster:    not configured (single node)')
-except: print('Error reading dashboard')
-" 2>/dev/null
+        if [ -n "$_cluster" ]; then
+            echo ""
+            echo "--- Cluster ---"
+            local _nodes_count=$(echo "$json" | grep -o '"ip"[[:space:]]*:[[:space:]]*"[^"]*"' | wc -l)
+            printf "Nodes:      %s total\n" "$_nodes_count"
+            local _cr=$(echo "$_cluster" | grep -o '"containers_running"[[:space:]]*:[[:space:]]*[0-9]*' | head -1 | grep -o '[0-9]*$')
+            local _ct=$(echo "$_cluster" | grep -o '"containers_total"[[:space:]]*:[[:space:]]*[0-9]*' | head -1 | grep -o '[0-9]*$')
+            local _cstopped=$(( ${_ct:-0} - ${_cr:-0} ))
+            printf "Containers: %s running / %s stopped (%s total)\n" "${_cr:-0}" "$_cstopped" "${_ct:-0}"
+            local _ccc=$(echo "$_cluster" | grep -o '"cpu_cores"[[:space:]]*:[[:space:]]*[0-9]*' | head -1 | grep -o '[0-9]*$')
+            local _ccp=$(echo "$_cluster" | grep -o '"cpu_percent"[[:space:]]*:[[:space:]]*[0-9]*' | head -1 | grep -o '[0-9]*$')
+            printf "CPU:        %s cores @ %s%% avg\n" "${_ccc:-0}" "${_ccp:-0}"
+            local _cru=$(echo "$_cluster" | grep -o '"ram_used_gb"[[:space:]]*:[[:space:]]*[0-9.]*' | head -1 | grep -o '[0-9.]*$')
+            local _crt=$(echo "$_cluster" | grep -o '"ram_total_gb"[[:space:]]*:[[:space:]]*[0-9.]*' | head -1 | grep -o '[0-9.]*$')
+            local _crp=$(echo "$_cluster" | grep -o '"ram_percent"[[:space:]]*:[[:space:]]*[0-9.]*' | head -1 | grep -o '[0-9.]*$')
+            printf "RAM:        %s / %s GB (%s%% avg)\n" "${_cru:-0}" "${_crt:-0}" "${_crp:-0}"
+            local _cdu=$(echo "$_cluster" | grep -o '"disk_used_gb"[[:space:]]*:[[:space:]]*[0-9.]*' | head -1 | grep -o '[0-9.]*$')
+            local _cdt=$(echo "$_cluster" | grep -o '"disk_total_gb"[[:space:]]*:[[:space:]]*[0-9.]*' | head -1 | grep -o '[0-9.]*$')
+            local _cdp=$(echo "$_cluster" | grep -o '"disk_percent"[[:space:]]*:[[:space:]]*[0-9.]*' | head -1 | grep -o '[0-9.]*$')
+            printf "Disk:       %s / %s GB (%s%% avg)\n" "${_cdu:-0}" "${_cdt:-0}" "${_cdp:-0}"
+        else
+            echo ""
+            echo "Cluster:    not configured (single node)"
+        fi
     else
         echo "ANK server not responding"
     fi
@@ -2131,24 +2152,37 @@ ank_core_info() {
 
     local dash=$(_api_get "/api/system/dashboard")
     if [ -n "$dash" ]; then
-        echo "$dash" | python3 -c "
-import sys, json
-try:
-    d = json.load(sys.stdin)
-    nodes = d.get('nodes', [])
-    if nodes:
-        print(f'')
-        print(f' ── Cluster ({len(nodes)} nodes) ───────────────')
-        for n in nodes:
-            status_icon = '+' if n.get('status') == 'online' else '-'
-            alias = n.get('alias') or n.get('ip', '?')
-            cpu = f\"{n.get('cpu_percent',0):.0f}%\" if n.get('status') == 'online' else '-'
-            ram = f\"{n.get('mem_used_gb',0):.1f}/{n.get('mem_total_gb',0):.1f}GB\" if n.get('status') == 'online' else '-'
-            cont = f\"{n.get('containers_running',0)}/{n.get('containers',0)}\" if n.get('status') == 'online' else '-'
-            print(f'  [{status_icon}] {alias:15s} CPU:{cpu:5s} RAM:{ram:12s} Containers:{cont}')
-        print(f' ──────────────────────────────────────────────')
-except: pass
-" 2>/dev/null
+        local _nodes_json=$(echo "$dash" | grep -o '"nodes"[[:space:]]*:[[:space:]]*\[.*\]' 2>/dev/null)
+        if [ -n "$_nodes_json" ]; then
+            _nodes_json=$(echo "$_nodes_json" | sed 's/.*"nodes"[[:space:]]*:[[:space:]]*//')
+            local _ncount=$(echo "$_nodes_json" | grep -o '{' | wc -l)
+            echo ""
+            echo " ── Cluster ($_ncount nodes) ───────────────"
+            echo "$_nodes_json" | sed 's/^\[{//;s/}\]$/\n/;s/},{/}\n{/g' | while IFS= read -r _obj; do
+                [ -z "$_obj" ] && continue
+                local _status=$(echo "$_obj" | grep -o '"status"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"$/\1/')
+                local _icon="+"
+                [ "$_status" != "online" ] && _icon="-"
+                local _alias=$(echo "$_obj" | grep -o '"alias"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"$/\1/')
+                [ -z "$_alias" ] && _alias=$(echo "$_obj" | grep -o '"ip"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"$/\1/')
+                [ -z "$_alias" ] && _alias="?"
+                local _cpu="-"
+                local _ram="-"
+                local _cont="-"
+                if [ "$_status" = "online" ]; then
+                    local _cpupct=$(echo "$_obj" | grep -o '"cpu_percent"[[:space:]]*:[[:space:]]*[0-9.]*' | head -1 | grep -o '[0-9.]*$')
+                    [ -n "$_cpupct" ] && _cpu=$(printf "%.0f%%" "$_cpupct" 2>/dev/null || echo "${_cpupct}%")
+                    local _mem_used=$(echo "$_obj" | grep -o '"mem_used_gb"[[:space:]]*:[[:space:]]*[0-9.]*' | head -1 | grep -o '[0-9.]*$')
+                    local _mem_total=$(echo "$_obj" | grep -o '"mem_total_gb"[[:space:]]*:[[:space:]]*[0-9.]*' | head -1 | grep -o '[0-9.]*$')
+                    _ram="${_mem_used:-0}/${_mem_total:-0}GB"
+                    local _cr=$(echo "$_obj" | grep -o '"containers_running"[[:space:]]*:[[:space:]]*[0-9]*' | head -1 | grep -o '[0-9]*$')
+                    local _ct=$(echo "$_obj" | grep -o '"containers"[[:space:]]*:[[:space:]]*[0-9]*' | head -1 | grep -o '[0-9]*$')
+                    _cont="${_cr:-0}/${_ct:-0}"
+                fi
+                printf '  [%s] %-15s CPU:%-5s RAM:%-12s Containers:%s\n' "$_icon" "$_alias" "$_cpu" "$_ram" "$_cont"
+            done
+            echo " ──────────────────────────────────────────────"
+        fi
     fi
 }
 

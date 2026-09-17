@@ -217,10 +217,13 @@ if [ "$SSH_ENABLED" = "1" ] && [ -f "$ROOTFS/usr/sbin/sshd" ]; then
         elif [ -x /system/bin/ssh-keygen ]; then
             /system/bin/ssh-keygen -t rsa -b 3072 -f "$ROOTFS/etc/ssh/ssh_host_rsa_key" -N "" -q 2>/dev/null
             /system/bin/ssh-keygen -t ed25519 -f "$ROOTFS/etc/ssh/ssh_host_ed25519_key" -N "" -q 2>/dev/null
-        else
-            log "WARN: No ssh-keygen found on host, host keys not generated"
+        elif [ -f "$ROOTFS/usr/bin/ssh-keygen" ] && [ -f "$ROOTFS/lib/ld-musl-armhf.so.1" ]; then
+            # Fallback: run ankfs ssh-keygen via musl loader (host can execute musl static-linked bins)
+            MUSL="$ROOTFS/lib/ld-musl-armhf.so.1"
+            "$MUSL" "$ROOTFS/usr/bin/ssh-keygen" -t rsa -b 3072 -f "$ROOTFS/etc/ssh/ssh_host_rsa_key" -N "" -q 2>/dev/null
+            "$MUSL" "$ROOTFS/usr/bin/ssh-keygen" -t ed25519 -f "$ROOTFS/etc/ssh/ssh_host_ed25519_key" -N "" -q 2>/dev/null
         fi
-        [ -f "$ROOTFS/etc/ssh/ssh_host_rsa_key" ] && log "Host keys generated on host" || log "WARN: Host key generation failed"
+        [ -f "$ROOTFS/etc/ssh/ssh_host_rsa_key" ] && log "Host keys generated" || log "WARN: Host key generation failed"
     fi
 
     # Start sshd (no -D: sshd daemonizes itself via fork, survives parent exit)
