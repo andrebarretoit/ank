@@ -2047,6 +2047,7 @@ async function loadTaskManager() {
         api('GET', `/containers/${currentContainer.name}/services`),
         api('GET', `/containers/${currentContainer.name}/health`).catch(() => null)
       ]);
+    }
     const services = data.services || [];
     const containerStatus = currentContainer.status || 'stopped';
     const isRunning = containerStatus === 'running';
