@@ -856,6 +856,140 @@ def _ws_node_shell_relay(handler, node_id, cols=80, rows=24):
             pass
     finally:
         if remote_sock:
+        try:
+            remote_sock.close()
+        except Exception:
+            pass
+    try:
+        _ws_send_close(client_sock)
+    except Exception:
+        pass
+
+def _ws_node_container_terminal_relay(handler, node_id, container_name, cols=80, rows=24):
+    """Relay a browser WebSocket terminal session to a remote node's container terminal."""
+    client_sock = handler.request
+    nm = handler._get_node_manager()
+    conn = nm.get_node_connection(node_id) if nm else None
+    if not conn or not conn.get("ip"):
+        _ws_send_text(client_sock, f"\r\nERROR: Node '{node_id}' not found\r\n")
+        _ws_send_close(client_sock)
+        return
+    if conn.get("status") != "online":
+        _ws_send_text(client_sock, f"\r\nERROR: Node '{node_id}' is offline\r\n")
+        _ws_send_close(client_sock)
+        return
+
+    import socket as _socket
+
+    remote_sock = None
+    try:
+        ip = conn["ip"]
+        port = int(conn.get("port", 8001))
+        token = conn.get("token", "")
+
+        remote_sock = _socket.create_connection((ip, port), timeout=10)
+        ws_key = base64.b64encode(secrets.token_bytes(16)).decode()
+        path = f"/ws/terminal/{container_name}?cols={cols}&rows={rows}&token={token}"
+        handshake = (
+            f"GET {path} HTTP/1.1\r\n"
+            f"Host: {ip}:{port}\r\n"
+            f"Upgrade: websocket\r\n"
+            f"Connection: Upgrade\r\n"
+            f"Sec-WebSocket-Key: {ws_key}\r\n"
+            f"Sec-WebSocket-Version: 13\r\n"
+            f"\r\n"
+        )
+        remote_sock.sendall(handshake.encode("utf-8"))
+
+        buf = b""
+        while b"\r\n\r\n" not in buf:
+            chunk = remote_sock.recv(4096)
+            if not chunk:
+                raise ConnectionError("Remote node closed connection during handshake")
+            buf += chunk
+        header_part, _, leftover = buf.partition(b"\r\n\r\n")
+        status_line = header_part.split(b"\r\n", 1)[0].decode("utf-8", "replace")
+        if " 101 " not in status_line:
+            raise ConnectionError(f"Remote node rejected WebSocket upgrade: {status_line}")
+
+        running = [True]
+        pending = bytearray(leftover)
+
+        def _remote_recv_exact(n):
+            while len(pending) < n:
+                chunk = remote_sock.recv(max(4096, n - len(pending)))
+                if not chunk:
+                    return None
+                pending.extend(chunk)
+            data = bytes(pending[:n])
+            del pending[:n]
+            return data
+
+        def _read_remote_frame():
+            head = _remote_recv_exact(2)
+            if not head:
+                return None, None
+            b0, b1 = struct.unpack("!BB", head)
+            opcode = b0 & 0x0F
+            masked = bool(b1 & 0x80)
+            length = b1 & 0x7F
+            if length == 126:
+                ext = _remote_recv_exact(2)
+                if not ext:
+                    return None, None
+                length = struct.unpack("!H", ext)[0]
+            elif length == 127:
+                ext = _remote_recv_exact(8)
+                if not ext:
+                    return None, None
+                length = struct.unpack("!Q", ext)[0]
+            mask_key = _remote_recv_exact(4) if masked else None
+            payload = _remote_recv_exact(length) if length else b""
+            if payload is None:
+                return None, None
+            if mask_key:
+                payload = bytes(b ^ mask_key[i % 4] for i, b in enumerate(payload))
+            return opcode, payload
+
+        def relay_remote_to_client():
+            while running[0]:
+                try:
+                    opcode, payload = _read_remote_frame()
+                except Exception:
+                    break
+                if opcode is None:
+                    break
+                if opcode == 0x8:
+                    break
+                if opcode in (0x1, 0x2):
+                    try:
+                        _ws_send_frame(client_sock, opcode, payload)
+                    except Exception:
+                        break
+            running[0] = False
+
+        t = threading.Thread(target=relay_remote_to_client, daemon=True)
+        t.start()
+
+        while running[0]:
+            opcode, payload = _ws_read_frame_rsock(client_sock)
+            if opcode is None:
+                break
+            if opcode == 0x8:
+                break
+            if opcode in (0x1, 0x2):
+                try:
+                    _ws_send_frame(remote_sock, opcode, payload)
+                except Exception:
+                    break
+        running[0] = False
+    except Exception as e:
+        try:
+            _ws_send_text(client_sock, f"\r\nERROR: {str(e)}\r\n")
+        except Exception:
+            pass
+    finally:
+        if remote_sock:
             try:
                 remote_sock.close()
             except Exception:
@@ -1359,6 +1493,44 @@ small{color:#334155}
             except Exception:
                 pass
             _ws_node_shell_relay(self, node_id, cols, rows)
+            return
+
+        # WebSocket relay for remote container terminal
+        if path.startswith("/ws/node-terminal/"):
+            self._is_websocket = True
+            upgrade = self.headers.get("Upgrade", "").lower()
+            ws_key = self.headers.get("Sec-WebSocket-Key", "")
+            if upgrade != "websocket" or not ws_key:
+                self._ws_send_error(400, "Invalid WebSocket upgrade request")
+                return
+            qs = parse_qs(parsed.query)
+            ws_token = qs.get("token", [None])[0]
+            if not _validate_token(ws_token):
+                log(f"WS_NODE_TERMINAL: auth failed from {self.client_address[0]}")
+                self._ws_send_error(401, "Unauthorized")
+                return
+            parts = path.split("/")
+            node_id = parts[3]
+            container_name = parts[4] if len(parts) > 4 else ""
+            accept = _ws_accept_key(ws_key)
+            rsock = self.request
+            resp = (
+                b"HTTP/1.1 101 Switching Protocols\r\n"
+                b"Upgrade: websocket\r\n"
+                b"Connection: Upgrade\r\n"
+                b"Sec-WebSocket-Accept: " + accept.encode() + b"\r\n"
+                b"X-Content-Type-Options: nosniff\r\n"
+                b"\r\n"
+            )
+            rsock.sendall(resp)
+            cols = 80
+            rows = 24
+            try:
+                cols = int(qs.get("cols", [80])[0])
+                rows = int(qs.get("rows", [24])[0])
+            except Exception:
+                pass
+            _ws_node_container_terminal_relay(self, node_id, container_name, cols, rows)
             return
 
         # WebSocket upgrade for terminal

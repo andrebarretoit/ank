@@ -432,21 +432,6 @@ def _ankd_port_open(name):
         return None
     port = config.get("ankd_port")
     if not port:
-        # Fallback: check PID, then try common ankd ports
-        pid_alive = _pid_alive(name)
-        if pid_alive:
-            return True
-        # Try common ankd ports as last resort
-        for fallback_port in [50000, 50001, 50002]:
-            try:
-                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                s.settimeout(1)
-                result = s.connect_ex(("127.0.0.1", fallback_port))
-                s.close()
-                if result == 0:
-                    return True
-            except Exception:
-                pass
         return None
     import socket
     try:
