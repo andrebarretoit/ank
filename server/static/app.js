@@ -77,7 +77,7 @@ async function customModal(title, fields) {
     let html = fields.map(f => {
       if (f.type === 'select') return `<div class="form-group"><label class="form-label">${esc(f.label)}</label><select class="form-select" id="_cm-${f.id}">${f.options}</select></div>`;
       if (f.type === 'textarea') return `<div class="form-group"><label class="form-label">${esc(f.label)}</label><textarea class="form-input" id="_cm-${f.id}" rows="6" placeholder="${esc(f.placeholder||f.label)}">${esc(f.value||'')}</textarea></div>`;
-      return `<div class="form-group"><label class="form-label">${esc(f.label)}</label><input class="form-input" id="_cm-${f.id}" type="${f.type||'text'}" value="${esc(f.value||'')}" placeholder="${esc(f.label)}"></div>`;
+      return `<div class="form-group"><label class="form-label">${esc(f.label)}</label><input class="form-input" id="_cm-${f.id}" type="${f.type||'text'}" value="${esc(f.value||'')}" placeholder="${esc(f.placeholder||f.label)}">${f.hint?`<small class="form-hint">${esc(f.hint)}</small>`:''}</div>`;
     }).join('');
     html += `<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px"><button class="btn btn-secondary" id="_cm-cancel">Cancel</button><button class="btn btn-primary" id="_cm-ok">OK</button></div>`;
     openModal(title, html);
