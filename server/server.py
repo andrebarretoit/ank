@@ -244,14 +244,41 @@ def save_container_config(name, config):
     except Exception:
         pass
 
-def _ank_service_uuid(container_name, service_name):
-    """Look up a service's generated-script uuid by scanning
-    merged/etc/ankd/services for '<uuid>-<service_name>.sh'."""
-    generated_dir = os.path.join(CONTAINERS_DIR, container_name, "merged", "etc", "ankd", "services")
+def _ank_find_service_uuid(container_name, service_name):
+    """Find a service's uuid by scanning generated scripts in
+    merged/etc/ankd/services/ for '<uuid>-<service_name>.sh'.
+    Also checks the .ankd files in services.d/ to resolve service
+    names when the generated script uses the NAME field."""
+    merged = os.path.join(CONTAINERS_DIR, container_name, "merged")
+    generated_dir = os.path.join(merged, "etc", "ankd", "services")
+    services_d = os.path.join(merged, "etc", "ankd", "services.d")
+    # Pass 1: direct match on generated script filename
     try:
         for f in os.listdir(generated_dir):
             if f.endswith(f"-{service_name}.sh"):
                 return f.split("-", 1)[0]
+    except OSError:
+        pass
+    # Pass 2: resolve service NAME from .ankd files, then match
+    try:
+        for ank_file in os.listdir(services_d):
+            if not ank_file.endswith(".ankd"):
+                continue
+            ank_path = os.path.join(services_d, ank_file)
+            try:
+                with open(ank_path) as af:
+                    for line in af:
+                        if line.startswith("NAME="):
+                            name_val = line.split("=", 1)[1].strip()
+                            if name_val == service_name:
+                                # Extract order prefix from .ankd filename (e.g. "01-sshd.ankd" -> "01")
+                                order = ank_file.split("-")[0] if "-" in ank_file else ""
+                                # Look for matching generated script with same order prefix
+                                for f in os.listdir(generated_dir):
+                                    if f.startswith(order + "-") and f.endswith(".sh"):
+                                        return f.split("-", 1)[0]
+            except OSError:
+                continue
     except OSError:
         pass
     return None
@@ -263,7 +290,7 @@ def _ank_stop_service_pgid(container_name, service_name):
     the recorded pid is simultaneously its process-group id: os.killpg
     takes down the master and every forked child (e.g. nginx workers) in
     one call, with no ps/pgrep subprocess calls and no /proc scanning."""
-    uuid = _ank_service_uuid(container_name, service_name)
+    uuid = _ank_find_service_uuid(container_name, service_name)
     if not uuid:
         return False
     pgid_file = os.path.join(CONTAINERS_DIR, container_name, "merged", "etc", "ankd", "pids", f"{uuid}.pgid")
@@ -2503,14 +2530,16 @@ small{color:#334155}
             return
         if action in ("start", "restart"):
             if action == "restart":
-                # Stop first
                 _ank_stop_service_pgid(name, service)
-            # Start via ankd exec
-            output, code = run_script("container.sh", "exec", name, f"/usr/ankd/core/ankd.sh start {service}")
-            if code != 0:
-                self.send_error(500, f"Failed to start service: {output}")
-                return
-            self.send_json({"message": f"Service '{service}' started"})
+            # Start via ankd exec — run async to avoid hanging the API
+            def _do_service_start():
+                try:
+                    run_script("container.sh", "exec", name, f"/usr/ankd/core/ankd.sh start {service}", timeout=30)
+                except Exception:
+                    pass
+            import threading
+            threading.Thread(target=_do_service_start, daemon=True).start()
+            self.send_json({"message": f"Service '{service}' starting"})
 
     def api_service_tail(self, name, service, data=None):
         """Tail a service's log via ankd. Returns last N lines."""
@@ -2545,19 +2574,49 @@ small{color:#334155}
             return
         merged = os.path.join(CONTAINERS_DIR, name, "merged")
         log_dir = os.path.join(merged, "var", "log", "ankd")
-        log_file = os.path.join(log_dir, f"{service}.log")
-        if not os.path.isfile(log_file):
-            self.send_json({"logs": f"No logs for service '{service}'"})
-            return
+        # Try direct service name, then look up NAME from .ankd files
+        candidates = [service]
+        services_d = os.path.join(merged, "etc", "ankd", "services.d")
         try:
-            import subprocess
-            result = subprocess.run(
-                ["tail", "-n", str(lines), log_file],
-                capture_output=True, text=True, timeout=5
-            )
-            self.send_json({"logs": result.stdout})
-        except Exception as e:
-            self.send_json({"logs": f"Error reading logs: {e}"})
+            for ank_file in os.listdir(services_d):
+                if not ank_file.endswith(".ankd"):
+                    continue
+                try:
+                    with open(os.path.join(services_d, ank_file)) as af:
+                        for line in af:
+                            if line.startswith("NAME="):
+                                name_val = line.split("=", 1)[1].strip()
+                                if name_val not in candidates:
+                                    candidates.append(name_val)
+                except OSError:
+                    continue
+        except OSError:
+            pass
+        # Also try ankd.log as fallback
+        candidates.append("ankd")
+        log_file = None
+        for cand in candidates:
+            path = os.path.join(log_dir, f"{cand}.log")
+            if os.path.isfile(path):
+                log_file = path
+                break
+        if log_file:
+            try:
+                import subprocess
+                result = subprocess.run(
+                    ["tail", "-n", str(lines), log_file],
+                    capture_output=True, text=True, timeout=5
+                )
+                self.send_json({"logs": result.stdout, "service": service})
+            except Exception as e:
+                self.send_json({"logs": f"Error reading logs: {e}", "service": service})
+        else:
+            # Fallback: try via container exec
+            output, code = run_script("container.sh", "exec", name,
+                f"tail -n {lines} /var/log/ankd/{service}.log 2>/dev/null || "
+                f"tail -n {lines} /var/log/ankd/ankd.log 2>/dev/null || "
+                f"echo 'No logs for {service}'")
+            self.send_json({"logs": output, "service": service})
 
     def api_restart_container(self, name):
         config = load_container_config(name)

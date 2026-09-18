@@ -1569,7 +1569,7 @@ async function loadBackups() {
   try {
     const data = await api('GET', '/backups');
     const routines = data.routines || [];
-    if (!routines.length) { el.innerHTML = '<div class="empty-state"><i class="bi bi-cloud-arrow-up"></i><h3>No backup routines</h3><p>Backups require an SSH host configuration</p></div>'; const btn = document.getElementById('btn-create-backup'); if (btn) btn.style.display = 'none'; return; }
+    if (!routines.length) { el.innerHTML = '<div class="empty-state"><i class="bi bi-cloud-arrow-up"></i><h3>No backup routines</h3><p>Create a backup routine to protect your containers</p><button class="btn btn-primary" onclick="document.getElementById(\'backup-modal-overlay\').classList.add(\'active\')"><i class="bi bi-plus-lg"></i> Create Routine</button></div>'; const btn = document.getElementById('btn-create-backup'); if (btn) btn.style.display = ''; return; }
     const btn = document.getElementById('btn-create-backup'); if (btn) btn.style.display = '';
     el.innerHTML = routines.map(r => {
       const lastRun = r.last_run ? new Date(r.last_run).toLocaleString() : 'Never';
