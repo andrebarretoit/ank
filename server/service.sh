@@ -210,51 +210,103 @@ if [ "$SSH_ENABLED" = "1" ] && [ -f "$ROOTFS/usr/sbin/sshd" ]; then
         fi
     fi
     # Generate host keys on the HOST (no chroot needed — avoids segfault)
-    # Host ssh-keygen writes keys directly into ankfs/etc/ssh/
     mkdir -p "$ROOTFS/etc/ssh" 2>/dev/null
     if [ ! -f "$ROOTFS/etc/ssh/ssh_host_rsa_key" ] || [ ! -f "$ROOTFS/etc/ssh/ssh_host_ed25519_key" ]; then
-        KEYGEN=""
         KEYGEN_ERR=""
-        if command -v ssh-keygen >/dev/null 2>&1; then
-            KEYGEN="ssh-keygen"
-        elif [ -x /system/bin/ssh-keygen ]; then
-            KEYGEN="/system/bin/ssh-keygen"
-        elif [ -f "$ROOTFS/usr/bin/ssh-keygen" ] && [ -f "$MUSL" ]; then
-            KEYGEN="$MUSL $ROOTFS/usr/bin/ssh-keygen"
-        elif chroot "$ROOTFS" /usr/bin/ssh-keygen -V >/dev/null 2>&1; then
-            KEYGEN="chroot $ROOTFS /usr/bin/ssh-keygen"
-        fi
-        if [ -n "$KEYGEN" ]; then
-            log "Generating host keys with: $KEYGEN"
+        # Strategy 1: openssl on host (most reliable — Android always has openssl)
+        if command -v openssl >/dev/null 2>&1 || [ -x /system/bin/openssl ]; then
+            OPENSSL=$(command -v openssl 2>/dev/null || echo /system/bin/openssl)
+            log "Generating host keys with: $OPENSSL (openssl)"
             if [ ! -f "$ROOTFS/etc/ssh/ssh_host_rsa_key" ]; then
-                eval $KEYGEN -t rsa -b 3072 -f "$ROOTFS/etc/ssh/ssh_host_rsa_key" -N "" -q 2>"$ANK_DIR/logs/ssh-keygen-rsa.err"
+                $OPENSSL genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072 -outform PEM -out "$ROOTFS/etc/ssh/ssh_host_rsa_key" 2>"$ANK_DIR/logs/ssh-keygen-rsa.err" && \
+                $OPENSSL rsa -in "$ROOTFS/etc/ssh/ssh_host_rsa_key" -pubout -out "$ROOTFS/etc/ssh/ssh_host_rsa_key.pub" 2>>"$ANK_DIR/logs/ssh-keygen-rsa.err"
                 if [ -f "$ROOTFS/etc/ssh/ssh_host_rsa_key" ]; then
                     chmod 600 "$ROOTFS/etc/ssh/ssh_host_rsa_key"
                     chmod 644 "$ROOTFS/etc/ssh/ssh_host_rsa_key.pub"
-                    log "RSA host key generated"
+                    log "RSA host key generated (openssl)"
                 else
                     KEYGEN_ERR="rsa"
                     log "WARN: RSA key generation failed: $(cat "$ANK_DIR/logs/ssh-keygen-rsa.err" 2>/dev/null)"
                 fi
             fi
             if [ ! -f "$ROOTFS/etc/ssh/ssh_host_ed25519_key" ]; then
-                eval $KEYGEN -t ed25519 -f "$ROOTFS/etc/ssh/ssh_host_ed25519_key" -N "" -q 2>"$ANK_DIR/logs/ssh-keygen-ed25519.err"
+                $OPENSSL genpkey -algorithm Ed25519 -outform PEM -out "$ROOTFS/etc/ssh/ssh_host_ed25519_key" 2>"$ANK_DIR/logs/ssh-keygen-ed25519.err" && \
+                $OPENSSL pkey -in "$ROOTFS/etc/ssh/ssh_host_ed25519_key" -pubout -out "$ROOTFS/etc/ssh/ssh_host_ed25519_key.pub" 2>>"$ANK_DIR/logs/ssh-keygen-ed25519.err"
                 if [ -f "$ROOTFS/etc/ssh/ssh_host_ed25519_key" ]; then
                     chmod 600 "$ROOTFS/etc/ssh/ssh_host_ed25519_key"
                     chmod 644 "$ROOTFS/etc/ssh/ssh_host_ed25519_key.pub"
-                    log "Ed25519 host key generated"
+                    log "Ed25519 host key generated (openssl)"
                 else
                     KEYGEN_ERR="${KEYGEN_ERR:+$KEYGEN_ERR, }ed25519"
                     log "WARN: Ed25519 key generation failed: $(cat "$ANK_DIR/logs/ssh-keygen-ed25519.err" 2>/dev/null)"
                 fi
             fi
-            if [ -n "$KEYGEN_ERR" ]; then
-                log "WARN: Host key generation failed for: $KEYGEN_ERR"
-            fi
-        else
-            log "ERROR: No ssh-keygen found on system or in ankfs"
         fi
-        # Verify at least one key exists
+        # Strategy 2: ssh-keygen on host (if openssl failed or not available)
+        if [ ! -f "$ROOTFS/etc/ssh/ssh_host_rsa_key" ] || [ ! -f "$ROOTFS/etc/ssh/ssh_host_ed25519_key" ]; then
+            KEYGEN=""
+            if command -v ssh-keygen >/dev/null 2>&1; then
+                KEYGEN="ssh-keygen"
+            elif [ -x /system/bin/ssh-keygen ]; then
+                KEYGEN="/system/bin/ssh-keygen"
+            fi
+            if [ -n "$KEYGEN" ]; then
+                log "Generating host keys with: $KEYGEN (ssh-keygen)"
+                if [ ! -f "$ROOTFS/etc/ssh/ssh_host_rsa_key" ]; then
+                    eval $KEYGEN -t rsa -b 3072 -f "$ROOTFS/etc/ssh/ssh_host_rsa_key" -N "" -q 2>"$ANK_DIR/logs/ssh-keygen-rsa.err"
+                    if [ -f "$ROOTFS/etc/ssh/ssh_host_rsa_key" ]; then
+                        chmod 600 "$ROOTFS/etc/ssh/ssh_host_rsa_key"
+                        chmod 644 "$ROOTFS/etc/ssh/ssh_host_rsa_key.pub"
+                        log "RSA host key generated (ssh-keygen)"
+                    else
+                        KEYGEN_ERR="${KEYGEN_ERR:+$KEYGEN_ERR, }rsa"
+                        log "WARN: RSA key generation failed: $(cat "$ANK_DIR/logs/ssh-keygen-rsa.err" 2>/dev/null)"
+                    fi
+                fi
+                if [ ! -f "$ROOTFS/etc/ssh/ssh_host_ed25519_key" ]; then
+                    eval $KEYGEN -t ed25519 -f "$ROOTFS/etc/ssh/ssh_host_ed25519_key" -N "" -q 2>"$ANK_DIR/logs/ssh-keygen-ed25519.err"
+                    if [ -f "$ROOTFS/etc/ssh/ssh_host_ed25519_key" ]; then
+                        chmod 600 "$ROOTFS/etc/ssh/ssh_host_ed25519_key"
+                        chmod 644 "$ROOTFS/etc/ssh/ssh_host_ed25519_key.pub"
+                        log "Ed25519 host key generated (ssh-keygen)"
+                    else
+                        KEYGEN_ERR="${KEYGEN_ERR:+$KEYGEN_ERR, }ed25519"
+                        log "WARN: Ed25519 key generation failed: $(cat "$ANK_DIR/logs/ssh-keygen-ed25519.err" 2>/dev/null)"
+                    fi
+                fi
+            fi
+        fi
+        # Strategy 3: chroot ssh-keygen with LD_LIBRARY_PATH (last resort)
+        if [ ! -f "$ROOTFS/etc/ssh/ssh_host_rsa_key" ] || [ ! -f "$ROOTFS/etc/ssh/ssh_host_ed25519_key" ]; then
+            if [ -f "$ROOTFS/usr/bin/ssh-keygen" ]; then
+                log "Generating host keys with: chroot + LD_LIBRARY_PATH (last resort)"
+                if [ ! -f "$ROOTFS/etc/ssh/ssh_host_rsa_key" ]; then
+                    LD_LIBRARY_PATH="$ROOTFS/usr/lib:$ROOTFS/lib" chroot "$ROOTFS" /usr/bin/ssh-keygen -t rsa -b 3072 -f /etc/ssh/ssh_host_rsa_key -N "" -q 2>"$ANK_DIR/logs/ssh-keygen-rsa.err"
+                    if [ -f "$ROOTFS/etc/ssh/ssh_host_rsa_key" ]; then
+                        chmod 600 "$ROOTFS/etc/ssh/ssh_host_rsa_key"
+                        chmod 644 "$ROOTFS/etc/ssh/ssh_host_rsa_key.pub"
+                        log "RSA host key generated (chroot)"
+                    else
+                        KEYGEN_ERR="${KEYGEN_ERR:+$KEYGEN_ERR, }rsa"
+                        log "WARN: RSA key generation failed: $(cat "$ANK_DIR/logs/ssh-keygen-rsa.err" 2>/dev/null)"
+                    fi
+                fi
+                if [ ! -f "$ROOTFS/etc/ssh/ssh_host_ed25519_key" ]; then
+                    LD_LIBRARY_PATH="$ROOTFS/usr/lib:$ROOTFS/lib" chroot "$ROOTFS" /usr/bin/ssh-keygen -t ed25519 -f /etc/ssh/ssh_host_ed25519_key -N "" -q 2>"$ANK_DIR/logs/ssh-keygen-ed25519.err"
+                    if [ -f "$ROOTFS/etc/ssh/ssh_host_ed25519_key" ]; then
+                        chmod 600 "$ROOTFS/etc/ssh/ssh_host_ed25519_key"
+                        chmod 644 "$ROOTFS/etc/ssh/ssh_host_ed25519_key.pub"
+                        log "Ed25519 host key generated (chroot)"
+                    else
+                        KEYGEN_ERR="${KEYGEN_ERR:+$KEYGEN_ERR, }ed25519"
+                        log "WARN: Ed25519 key generation failed: $(cat "$ANK_DIR/logs/ssh-keygen-ed25519.err" 2>/dev/null)"
+                    fi
+                fi
+            fi
+        fi
+        if [ -n "$KEYGEN_ERR" ]; then
+            log "WARN: Host key generation failed for: $KEYGEN_ERR"
+        fi
         if [ ! -f "$ROOTFS/etc/ssh/ssh_host_rsa_key" ] && [ ! -f "$ROOTFS/etc/ssh/ssh_host_ed25519_key" ]; then
             log "ERROR: No host keys available — sshd will fail to start"
         fi

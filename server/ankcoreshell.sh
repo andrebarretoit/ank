@@ -48,8 +48,11 @@ echo -e "  IP: ${BLUE}${IP:-unknown}${NC}"
 echo ""
 
 # Drop into ank shell
+export PATH="/opt/ank/bin:$PATH"
 if [ -f "$SCRIPTS_DIR/ank-shell.sh" ]; then
     exec /bin/sh "$SCRIPTS_DIR/ank-shell.sh"
+elif [ -f "/opt/ank/bin/ank" ]; then
+    exec /opt/ank/bin/ank
 elif [ -f "/bin/ank" ]; then
     exec /bin/ank
 else

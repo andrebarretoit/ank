@@ -18,7 +18,7 @@ log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" >> "$LOG"
 }
 
-log "=== service.sh started ==="
+log "[ANK-Engine] Server Started"
 
 # Detect architecture and find correct musl linker
 ARCH=$(uname -m)
@@ -212,19 +212,58 @@ if [ "$SSH_ENABLED" = "1" ] && [ -f "$ROOTFS/usr/sbin/sshd" ]; then
     # Generate host keys on the HOST (no chroot needed — avoids segfault)
     # Host ssh-keygen writes keys directly into ankfs/etc/ssh/
     mkdir -p "$ROOTFS/etc/ssh" 2>/dev/null
-    if [ ! -f "$ROOTFS/etc/ssh/ssh_host_rsa_key" ]; then
+    if [ ! -f "$ROOTFS/etc/ssh/ssh_host_rsa_key" ] || [ ! -f "$ROOTFS/etc/ssh/ssh_host_ed25519_key" ]; then
+        KEYGEN=""
+        KEYGEN_ERR=""
         if command -v ssh-keygen >/dev/null 2>&1; then
-            ssh-keygen -t rsa -b 3072 -f "$ROOTFS/etc/ssh/ssh_host_rsa_key" -N "" -q 2>/dev/null
-            ssh-keygen -t ed25519 -f "$ROOTFS/etc/ssh/ssh_host_ed25519_key" -N "" -q 2>/dev/null
+            KEYGEN="ssh-keygen"
         elif [ -x /system/bin/ssh-keygen ]; then
-            /system/bin/ssh-keygen -t rsa -b 3072 -f "$ROOTFS/etc/ssh/ssh_host_rsa_key" -N "" -q 2>/dev/null
-            /system/bin/ssh-keygen -t ed25519 -f "$ROOTFS/etc/ssh/ssh_host_ed25519_key" -N "" -q 2>/dev/null
+            KEYGEN="/system/bin/ssh-keygen"
         elif [ -f "$ROOTFS/usr/bin/ssh-keygen" ] && [ -f "$MUSL" ]; then
-            # Fallback: run ankfs ssh-keygen via musl loader
-            "$MUSL" "$ROOTFS/usr/bin/ssh-keygen" -t rsa -b 3072 -f "$ROOTFS/etc/ssh/ssh_host_rsa_key" -N "" -q 2>/dev/null
-            "$MUSL" "$ROOTFS/usr/bin/ssh-keygen" -t ed25519 -f "$ROOTFS/etc/ssh/ssh_host_ed25519_key" -N "" -q 2>/dev/null
+            KEYGEN="$MUSL $ROOTFS/usr/bin/ssh-keygen"
+        elif chroot "$ROOTFS" /usr/bin/ssh-keygen -V >/dev/null 2>&1; then
+            KEYGEN="chroot $ROOTFS /usr/bin/ssh-keygen"
         fi
-        [ -f "$ROOTFS/etc/ssh/ssh_host_rsa_key" ] && log "Host keys generated" || log "WARN: Host key generation failed"
+        if [ -n "$KEYGEN" ]; then
+            log "Generating host keys with: $KEYGEN"
+            if [ ! -f "$ROOTFS/etc/ssh/ssh_host_rsa_key" ]; then
+                eval $KEYGEN -t rsa -b 3072 -f "$ROOTFS/etc/ssh/ssh_host_rsa_key" -N "" -q 2>"$ANK_DIR/logs/ssh-keygen-rsa.err"
+                if [ -f "$ROOTFS/etc/ssh/ssh_host_rsa_key" ]; then
+                    chmod 600 "$ROOTFS/etc/ssh/ssh_host_rsa_key"
+                    chmod 644 "$ROOTFS/etc/ssh/ssh_host_rsa_key.pub"
+                    log "RSA host key generated"
+                else
+                    KEYGEN_ERR="rsa"
+                    log "WARN: RSA key generation failed: $(cat "$ANK_DIR/logs/ssh-keygen-rsa.err" 2>/dev/null)"
+                fi
+            fi
+            if [ ! -f "$ROOTFS/etc/ssh/ssh_host_ed25519_key" ]; then
+                eval $KEYGEN -t ed25519 -f "$ROOTFS/etc/ssh/ssh_host_ed25519_key" -N "" -q 2>"$ANK_DIR/logs/ssh-keygen-ed25519.err"
+                if [ -f "$ROOTFS/etc/ssh/ssh_host_ed25519_key" ]; then
+                    chmod 600 "$ROOTFS/etc/ssh/ssh_host_ed25519_key"
+                    chmod 644 "$ROOTFS/etc/ssh/ssh_host_ed25519_key.pub"
+                    log "Ed25519 host key generated"
+                else
+                    KEYGEN_ERR="${KEYGEN_ERR:+$KEYGEN_ERR, }ed25519"
+                    log "WARN: Ed25519 key generation failed: $(cat "$ANK_DIR/logs/ssh-keygen-ed25519.err" 2>/dev/null)"
+                fi
+            fi
+            if [ -n "$KEYGEN_ERR" ]; then
+                log "WARN: Host key generation failed for: $KEYGEN_ERR"
+            fi
+        else
+            log "ERROR: No ssh-keygen found on system or in ankfs"
+        fi
+        # Verify at least one key exists
+        if [ ! -f "$ROOTFS/etc/ssh/ssh_host_rsa_key" ] && [ ! -f "$ROOTFS/etc/ssh/ssh_host_ed25519_key" ]; then
+            log "ERROR: No host keys available — sshd will fail to start"
+        fi
+    else
+        # Keys already exist — ensure permissions are correct
+        chmod 600 "$ROOTFS/etc/ssh/ssh_host_rsa_key" 2>/dev/null
+        chmod 644 "$ROOTFS/etc/ssh/ssh_host_rsa_key.pub" 2>/dev/null
+        chmod 600 "$ROOTFS/etc/ssh/ssh_host_ed25519_key" 2>/dev/null
+        chmod 644 "$ROOTFS/etc/ssh/ssh_host_ed25519_key.pub" 2>/dev/null
     fi
 
     # Start sshd (no -D: sshd daemonizes itself via fork, survives parent exit)

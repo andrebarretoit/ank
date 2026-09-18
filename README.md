@@ -34,8 +34,8 @@ Docker-like container platform for Android — runs Linux containers via chroot/
  ├──────────────────────────────────────────────────────────────────────────────────────────────────┤
  │                                    Bridge ank0 │ iptables NAT                                    │
  ├──────────────────────────────────────────────────────────────────────────────────────────────────┤
- │                          Alpine Linux (Chroot / PRoot) │ s6 process supervisor                   │
- │                          ank-alpinebase: openssh + bash + busybox + shadow + openssl + s6        │
+│                          Alpine Linux (Chroot / PRoot) │ ankd service daemon                     │
+  │                          ank-alpinebase: openssh + bash + busybox + shadow + openssl + python3   │
  │                          Python 3.12 | ~20MB rootfs | SSL/TLS                                    │
  └──────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -62,7 +62,7 @@ Docker-like container platform for Android — runs Linux containers via chroot/
 - **Port mapping** — Forward device ports to containers (TCP/UDP)
 - **Auto port increment** — Conflicting ports auto-increment (+1)
 - **Auto-start** — Containers restore on boot via Magisk
-- **s6 process supervisor** — Lightweight process management (~200KB, no Python)
+- **ankd service daemon** — Lightweight service management via shell scripts
 - **Security** — Token Bearer auth, self-signed HTTPS, rate limiting, security headers
 - **Complete uninstall** — Uninstall via panel with full removal
 - **Stacks** — Manage container groups with load balancing and auto-scaling
@@ -77,7 +77,38 @@ Docker-like container platform for Android — runs Linux containers via chroot/
 
 ## Screenshots
 
-> Screenshots coming soon. The web panel provides a dark-themed, Portainer-style interface for managing containers, stacks, backups, and nodes.
+### Login
+![Login](docs/screenshots/login.png)
+
+### Dashboard
+![Dashboard](docs/screenshots/dashboard.png)
+
+### Containers
+![Containers](docs/screenshots/containers.png)
+
+### Shell
+![Shell](docs/screenshots/shell.png)
+
+### Images
+![Images](docs/screenshots/images.png)
+
+### Networks
+![Networks](docs/screenshots/networks.png)
+
+### Logs
+![Logs](docs/screenshots/logs.png)
+
+### Settings
+![Settings](docs/screenshots/settings.png)
+
+### Stacks
+![Stacks](docs/screenshots/stacks.png)
+
+### Backups
+![Backups](docs/screenshots/backups.png)
+
+### Nodes
+![Nodes](docs/screenshots/nodes.png)
 
 ---
 
@@ -605,7 +636,7 @@ ank/
 ├── ankfs/                        # Server rootfs (Alpine + Python)
 ├── images/                       # Base images
 │   ├── alpine-3.20/              # Clean Alpine minirootfs
-│   └── ank-alpinebase/           # Container base (openssh + bash + s6)
+│   └── ank-alpinebase/           # Container base (openssh + bash + python3)
 ├── containers/<name>/            # Per-container data
 │   ├── config.json               # Config (status, port, IP, password)
 │   ├── merged/                   # Container rootfs

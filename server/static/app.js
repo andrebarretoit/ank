@@ -1757,17 +1757,100 @@ async function deleteBackupFile(routineId, fileName) {
 }
 
 document.getElementById('btn-create-backup')?.addEventListener('click', () => {
+  backupWizardReset();
   document.getElementById('backup-modal-overlay').classList.add('active');
 });
+
+let backupWizardStep = 1;
+let backupTestPassed = false;
+
+function backupWizardReset() {
+  backupWizardStep = 1;
+  backupTestPassed = false;
+  document.querySelectorAll('.backup-step-content').forEach(s => s.classList.remove('active'));
+  document.querySelectorAll('.backup-step').forEach(s => { s.classList.remove('active','done'); });
+  document.getElementById('backup-step-1').classList.add('active');
+  document.querySelector('.backup-step[data-step="1"]').classList.add('active');
+  document.getElementById('backup-prev-btn').style.display = 'none';
+  document.getElementById('backup-next-btn').style.display = '';
+  document.getElementById('backup-create-btn').style.display = 'none';
+  document.getElementById('backup-test-result').textContent = '';
+}
+
+function backupWizardNav(dir) {
+  const next = backupWizardStep + dir;
+  if (next < 1 || next > 3) return;
+  if (dir > 0 && backupWizardStep === 1 && !backupTestPassed) {
+    toast('Test connection first', 'warning'); return;
+  }
+  if (dir > 0 && backupWizardStep === 2) {
+    const name = document.getElementById('backup-name')?.value?.trim();
+    if (!name) { toast('Routine name required', 'error'); return; }
+    loadBackupSources();
+  }
+  document.querySelectorAll('.backup-step-content').forEach(s => s.classList.remove('active'));
+  document.querySelectorAll('.backup-step').forEach(s => s.classList.remove('active'));
+  document.getElementById(`backup-step-${next}`).classList.add('active');
+  const prevStep = document.querySelector(`.backup-step[data-step="${backupWizardStep}"]`);
+  prevStep.classList.remove('active');
+  prevStep.classList.add('done');
+  document.querySelector(`.backup-step[data-step="${next}"]`).classList.add('active');
+  backupWizardStep = next;
+  document.getElementById('backup-prev-btn').style.display = next > 1 ? '' : 'none';
+  document.getElementById('backup-next-btn').style.display = next < 3 ? '' : 'none';
+  document.getElementById('backup-create-btn').style.display = next === 3 ? '' : 'none';
+}
+
+async function testBackupConnection() {
+  const btn = document.getElementById('backup-test-btn');
+  const result = document.getElementById('backup-test-result');
+  btn.disabled = true; result.textContent = 'Testing...'; result.style.color = 'var(--text-muted)';
+  try {
+    const data = await api('GET', `/backups/test-connection?host=${encodeURIComponent(document.getElementById('backup-remote-host')?.value||'')}&port=${document.getElementById('backup-remote-port')?.value||'22'}&user=${encodeURIComponent(document.getElementById('backup-ssh-user')?.value||'')}&pass=${encodeURIComponent(document.getElementById('backup-ssh-pass')?.value||'')}&path=${encodeURIComponent(document.getElementById('backup-remote-path')?.value||'/backups/ank')}`);
+    if (data.connected) { result.textContent = '✓ Connected'; result.style.color = 'var(--green)'; backupTestPassed = true; }
+    else { result.textContent = '✗ Could not connect — check host, port and credentials'; result.style.color = 'var(--red)'; backupTestPassed = false; }
+  } catch(e) { result.textContent = '✗ Could not connect — check host, port and credentials'; result.style.color = 'var(--red)'; backupTestPassed = false; }
+  btn.disabled = false;
+}
+
+async function loadBackupSources() {
+  const el = document.getElementById('backup-source-list');
+  const srcType = document.getElementById('backup-source-type')?.value || 'container_full';
+  try {
+    if (srcType === 'container_full' || srcType === 'container_selective' || srcType === 'container_file') {
+      const containers = await api('GET', '/containers/all');
+      if (!containers.length) { el.innerHTML = '<div style="text-align:center;padding:20px;color:var(--text-muted)">No containers found</div>'; return; }
+      el.innerHTML = containers.map(c => `<label class="backup-source-item" data-name="${esc(c.name)}"><input type="checkbox" value="${esc(c.name)}" checked><span class="bi ${c.status==='running'?'bi-play-circle-fill':'bi-stop-circle'}" style="color:${c.status==='running'?'var(--green)':'var(--text-muted)'}"></span><span>${esc(c.name)}</span><span style="margin-left:auto;font-size:11px;color:var(--text-muted)">${esc(c.image||'-')}</span></label>`).join('');
+    } else {
+      el.innerHTML = '<div style="text-align:center;padding:20px;color:var(--text-muted)">Full system backup — no selection needed</div>';
+    }
+  } catch(e) { el.innerHTML = '<div style="text-align:center;padding:20px;color:var(--text-muted)">Failed to load sources</div>'; }
+  updateBackupSummary();
+}
+
+function updateBackupSummary() {
+  const el = document.getElementById('backup-summary');
+  const name = document.getElementById('backup-name')?.value || '-';
+  const srcType = document.getElementById('backup-source-type')?.value || 'container_full';
+  const mode = document.getElementById('backup-mode')?.value || 'full';
+  const enc = document.getElementById('backup-encryption')?.value || 'none';
+  const host = document.getElementById('backup-remote-host')?.value || '-';
+  const selected = document.querySelectorAll('.backup-source-item input:checked');
+  const srcText = srcType.includes('container') ? `${selected.length} container(s)` : 'Entire system';
+  el.style.display = 'block';
+  el.innerHTML = `<strong>Summary:</strong> "${esc(name)}" — ${srcType} (${srcText}) → ${esc(host)} | Mode: ${mode} | Encryption: ${enc}`;
+}
 
 async function createBackup() {
   const name = document.getElementById('backup-name')?.value?.trim();
   if (!name) { toast('Routine name required', 'error'); return; }
+  const containers = Array.from(document.querySelectorAll('.backup-source-item input:checked')).map(cb => cb.value);
   try {
     toast(`Creating routine "${name}"...`, 'info');
     await api('POST', '/backups', {
       name,
       source_type: document.getElementById('backup-source-type')?.value || 'container_full',
+      containers,
       remote_host: document.getElementById('backup-remote-host')?.value || '',
       remote_port: parseInt(document.getElementById('backup-remote-port')?.value || '22'),
       remote_path: document.getElementById('backup-remote-path')?.value || '/backups/ank',

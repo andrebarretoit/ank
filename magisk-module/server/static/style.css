@@ -1233,3 +1233,108 @@ tr:hover td { background: var(--bg-hover); }
   margin-left: 6px;
   vertical-align: middle;
 }
+
+/* ═══════ TERMINAL PIP BAR ═══════ */
+.terminal-pip-bar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding: 6px 12px;
+  background: rgba(10,15,30,0.5);
+  border-bottom: 1px solid var(--glass-border);
+  gap: 6px;
+}
+
+/* ═══════ PICTURE-IN-PICTURE TERMINAL ═══════ */
+.pip-overlay {
+  position: fixed;
+  width: 300px;
+  height: 200px;
+  z-index: 1500;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-base);
+  border: 1px solid var(--primary);
+  border-radius: var(--radius);
+  box-shadow: 0 8px 32px rgba(0,0,0,0.6), 0 0 0 1px rgba(59,130,246,0.15);
+  overflow: hidden;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  transition: box-shadow 0.2s;
+}
+.pip-overlay:hover {
+  box-shadow: 0 12px 48px rgba(0,0,0,0.7), 0 0 20px rgba(59,130,246,0.1);
+}
+.pip-titlebar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px;
+  background: rgba(15,23,42,0.8);
+  border-bottom: 1px solid var(--glass-border);
+  cursor: grab;
+  user-select: none;
+  flex-shrink: 0;
+}
+.pip-titlebar:active {
+  cursor: grabbing;
+}
+.pip-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  font-family: var(--mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+.pip-controls {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+.pip-btn {
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  border: none;
+  cursor: pointer;
+  font-size: 10px;
+  transition: all var(--transition);
+  background: transparent;
+  color: var(--text-muted);
+}
+.pip-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+.pip-restore:hover {
+  color: var(--primary);
+}
+.pip-close:hover {
+  background: var(--danger-dim);
+  color: var(--danger);
+}
+.pip-terminal {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  padding: 4px;
+}
+.pip-terminal .xterm {
+  height: 100%;
+}
+.pip-terminal .xterm-viewport {
+  background-color: transparent !important;
+}
+
+@media (max-width: 768px) {
+  .pip-overlay {
+    width: 240px;
+    height: 160px;
+  }
+}

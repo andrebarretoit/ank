@@ -137,8 +137,24 @@ function refreshTab(btn, loadFn) {
 }
 
 /* ═══════ NAVIGATION ═══════ */
+let _currentPage = 'dashboard';
+
+function hideTerminalContainers() {
+  const shellTerminalContainer = document.querySelector('#page-shell .terminal-container');
+  if (shellTerminalContainer) shellTerminalContainer.style.display = 'none';
+}
+
+function showTerminalContainers() {
+  const shellTerminalContainer = document.querySelector('#page-shell .terminal-container');
+  if (shellTerminalContainer) shellTerminalContainer.style.display = '';
+}
+
 function navigateTo(page) {
   _formDirty = false;
+  const prevPage = _currentPage;
+  _currentPage = page;
+
+  if (prevPage === 'shell' && page !== 'shell') hideTerminalContainers();
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
   document.querySelectorAll('.notch-item, .mobile-bar-item').forEach(i => i.classList.remove('active'));
   const pageEl = document.getElementById(`page-${page}`);
@@ -161,6 +177,7 @@ function navigateTo(page) {
   if (page === 'logs') { logsOffset = 0; loadLogs(false); startLogsPoll(); }
   if (page === 'settings') loadSettings();
   if (page === 'shell') {
+    showTerminalContainers();
     loadNodesForShellSelector();
     initCoreTerminal();
   }
@@ -611,7 +628,7 @@ async function showContainerDetail(name, nodeId) {
       </div>
 
       <div class="detail-tab-content" id="dtab-terminal">
-        <div id="container-terminal" style="width:100%;min-height:400px"></div>
+        <div id="container-terminal" style="width:100%;min-height:400px;display:none"></div>
       </div>
 
       <div class="detail-tab-content" id="dtab-files">
@@ -739,8 +756,15 @@ async function showContainerDetail(name, nodeId) {
         el.querySelectorAll('.detail-tab-content').forEach(t => t.classList.remove('active'));
         tab.classList.add('active');
         document.getElementById(`dtab-${tab.dataset.dtab}`).classList.add('active');
-        if (tab.dataset.dtab !== 'terminal') closeContainerTerminal();
-        if (tab.dataset.dtab === 'terminal' && currentContainer) initContainerTerminal();
+        const containerTerminalEl = document.getElementById('container-terminal');
+        if (tab.dataset.dtab !== 'terminal') {
+          closeContainerTerminal();
+          if (containerTerminalEl) containerTerminalEl.style.display = 'none';
+        }
+        if (tab.dataset.dtab === 'terminal' && currentContainer) {
+          if (containerTerminalEl) containerTerminalEl.style.display = '';
+          initContainerTerminal();
+        }
         if (tab.dataset.dtab === 'files' && currentContainer) {
           if (currentContainer.status !== 'running') {
             const fileContent = document.getElementById('dtab-files');
@@ -1061,6 +1085,8 @@ function closeContainerTerminal() {
   if (xtermWs) { try { xtermWs.close(); } catch(e){} xtermWs = null; }
   if (xtermTerminal) { try { xtermTerminal.dispose(); } catch(e){} xtermTerminal = null; }
   if (detailLogTimer) { clearInterval(detailLogTimer); detailLogTimer = null; }
+  const ctEl = document.getElementById('container-terminal');
+  if (ctEl) { ctEl.innerHTML = ''; ctEl.style.display = 'none'; }
 }
 
 /* ═══════ IMAGE TRANSFER ═══════ */
@@ -2149,6 +2175,13 @@ document.getElementById('btn-shell-disconnect')?.addEventListener('click', () =>
   if (coreTerminal) { try { coreTerminal.dispose(); } catch(e){} coreTerminal = null; }
   document.getElementById('terminal').innerHTML = '';
 });
+document.getElementById('btn-shell-pip')?.addEventListener('click', () => {
+  if (coreTerminal && coreWs && coreWs.readyState === WebSocket.OPEN) {
+    openPip('shell');
+  } else {
+    toast('Connect to shell first', 'warning');
+  }
+});
 
 /* ═══════ CONTAINER TERMINAL ═══════ */
 let xtermTerminal = null;
@@ -2169,9 +2202,20 @@ function initContainerTerminal() {
   if (xtermTerminal) { try { xtermTerminal.dispose(); } catch(e){} xtermTerminal = null; }
   if (xtermWs) { try { xtermWs.close(); } catch(e){} xtermWs = null; }
   el.innerHTML = '';
+
+  const pipBar = document.createElement('div');
+  pipBar.className = 'terminal-pip-bar';
+  pipBar.innerHTML = `<button class="btn btn-ghost btn-sm pip-open-btn" title="Picture-in-Picture"><i class="bi bi-window-stack"></i> PiP</button>`;
+  pipBar.querySelector('.pip-open-btn').addEventListener('click', () => openPip('container'));
+  el.appendChild(pipBar);
+
+  const termWrap = document.createElement('div');
+  termWrap.style.cssText = 'flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden;';
+  el.appendChild(termWrap);
+
   try {
     xtermTerminal = new Terminal({ cursorBlink: true, fontSize: 14, fontFamily: "'Cascadia Code','Fira Code',monospace", theme: { background: '#0a0d12', foreground: '#d3d9e3', cursor: '#58a6ff' }, scrollback: 5000 });
-    xtermTerminal.open(el);
+    xtermTerminal.open(termWrap);
     xtermTerminal.writeln('\x1b[1;36m  ANK Terminal\x1b[0m');
     xtermTerminal.writeln('\x1b[90m  Connecting to: ' + currentContainer.name + (isRemote ? ' (node: ' + currentContainer._nodeId + ')' : '') + '...\x1b[0m\r\n');
     xtermTerminal.focus();
@@ -2187,10 +2231,10 @@ function initContainerTerminal() {
     xtermWs.onclose = () => { xtermTerminal.writeln('\r\n\x1b[31m[Connection closed]\x1b[0m'); };
     xtermWs.onerror = () => { xtermTerminal.writeln('\r\n\x1b[31m[Connection error]\x1b[0m'); };
     xtermTerminal.onData(data => { if (xtermWs && xtermWs.readyState === WebSocket.OPEN) xtermWs.send(JSON.stringify({ type: 'input', data })); });
-    const resize = () => { const rect = el.getBoundingClientRect(); const cols = Math.floor(rect.width/8.4); const rows = Math.floor(rect.height/18); if (cols>0&&rows>0) { xtermTerminal.resize(cols,rows); if (xtermWs&&xtermWs.readyState===WebSocket.OPEN) xtermWs.send(JSON.stringify({type:'resize',cols,rows})); } };
+    const resize = () => { const rect = termWrap.getBoundingClientRect(); const cols = Math.floor(rect.width/8.4); const rows = Math.floor(rect.height/18); if (cols>0&&rows>0) { xtermTerminal.resize(cols,rows); if (xtermWs&&xtermWs.readyState===WebSocket.OPEN) xtermWs.send(JSON.stringify({type:'resize',cols,rows})); } };
     window.addEventListener('resize', resize);
     setTimeout(resize, 100);
-  } catch(e) { el.innerHTML = '<div style="color:var(--danger);padding:20px">xterm.js failed to load</div>'; }
+  } catch(e) { termWrap.innerHTML = '<div style="color:var(--danger);padding:20px">xterm.js failed to load</div>'; }
 }
 
 /* ═══════ FILE EXPLORER ═══════ */
@@ -2854,7 +2898,194 @@ function getTheme() { return localStorage.getItem('ank_theme') || document.docum
 function setTheme(theme) { document.documentElement.setAttribute('data-theme', theme); localStorage.setItem('ank_theme', theme); document.querySelector('meta[name="theme-color"]')?.setAttribute('content', theme === 'dark' ? '#0a0d12' : '#ffffff'); }
 function toggleTheme() { setTheme(getTheme() === 'dark' ? 'light' : 'dark'); }
 
-/* ═══════ INIT ═══════ */
+/* ═══════ PICTURE-IN-PICTURE TERMINAL ═══════ */
+let pipState = {
+  active: false,
+  terminal: null,
+  ws: null,
+  container: null,
+  containerName: '',
+  source: null,
+  dragOffsetX: 0,
+  dragOffsetY: 0,
+  isDragging: false
+};
+
+function createPipOverlay() {
+  if (pipState.container) return;
+  const overlay = document.createElement('div');
+  overlay.id = 'pip-overlay';
+  overlay.className = 'pip-overlay';
+  overlay.innerHTML = `
+    <div class="pip-titlebar" id="pip-titlebar">
+      <span class="pip-title" id="pip-title">Terminal</span>
+      <div class="pip-controls">
+        <button class="pip-btn pip-restore" id="pip-restore" title="Restore to full view"><i class="bi bi-box-arrow-up-left"></i></button>
+        <button class="pip-btn pip-close" id="pip-close" title="Close PiP"><i class="bi bi-x-lg"></i></button>
+      </div>
+    </div>
+    <div class="pip-terminal" id="pip-terminal"></div>
+  `;
+  document.body.appendChild(overlay);
+  pipState.container = overlay;
+
+  overlay.style.right = '20px';
+  overlay.style.bottom = '80px';
+
+  document.getElementById('pip-close').addEventListener('click', closePip);
+  document.getElementById('pip-restore').addEventListener('click', restorePip);
+
+  const titlebar = document.getElementById('pip-titlebar');
+  titlebar.addEventListener('mousedown', (e) => {
+    if (e.target.closest('.pip-btn')) return;
+    pipState.isDragging = true;
+    const rect = overlay.getBoundingClientRect();
+    pipState.dragOffsetX = e.clientX - rect.left;
+    pipState.dragOffsetY = e.clientY - rect.top;
+    overlay.style.transition = 'none';
+    e.preventDefault();
+  });
+  document.addEventListener('mousemove', (e) => {
+    if (!pipState.isDragging) return;
+    const x = e.clientX - pipState.dragOffsetX;
+    const y = e.clientY - pipState.dragOffsetY;
+    pipState.container.style.left = Math.max(0, Math.min(window.innerWidth - 310, x)) + 'px';
+    pipState.container.style.top = Math.max(0, Math.min(window.innerHeight - 230, y)) + 'px';
+    pipState.container.style.right = 'auto';
+    pipState.container.style.bottom = 'auto';
+  });
+  document.addEventListener('mouseup', () => {
+    if (pipState.isDragging) {
+      pipState.isDragging = false;
+      pipState.container.style.transition = '';
+    }
+  });
+}
+
+function openPip(sourceType) {
+  if (pipState.active) return;
+  createPipOverlay();
+  pipState.source = sourceType;
+  pipState.active = true;
+
+  const pipTerminalEl = document.getElementById('pip-terminal');
+  pipTerminalEl.innerHTML = '';
+
+  try {
+    pipState.terminal = new Terminal({
+      cursorBlink: true,
+      fontSize: 11,
+      fontFamily: "'Cascadia Code','Fira Code',monospace",
+      theme: { background: '#0a0d12', foreground: '#d3d9e3', cursor: '#58a6ff' },
+      scrollback: 2000
+    });
+    pipState.terminal.open(pipTerminalEl);
+
+    if (sourceType === 'shell') {
+      document.getElementById('pip-title').textContent = 'Shell Terminal';
+      if (coreTerminal && coreWs && coreWs.readyState === WebSocket.OPEN) {
+        pipState.terminal.writeln('\x1b[1;36m  ANK PiP \x1b[1;32m●\x1b[0m \x1b[90mShell mirror\x1b[0m\r\n');
+        pipState.terminal.writeln('\x1b[90m  Live view of shell terminal\x1b[0m\r\n');
+        const origWrite = coreTerminal.write.bind(coreTerminal);
+        coreTerminal.write = (data) => {
+          origWrite(data);
+          if (pipState.terminal && pipState.active) pipState.terminal.write(data);
+        };
+        pipState._restoreWrite = origWrite;
+        pipState.terminal.focus();
+      } else {
+        pipState.terminal.writeln('\x1b[31m  No active shell connection\x1b[0m');
+      }
+    } else if (sourceType === 'container' && currentContainer) {
+      const cname = currentContainer.name;
+      pipState.containerName = cname;
+      document.getElementById('pip-title').textContent = cname + ' Terminal';
+
+      const isRemote = currentContainer._nodeId && currentContainer._nodeId !== 'local';
+      const cols = pipState.terminal.cols || 80;
+      const rows = pipState.terminal.rows || 24;
+      let wsUrl;
+      if (isRemote) {
+        wsUrl = wsProtocol+'//'+location.host+'/ws/node-terminal/'+encodeURIComponent(currentContainer._nodeId)+'/'+encodeURIComponent(cname)+'?cols='+cols+'&rows='+rows+'&token='+encodeURIComponent(ankToken);
+      } else {
+        wsUrl = wsProtocol+'//'+location.host+'/ws/terminal/'+cname+'?cols='+cols+'&rows='+rows+'&token='+encodeURIComponent(ankToken);
+      }
+
+      pipState.ws = new WebSocket(wsUrl);
+      pipState.ws.onopen = () => {
+        pipState.terminal.writeln('\x1b[1;36m  ANK PiP \x1b[1;32m●\x1b[0m \x1b[90m' + esc(cname) + '\x1b[0m\r\n');
+        pipState.terminal.focus();
+      };
+      pipState.ws.onmessage = ev => { if (pipState.terminal) pipState.terminal.write(ev.data); };
+      pipState.ws.onclose = () => { if (pipState.terminal) pipState.terminal.writeln('\r\n\x1b[31m[Connection closed]\x1b[0m'); };
+      pipState.ws.onerror = () => { if (pipState.terminal) pipState.terminal.writeln('\r\n\x1b[31m[Connection error]\x1b[0m'); };
+      pipState.terminal.onData(data => { if (pipState.ws && pipState.ws.readyState === WebSocket.OPEN) pipState.ws.send(JSON.stringify({ type: 'input', data })); });
+
+      const resize = () => {
+        if (!pipState.terminal || !pipState.container) return;
+        const rect = pipTerminalEl.getBoundingClientRect();
+        const c = Math.floor(rect.width / 7);
+        const r = Math.floor(rect.height / 15);
+        if (c > 0 && r > 0) {
+          pipState.terminal.resize(c, r);
+          if (pipState.ws && pipState.ws.readyState === WebSocket.OPEN) pipState.ws.send(JSON.stringify({ type: 'resize', cols: c, rows: r }));
+        }
+      };
+      pipState._resizeHandler = resize;
+      window.addEventListener('resize', resize);
+      setTimeout(resize, 100);
+    }
+
+    pipState.container.style.display = '';
+    toast('PiP terminal opened', 'info', 2000);
+  } catch (e) {
+    console.error('PiP failed:', e);
+    closePip();
+  }
+}
+
+function closePip() {
+  if (pipState._resizeHandler) {
+    window.removeEventListener('resize', pipState._resizeHandler);
+    pipState._resizeHandler = null;
+  }
+  if (pipState.source === 'shell' && pipState._restoreWrite) {
+    if (coreTerminal) coreTerminal.write = pipState._restoreWrite;
+    pipState._restoreWrite = null;
+  }
+  if (pipState.ws) { try { pipState.ws.close(); } catch(e){} pipState.ws = null; }
+  if (pipState.terminal) { try { pipState.terminal.dispose(); } catch(e){} pipState.terminal = null; }
+  if (pipState.container) { pipState.container.remove(); pipState.container = null; }
+  pipState.active = false;
+  pipState.source = null;
+  pipState.containerName = '';
+  pipState.isDragging = false;
+}
+
+function restorePip() {
+  const source = pipState.source;
+  const cname = pipState.containerName;
+  closePip();
+  if (source === 'shell') {
+    navigateTo('shell');
+  } else if (source === 'container' && cname) {
+    navigateTo('containers');
+    setTimeout(() => showContainerDetail(cname, currentContainer?._nodeId || 'local'), 200);
+  }
+}
+
+function addPipButton(targetEl, sourceType) {
+  if (!targetEl || targetEl.querySelector('.pip-open-btn')) return;
+  const btn = document.createElement('button');
+  btn.className = 'btn btn-ghost btn-sm pip-open-btn';
+  btn.innerHTML = '<i class="bi bi-window-stack"></i> PiP';
+  btn.title = 'Picture-in-Picture terminal';
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    openPip(sourceType);
+  });
+  targetEl.appendChild(btn);
+}
 document.addEventListener('input', (e) => { if (e.target.matches('input,textarea,select')) _formDirty = true; }, true);
 document.addEventListener('change', (e) => { if (e.target.matches('input,textarea,select')) _formDirty = true; }, true);
 if (isLoggedIn) { showApp(); detectWsProtocol().then(() => startRefreshTimer()); }

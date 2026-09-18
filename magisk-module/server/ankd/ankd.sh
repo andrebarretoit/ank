@@ -1042,8 +1042,17 @@ case "$1" in
         _ankd_install "$2"
         ;;
     *)
-        # CLI mode - proxy to ankdctl
-        exec /bin/ankctl "$@"
+        # CLI mode - proxy to ankctl
+        # Ensure /bin/ankctl exists (generate if missing)
+        if [ ! -x "/bin/ankctl" ]; then
+            _ankd_generate_ankctl 2>/dev/null
+        fi
+        if [ -x "/bin/ankctl" ]; then
+            exec /bin/ankctl "$@"
+        else
+            echo "ankd: /bin/ankctl not found. Run 'ankd.sh install <rootfs>' first." >&2
+            exit 1
+        fi
         ;;
 esac
 
