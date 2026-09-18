@@ -128,40 +128,63 @@ _chroot_rootfs() {
         [ -x "$c" ] && HOST_CHROOT="$c" && break
     done
 
+    # Ensure essential dev nodes exist and are bind-mounted
+    [ -e "$ROOTFS/dev/null" ] || mknod "$ROOTFS/dev/null" c 1 3 2>/dev/null
+    [ -e "$ROOTFS/dev/urandom" ] || mknod "$ROOTFS/dev/urandom" c 1 9 2>/dev/null
+    [ -e "$ROOTFS/dev/random" ] || mknod "$ROOTFS/dev/random" c 1 8 2>/dev/null
+    [ -e "$ROOTFS/dev/tty" ] || mknod "$ROOTFS/dev/tty" c 5 0 2>/dev/null
+    chmod 666 "$ROOTFS/dev/null" "$ROOTFS/dev/urandom" "$ROOTFS/dev/random" "$ROOTFS/dev/tty" 2>/dev/null
+    mount --bind /dev/null "$ROOTFS/dev/null" 2>/dev/null
+    mount --bind /dev/urandom "$ROOTFS/dev/urandom" 2>/dev/null
+    mount --bind /dev/random "$ROOTFS/dev/random" 2>/dev/null
+    mount --bind /dev/tty "$ROOTFS/dev/tty" 2>/dev/null
+    mount -t proc proc "$ROOTFS/proc" 2>/dev/null
+
+    local RC=1
+
     # 1. Host busybox chroot
     if [ -n "$HOST_BUSYBOX" ]; then
-        "$HOST_BUSYBOX" chroot "$ROOTFS" /bin/sh -c "$CMD" 2>>"$LOG_FILE" && return 0
+        "$HOST_BUSYBOX" chroot "$ROOTFS" /bin/sh -c "$CMD" 2>>"$LOG_FILE" && { RC=0; }
     fi
 
     # 2. Host toybox chroot
-    if [ -n "$HOST_TOYBOX" ]; then
-        "$HOST_TOYBOX" chroot "$ROOTFS" /bin/sh -c "$CMD" 2>>"$LOG_FILE" && return 0
+    if [ $RC -ne 0 ] && [ -n "$HOST_TOYBOX" ]; then
+        "$HOST_TOYBOX" chroot "$ROOTFS" /bin/sh -c "$CMD" 2>>"$LOG_FILE" && { RC=0; }
     fi
 
     # 3. Host chroot (standalone)
-    if [ -n "$HOST_CHROOT" ]; then
-        "$HOST_CHROOT" "$ROOTFS" /bin/sh -c "$CMD" 2>>"$LOG_FILE" && return 0
+    if [ $RC -ne 0 ] && [ -n "$HOST_CHROOT" ]; then
+        "$HOST_CHROOT" "$ROOTFS" /bin/sh -c "$CMD" 2>>"$LOG_FILE" && { RC=0; }
     fi
 
     # 4. Host musl direct exec (no chroot, runs rootfs binaries via host linker)
-    local MUSL=$(ls "$ROOTFS"/lib/ld-musl-*.so* 2>/dev/null | head -1)
-    if [ -n "$MUSL" ] && [ -x "$MUSL" ]; then
-        local SH=""
-        for s in "$ROOTFS/bin/sh" "$ROOTFS/bin/busybox"; do
-            [ -e "$s" ] || [ -L "$s" ] && { SH="$s"; break; }
-        done
-        [ -z "$SH" ] && SH="$ROOTFS/bin/sh"
-        env -i HOME=/root PATH=/sbin:/usr/sbin:/bin:/usr/bin \
-            LD_LIBRARY_PATH="$ROOTFS/lib" \
-            "$MUSL" "$SH" -c "$CMD" 2>>"$LOG_FILE" && return 0
+    if [ $RC -ne 0 ]; then
+        local MUSL=$(ls "$ROOTFS"/lib/ld-musl-*.so* 2>/dev/null | head -1)
+        if [ -n "$MUSL" ] && [ -x "$MUSL" ]; then
+            local SH=""
+            for s in "$ROOTFS/bin/sh" "$ROOTFS/bin/busybox"; do
+                [ -e "$s" ] || [ -L "$s" ] && { SH="$s"; break; }
+            done
+            [ -z "$SH" ] && SH="$ROOTFS/bin/sh"
+            env -i HOME=/root PATH=/sbin:/usr/sbin:/bin:/usr/bin \
+                LD_LIBRARY_PATH="$ROOTFS/lib" \
+                "$MUSL" "$SH" -c "$CMD" 2>>"$LOG_FILE" && { RC=0; }
+        fi
     fi
 
     # 5. Rootfs busybox chroot (last resort)
-    if [ -x "$ROOTFS/bin/busybox" ]; then
-        "$ROOTFS/bin/busybox" chroot "$ROOTFS" /bin/sh -c "$CMD" 2>>"$LOG_FILE" && return 0
+    if [ $RC -ne 0 ] && [ -x "$ROOTFS/bin/busybox" ]; then
+        "$ROOTFS/bin/busybox" chroot "$ROOTFS" /bin/sh -c "$CMD" 2>>"$LOG_FILE" && { RC=0; }
     fi
 
-    return 1
+    # Cleanup mounts
+    umount "$ROOTFS/dev/null" 2>/dev/null
+    umount "$ROOTFS/dev/urandom" 2>/dev/null
+    umount "$ROOTFS/dev/random" 2>/dev/null
+    umount "$ROOTFS/dev/tty" 2>/dev/null
+    umount "$ROOTFS/proc" 2>/dev/null
+
+    return $RC
 }
 
 find_dl_tool() {
