@@ -1094,7 +1094,7 @@ function handleAnkFile(file) {
   reader.readAsText(file);
 }
 
-function showImageSection(section) {
+async function showImageSection(section) {
   document.querySelectorAll('#images-list .split-list-card').forEach(c => c.classList.toggle('selected', c.dataset.section === section));
   const el = document.getElementById('image-detail');
   if (!el) return;

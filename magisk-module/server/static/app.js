@@ -116,6 +116,19 @@ document.getElementById('backup-modal-overlay')?.addEventListener('click', e => 
 document.getElementById('upload-modal-overlay')?.addEventListener('click', e => { if (e.target === e.currentTarget) closeModalById('upload-modal-overlay'); });
 function closeCreateModal() { closeModalById('create-modal-overlay'); const f = document.getElementById('create-form'); if (f) f.reset(); }
 
+function refreshTab(btn, loadFn) {
+  const icon = btn.querySelector('i');
+  if (icon) icon.classList.add('spin');
+  btn.disabled = true;
+  const p = loadFn();
+  if (p && typeof p.then === 'function') {
+    p.then(() => { if (icon) icon.classList.remove('spin'); btn.disabled = false; })
+     .catch(() => { if (icon) icon.classList.remove('spin'); btn.disabled = false; });
+  } else {
+    setTimeout(() => { if (icon) icon.classList.remove('spin'); btn.disabled = false; }, 500);
+  }
+}
+
 /* ═══════ NAVIGATION ═══════ */
 function navigateTo(page) {
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
