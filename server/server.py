@@ -1774,9 +1774,24 @@ small{color:#334155}
             self.api_stack_inspect(path.split("/")[3])
         elif path == "/api/backups":
             self.api_list_backups()
-        elif path.startswith("/api/backups/") and "browse" in path:
+        elif path == "/api/backups/history":
+            qs = parse_qs(parsed.query)
+            rid = qs.get("routine_id", [None])[0]
+            limit = int(qs.get("limit", ["50"])[0])
+            self.api_backup_history(rid, limit)
+        elif path == "/api/backups/battery":
+            self.api_backup_battery()
+        elif path == "/api/backups/test-connection":
+            data = self.read_body()
+            self.api_backup_test_connection(data)
+        elif path.startswith("/api/backups/") and "/browse" in path:
             qs = parsed.query
             self.api_backup_browse(path.split("/")[3], qs)
+        elif path.startswith("/api/backups/") and "/preview" in path:
+            data = self.read_body()
+            self.api_backup_preview(path.split("/")[3], data)
+        elif path.startswith("/api/backups/") and "/log" in path:
+            self.api_backup_log(path.split("/")[3])
         elif path.startswith("/api/backups/"):
             self.api_backup_inspect(path.split("/")[3])
         elif path == "/api/nodes":
@@ -1914,8 +1929,12 @@ small{color:#334155}
             self.api_create_backup_routine(data)
         elif path.startswith("/api/backups/") and path.endswith("/execute"):
             self.api_execute_backup(path.split("/")[3])
+        elif path.startswith("/api/backups/") and path.endswith("/restore"):
+            self.api_backup_restore(path.split("/")[3], data)
+        elif path.startswith("/api/backups/") and path.endswith("/rename"):
+            self.api_backup_rename(path.split("/")[3], data)
         elif path.startswith("/api/backups/") and path.endswith("/delete"):
-            self.api_delete_backup_routine(path.split("/")[3])
+            self.api_backup_delete_file(path.split("/")[3], data)
         elif path == "/api/nodes":
             self.api_add_node(data)
         elif path == "/api/nodes/pairing/send":
@@ -5372,13 +5391,72 @@ small{color:#334155}
         if not name:
             self.send_json({"error": "name required"}, 400)
             return
-        result = bm.create_routine(name, data)
-        if "error" in result:
-            self.send_json(result, 400)
-        else:
-            self.send_json(result)
+        config = {
+            "name": name,
+            "source_type": data.get("source_type", "container_full"),
+            "containers": data.get("containers", []),
+            "nodes": data.get("nodes", []),
+            "custom_paths": data.get("custom_paths", {}),
+            "backup_mode": data.get("backup_mode", "full"),
+            "encryption": data.get("encryption", "none"),
+            "immutable": data.get("immutable", False),
+            "remote": {
+                "host": data.get("remote_host", data.get("host", "")),
+                "port": int(data.get("remote_port", data.get("port", 22))),
+                "user": data.get("ssh_user", data.get("user", "root")),
+                "password": data.get("ssh_pass", data.get("password", "")),
+                "path": data.get("remote_path", data.get("path", "/backups/ank")),
+            },
+            "schedule": data.get("schedule", ""),
+            "retention_days": int(data.get("retention", data.get("retention_days", 30))),
+        }
+        result = bm.create_routine(config)
+        self.send_json(result)
 
     def api_execute_backup(self, routine_id):
+        try:
+            bm = self._get_backup_manager()
+            if not bm:
+                self.send_json({"error": "backup_manager not available"}, 500)
+                return
+            result = bm.run_backup(routine_id)
+            self.send_json(result)
+        except Exception as e:
+            self.send_json({"error": str(e)}, 400)
+
+    def api_backup_history(self, routine_id=None, limit=50):
+        bm = self._get_backup_manager()
+        if not bm:
+            self.send_json({"history": []})
+            return
+        entries = bm.get_history(routine_id, limit)
+        self.send_json({"history": entries})
+
+    def api_backup_battery(self):
+        from backup_runner import get_battery_status
+        self.send_json(get_battery_status())
+
+    def api_backup_test_connection(self, data):
+        bm = self._get_backup_manager()
+        if not bm:
+            self.send_json({"error": "backup_manager not available"}, 500)
+            return
+        remote = {
+            "host": data.get("remote_host", data.get("host", "")),
+            "port": int(data.get("remote_port", data.get("port", 22))),
+            "user": data.get("ssh_user", data.get("user", "root")),
+            "password": data.get("ssh_pass", data.get("password", "")),
+        }
+        try:
+            ok = bm.test_connection(remote)
+            self.send_json({"connected": ok})
+        except Exception as e:
+            self.send_json({"connected": False, "error": str(e)})
+
+    def api_backup_browse(self, routine_id, query):
+        from urllib.parse import parse_qs
+        params = parse_qs(query)
+        remote_path = params.get("path", ["/"])[0]
         try:
             bm = self._get_backup_manager()
             if not bm:
@@ -5388,25 +5466,96 @@ small{color:#334155}
             if not routine:
                 self.send_json({"error": "Routine not found"}, 404)
                 return
-            from backup_runner import BackupRunner
-            log_file = os.path.join(ANK_DIR, "logs", f"backup-{routine_id}.log")
-            os.makedirs(os.path.dirname(log_file), exist_ok=True)
-            br = BackupRunner(routine, log_file)
-            result = br.run()
-            self.send_json(result)
+            remote = routine.get("remote", {})
+            files = bm.list_remote_files(remote, remote_path)
+            self.send_json({"files": files, "path": remote_path})
         except Exception as e:
             self.send_json({"error": str(e)}, 500)
 
-    def api_delete_backup_routine(self, routine_id):
+    def api_backup_preview(self, routine_id, data):
         bm = self._get_backup_manager()
         if not bm:
             self.send_json({"error": "backup_manager not available"}, 500)
             return
-        result = bm.delete_routine(routine_id)
-        if "error" in result:
-            self.send_json(result, 400)
-        else:
+        routine = bm.get_routine(routine_id)
+        if not routine:
+            self.send_json({"error": "Routine not found"}, 404)
+            return
+        remote_name = data.get("file", "")
+        if not remote_name:
+            self.send_json({"error": "file required"}, 400)
+            return
+        try:
+            result = bm.preview_backup(routine.get("remote", {}), remote_name)
             self.send_json(result)
+        except Exception as e:
+            self.send_json({"error": str(e)}, 500)
+
+    def api_backup_log(self, history_id):
+        bm = self._get_backup_manager()
+        if not bm:
+            self.send_json({"error": "backup_manager not available"}, 500)
+            return
+        log_content = bm.get_logs(history_id)
+        self.send_json({"log": log_content, "id": history_id})
+
+    def api_backup_restore(self, routine_id, data):
+        bm = self._get_backup_manager()
+        if not bm:
+            self.send_json({"error": "backup_manager not available"}, 500)
+            return
+        routine = bm.get_routine(routine_id)
+        if not routine:
+            self.send_json({"error": "Routine not found"}, 404)
+            return
+        remote_name = data.get("file", "")
+        if not remote_name:
+            self.send_json({"error": "file required"}, 400)
+            return
+        try:
+            local_path = bm.restore_from_remote(routine.get("remote", {}), remote_name)
+            self.send_json({"restored_to": local_path})
+        except Exception as e:
+            self.send_json({"error": str(e)}, 500)
+
+    def api_backup_rename(self, routine_id, data):
+        bm = self._get_backup_manager()
+        if not bm:
+            self.send_json({"error": "backup_manager not available"}, 500)
+            return
+        routine = bm.get_routine(routine_id)
+        if not routine:
+            self.send_json({"error": "Routine not found"}, 404)
+            return
+        old_name = data.get("old_name", "")
+        new_name = data.get("new_name", "")
+        if not old_name or not new_name:
+            self.send_json({"error": "old_name and new_name required"}, 400)
+            return
+        try:
+            ok = bm.rename_remote_file(routine.get("remote", {}), old_name, new_name)
+            self.send_json({"renamed": ok})
+        except Exception as e:
+            self.send_json({"error": str(e)}, 500)
+
+    def api_backup_delete_file(self, routine_id, data):
+        bm = self._get_backup_manager()
+        if not bm:
+            self.send_json({"error": "backup_manager not available"}, 500)
+            return
+        routine = bm.get_routine(routine_id)
+        if not routine:
+            self.send_json({"error": "Routine not found"}, 404)
+            return
+        remote_name = data.get("file", "")
+        if not remote_name:
+            self.send_json({"error": "file required"}, 400)
+            return
+        try:
+            ok = bm.delete_remote_file(routine.get("remote", {}), remote_name)
+            self.send_json({"deleted": ok})
+        except Exception as e:
+            self.send_json({"error": str(e)}, 500)
 
     # ============================================================
     # Nodes API

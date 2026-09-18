@@ -1574,37 +1574,139 @@ async function loadBackups() {
     el.innerHTML = routines.map(r => {
       const lastRun = r.last_run ? new Date(r.last_run).toLocaleString() : 'Never';
       const statusColor = r.last_status === 'success' ? 'var(--success)' : r.last_status === 'failed' ? 'var(--danger)' : 'var(--text-muted)';
+      const srcLabel = r._source_type_label || r.source_type || '-';
       return `<div class="split-list-card" data-id="${esc(r.id||r.name)}" onclick="showBackupDetail('${esc(r.id||r.name)}')">
         <div class="slc-top"><span class="slc-name"><i class="bi bi-cloud-arrow-up" style="color:var(--accent)"></i>${esc(r.name)}</span><span style="width:8px;height:8px;border-radius:50%;background:${statusColor};flex-shrink:0"></span></div>
-        <div class="slc-meta"><span>${esc(r.schedule||'-')}</span><span>Retention: ${r.retention||30}d</span><span>Last: ${lastRun}</span></div>
+        <div class="slc-meta"><span>${esc(srcLabel)}</span><span>${esc(r.schedule||'Manual')}</span><span>Ret: ${r.retention_days||30}d</span></div>
       </div>`;
     }).join('');
   } catch (e) { el.innerHTML = '<div class="empty-state"><p>Failed to load</p></div>'; }
 }
 
-function showBackupDetail(id) {
+let currentBackupId = null;
+
+async function showBackupDetail(id) {
+  currentBackupId = id;
   document.querySelectorAll('#backups-list .split-list-card').forEach(c => c.classList.toggle('selected', c.dataset.id === id));
   const el = document.getElementById('backup-detail');
   if (!el) return;
-  api('GET', '/backups').then(data => {
-    const r = (data.routines||[]).find(x => (x.id||x.name) === id);
-    const lastRun = r?.last_run ? new Date(r.last_run).toLocaleString() : 'Never';
+  try {
+    const r = await api('GET', `/backups/${encodeURIComponent(id)}`);
+    const lastRun = r.last_run ? new Date(r.last_run).toLocaleString() : 'Never';
+    const srcLabel = r._source_type_label || r.source_type || '-';
+    const remote = r.remote || {};
     el.innerHTML = `
       <div class="sr-header">
-        <h2><i class="bi bi-cloud-arrow-up" style="color:var(--accent)"></i>${esc(id)}</h2>
+        <h2><i class="bi bi-cloud-arrow-up" style="color:var(--accent)"></i>${esc(r.name||id)}</h2>
         <div class="sr-actions">
           <button class="btn btn-success btn-sm" onclick="executeBackup('${esc(id)}')"><i class="bi bi-play-fill"></i> Run</button>
+          <button class="btn btn-secondary btn-sm" onclick="showBackupHistory('${esc(id)}')"><i class="bi bi-clock-history"></i> History</button>
+          <button class="btn btn-secondary btn-sm" onclick="browseBackupFiles('${esc(id)}')"><i class="bi bi-folder2-open"></i> Browse</button>
           <button class="btn btn-danger btn-sm" onclick="deleteBackup('${esc(id)}')"><i class="bi bi-trash3"></i></button>
         </div>
       </div>
       <div class="sr-info-grid">
-        <div class="sr-info-item"><div class="sr-label">Source</div><div class="sr-value">${esc(r?.source||'-')}</div></div>
-        <div class="sr-info-item"><div class="sr-label">Remote Host</div><div class="sr-value">${esc(r?.remote_host||'-')}</div></div>
-        <div class="sr-info-item"><div class="sr-label">Schedule</div><div class="sr-value">${esc(r?.schedule||'-')}</div></div>
-        <div class="sr-info-item"><div class="sr-label">Retention</div><div class="sr-value">${r?.retention||30}d</div></div>
-        <div class="sr-info-item" style="grid-column:span 2"><div class="sr-label">Last Run</div><div class="sr-value">${lastRun}</div></div>
+        <div class="sr-info-item"><div class="sr-label">Source Type</div><div class="sr-value">${esc(srcLabel)}</div></div>
+        <div class="sr-info-item"><div class="sr-label">Remote Host</div><div class="sr-value">${esc(remote.host||'-')}</div></div>
+        <div class="sr-info-item"><div class="sr-label">Schedule</div><div class="sr-value">${esc(r.schedule||'Manual')}</div></div>
+        <div class="sr-info-item"><div class="sr-label">Retention</div><div class="sr-value">${r.retention_days||30} days</div></div>
+        <div class="sr-info-item"><div class="sr-label">Mode</div><div class="sr-value">${esc(r.backup_mode||'full')}</div></div>
+        <div class="sr-info-item"><div class="sr-label">Immutable</div><div class="sr-value">${r.immutable?'Yes':'No'}</div></div>
+        <div class="sr-info-item" style="grid-column:span 2"><div class="sr-label">Last Run</div><div class="sr-value">${lastRun} ${r.last_status?`(${r.last_status})`:''}</div></div>
+      </div>
+      <div id="backup-sub-content"></div>`;
+  } catch(e) { el.innerHTML = `<div style="color:var(--danger);padding:20px">${esc(e.message)}</div>`; }
+}
+
+async function showBackupHistory(id) {
+  const sub = document.getElementById('backup-sub-content');
+  if (!sub) return;
+  sub.innerHTML = '<div style="padding:12px;color:var(--text-muted)">Loading history...</div>';
+  try {
+    const data = await api('GET', `/backups/history?routine_id=${encodeURIComponent(id)}&limit=20`);
+    const entries = data.history || [];
+    if (!entries.length) { sub.innerHTML = '<div style="padding:12px;color:var(--text-muted)">No backup history</div>'; return; }
+    sub.innerHTML = `<div style="padding:12px 0"><h4 style="margin-bottom:8px"><i class="bi bi-clock-history"></i> History</h4>${entries.map(e => {
+      const ts = e.started_at ? new Date(e.started_at).toLocaleString() : '-';
+      const statusColor = e.status==='success'?'var(--success)':e.status==='failed'?'var(--danger)':'var(--warning)';
+      const size = e.size_bytes ? (e.size_bytes > 1048576 ? (e.size_bytes/1048576).toFixed(1)+'MB' : (e.size_bytes/1024).toFixed(1)+'KB') : '-';
+      return `<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border)">
+        <span style="width:8px;height:8px;border-radius:50%;background:${statusColor};flex-shrink:0"></span>
+        <span style="flex:1;font-size:12px">${ts}</span>
+        <span style="font-size:12px;color:var(--text-muted)">${size}</span>
+        <span style="font-size:11px;color:${statusColor}">${e.status}</span>
+        <button class="btn btn-ghost btn-sm" onclick="viewBackupLog('${esc(e.id)}')" title="View Log"><i class="bi bi-journal-text"></i></button>
       </div>`;
-  }).catch(e => { el.innerHTML = `<div style="color:var(--danger);padding:20px">${esc(e.message)}</div>`; });
+    }).join('')}</div>`;
+  } catch(e) { sub.innerHTML = `<div style="color:var(--danger);padding:12px">${esc(e.message)}</div>`; }
+}
+
+async function viewBackupLog(historyId) {
+  try {
+    const data = await api('GET', `/backups/${encodeURIComponent(historyId)}/log`);
+    openModal(`Backup Log — ${historyId}`, `<pre style="max-height:400px;overflow:auto;font-size:11px;font-family:monospace;white-space:pre-wrap;margin:0">${esc(data.log||'No log')}</pre>`);
+  } catch(e) { toast(`Failed: ${e.message}`, 'error'); }
+}
+
+async function browseBackupFiles(id) {
+  const sub = document.getElementById('backup-sub-content');
+  if (!sub) return;
+  sub.innerHTML = '<div style="padding:12px;color:var(--text-muted)">Loading files...</div>';
+  try {
+    const data = await api('GET', `/backups/${encodeURIComponent(id)}/browse?path=/`);
+    const files = data.files || [];
+    renderBackupFileBrowser(sub, id, files, '/');
+  } catch(e) { sub.innerHTML = `<div style="color:var(--danger);padding:12px">${esc(e.message)}</div>`; }
+}
+
+function renderBackupFileBrowser(container, routineId, files, currentPath) {
+  const html = `<div style="padding:12px 0">
+    <h4 style="margin-bottom:8px"><i class="bi bi-folder2-open"></i> Remote Files</h4>
+    <div style="font-size:11px;color:var(--text-muted);margin-bottom:8px">${esc(currentPath)}</div>
+    ${files.length ? files.map(f => {
+      const icon = f.type==='dir' ? 'bi-folder-fill' : 'bi-file-earmark';
+      const color = f.type==='dir' ? 'var(--accent)' : 'var(--text-muted)';
+      const size = f.type==='file' ? (f.size > 1048576 ? (f.size/1048576).toFixed(1)+'MB' : f.size > 1024 ? (f.size/1024).toFixed(1)+'KB' : f.size+'B') : '';
+      const onclick = f.type==='dir' ? `browseBackupDir('${esc(routineId)}','${esc(currentPath+'/'+f.name).replace(/\/+/g,'/')}')` : '';
+      return `<div style="display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid var(--border);cursor:${f.type==='dir'?'pointer':'default'}" ${onclick?`onclick="${onclick}"`:''}>
+        <i class="bi ${icon}" style="color:${color}"></i>
+        <span style="flex:1;font-size:12px">${esc(f.name)}</span>
+        <span style="font-size:11px;color:var(--text-muted)">${size}</span>
+        ${f.type==='file'?`<button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();restoreBackupFile('${esc(routineId)}','${esc(f.name)}')" title="Restore"><i class="bi bi-arrow-counterclockwise"></i></button>
+        <button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();deleteBackupFile('${esc(routineId)}','${esc(f.name)}')" title="Delete" style="color:var(--danger)"><i class="bi bi-trash3"></i></button>`:''}
+      </div>`;
+    }).join('') : '<div style="padding:12px;color:var(--text-muted)">Empty</div>'}
+  </div>`;
+  container.innerHTML = html;
+}
+
+async function browseBackupDir(routineId, path) {
+  const sub = document.getElementById('backup-sub-content');
+  if (!sub) return;
+  try {
+    const data = await api('GET', `/backups/${encodeURIComponent(routineId)}/browse?path=${encodeURIComponent(path)}`);
+    renderBackupFileBrowser(sub, routineId, data.files || [], path);
+  } catch(e) { toast(`Failed: ${e.message}`, 'error'); }
+}
+
+async function restoreBackupFile(routineId, fileName) {
+  const ok = await confirmAction('Restore', `Restore "${fileName}"?`);
+  if (!ok) return;
+  try {
+    toast('Restoring...', 'info');
+    const data = await api('POST', `/backups/${encodeURIComponent(routineId)}/restore`, { file: fileName });
+    toast(`Restored to: ${data.restored_to}`, 'success');
+  } catch(e) { toast(`Failed: ${e.message}`, 'error'); }
+}
+
+async function deleteBackupFile(routineId, fileName) {
+  const ok = await confirmAction('Delete', `Delete "${fileName}"?`);
+  if (!ok) return;
+  try {
+    await api('POST', `/backups/${encodeURIComponent(routineId)}/delete`, { file: fileName });
+    toast('Deleted', 'success');
+    browseBackupFiles(routineId);
+  } catch(e) { toast(`Failed: ${e.message}`, 'error'); }
 }
 
 document.getElementById('btn-create-backup')?.addEventListener('click', () => {
@@ -1618,13 +1720,17 @@ async function createBackup() {
     toast(`Creating routine "${name}"...`, 'info');
     await api('POST', '/backups', {
       name,
-      source: document.getElementById('backup-source')?.value || '',
+      source_type: document.getElementById('backup-source-type')?.value || 'container_full',
       remote_host: document.getElementById('backup-remote-host')?.value || '',
+      remote_port: parseInt(document.getElementById('backup-remote-port')?.value || '22'),
       remote_path: document.getElementById('backup-remote-path')?.value || '/backups/ank',
       ssh_user: document.getElementById('backup-ssh-user')?.value || 'root',
       ssh_pass: document.getElementById('backup-ssh-pass')?.value || '',
       schedule: document.getElementById('backup-schedule')?.value || '',
-      retention: parseInt(document.getElementById('backup-retention')?.value || '30')
+      retention: parseInt(document.getElementById('backup-retention')?.value || '30'),
+      backup_mode: document.getElementById('backup-mode')?.value || 'full',
+      encryption: document.getElementById('backup-encryption')?.value || 'none',
+      immutable: document.getElementById('backup-immutable')?.checked || false,
     });
     closeModalById('backup-modal-overlay');
     toast(`Routine "${name}" created`, 'success');
@@ -1633,7 +1739,7 @@ async function createBackup() {
 }
 
 async function executeBackup(id) { try { toast('Running backup...','info'); await api('POST',`/backups/${encodeURIComponent(id)}/execute`); toast('Backup complete','success'); loadBackups(); } catch(e) { toast(`Failed: ${e.message}`,'error'); } }
-async function deleteBackup(id) { const ok = await confirmAction('Delete Backup','Delete this routine?'); if(!ok) return; try { await api('POST',`/backups/${encodeURIComponent(id)}/delete`); toast('Deleted','success'); loadBackups(); } catch(e) { toast(`Failed: ${e.message}`,'error'); } }
+async function deleteBackup(id) { const ok = await confirmAction('Delete Backup','Delete this routine and all its history?'); if(!ok) return; try { await api('POST',`/backups/${encodeURIComponent(id)}/delete`); toast('Deleted','success'); loadBackups(); } catch(e) { toast(`Failed: ${e.message}`,'error'); } }
 
 /* ═══════ NETWORKS ═══════ */
 async function loadNetworks() {
