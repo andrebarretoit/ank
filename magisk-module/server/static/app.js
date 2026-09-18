@@ -77,7 +77,7 @@ async function customModal(title, fields) {
     let html = fields.map(f => {
       if (f.type === 'select') return `<div class="form-group"><label class="form-label">${esc(f.label)}</label><select class="form-select" id="_cm-${f.id}">${f.options}</select></div>`;
       if (f.type === 'textarea') return `<div class="form-group"><label class="form-label">${esc(f.label)}</label><textarea class="form-input" id="_cm-${f.id}" rows="6" placeholder="${esc(f.placeholder||f.label)}">${esc(f.value||'')}</textarea></div>`;
-      return `<div class="form-group"><label class="form-label">${esc(f.label)}</label><input class="form-input" id="_cm-${f.id}" type="${f.type||'text'}" value="${esc(f.value||'')}" placeholder="${esc(f.label)}"></div>`;
+      return `<div class="form-group"><label class="form-label">${esc(f.label)}</label><input class="form-input" id="_cm-${f.id}" type="${f.type||'text'}" value="${esc(f.value||'')}" placeholder="${esc(f.placeholder||f.label)}">${f.hint?`<small class="form-hint">${esc(f.hint)}</small>`:''}</div>`;
     }).join('');
     html += `<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px"><button class="btn btn-secondary" id="_cm-cancel">Cancel</button><button class="btn btn-primary" id="_cm-ok">OK</button></div>`;
     openModal(title, html);
@@ -133,7 +133,10 @@ function navigateTo(page) {
   if (page === 'networks') loadNetworks();
   if (page === 'logs') { logsOffset = 0; loadLogs(false); startLogsPoll(); }
   if (page === 'settings') loadSettings();
-  if (page === 'shell') initCoreTerminal();
+  if (page === 'shell') {
+    loadNodesForShellSelector();
+    initCoreTerminal();
+  }
   if (page !== 'logs') stopLogsPoll();
 }
 
@@ -1415,6 +1418,14 @@ async function remoteDeleteContainer(nodeId, name) {
   try { await api('DELETE', `/nodes/${encodeURIComponent(nodeId)}/containers/${encodeURIComponent(name)}`); toast('Deleted', 'success'); loadContainers(); } catch(e) { toast(`Failed: ${e.message}`, 'error'); }
 }
 
+async function loadNodesForShellSelector() {
+  try {
+    const data = await api('GET', '/nodes');
+    const nodes = data.nodes || [];
+    updateNodeSelectors(nodes);
+  } catch(e) {}
+}
+
 function updateNodeSelectors(nodes) {
   const onlineNodes = (nodes || []).filter(n => n.status === 'online');
   const shellSel = document.getElementById('shell-container-select');
@@ -1897,7 +1908,12 @@ let xtermWs = null;
 function initContainerTerminal() {
   const el = document.getElementById('container-terminal');
   if (!el) return;
-  if (!currentContainer || currentContainer.status !== 'running') {
+  const isRemote = currentContainer._nodeId && currentContainer._nodeId !== 'local';
+  if (!currentContainer) {
+    el.innerHTML = '<div style="color:var(--danger);padding:20px;text-align:center"><i class="bi bi-exclamation-triangle"></i> No container selected</div>';
+    return;
+  }
+  if (!isRemote && currentContainer.status !== 'running') {
     el.innerHTML = '<div style="color:var(--danger);padding:20px;text-align:center"><i class="bi bi-exclamation-triangle"></i> Container not running</div>';
     return;
   }
@@ -1908,9 +1924,14 @@ function initContainerTerminal() {
     xtermTerminal = new Terminal({ cursorBlink: true, fontSize: 14, fontFamily: "'Cascadia Code','Fira Code',monospace", theme: { background: '#0a0d12', foreground: '#d3d9e3', cursor: '#58a6ff' }, scrollback: 5000 });
     xtermTerminal.open(el);
     xtermTerminal.writeln('\x1b[1;36m  ANK Terminal\x1b[0m');
-    xtermTerminal.writeln('\x1b[90m  Connecting to: ' + currentContainer.name + '...\x1b[0m\r\n');
+    xtermTerminal.writeln('\x1b[90m  Connecting to: ' + currentContainer.name + (isRemote ? ' (node: ' + currentContainer._nodeId + ')' : '') + '...\x1b[0m\r\n');
     xtermTerminal.focus();
-    const wsUrl = wsProtocol+'//'+location.host+'/ws/terminal/'+currentContainer.name+'?cols='+(xtermTerminal.cols||80)+'&rows='+(xtermTerminal.rows||24)+'&token='+encodeURIComponent(ankToken);
+    let wsUrl;
+    if (isRemote) {
+      wsUrl = wsProtocol+'//'+location.host+'/ws/node-terminal/'+encodeURIComponent(currentContainer._nodeId)+'/'+encodeURIComponent(currentContainer.name)+'?cols='+(xtermTerminal.cols||80)+'&rows='+(xtermTerminal.rows||24)+'&token='+encodeURIComponent(ankToken);
+    } else {
+      wsUrl = wsProtocol+'//'+location.host+'/ws/terminal/'+currentContainer.name+'?cols='+(xtermTerminal.cols||80)+'&rows='+(xtermTerminal.rows||24)+'&token='+encodeURIComponent(ankToken);
+    }
     xtermWs = new WebSocket(wsUrl);
     xtermWs.onopen = () => { xtermTerminal.focus(); };
     xtermWs.onmessage = ev => { xtermTerminal.write(ev.data); };

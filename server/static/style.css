@@ -410,6 +410,7 @@ body::before {
 .btn-primary:active:not(:disabled) { transform: translateY(0); }
 .btn-secondary { background: var(--bg-elevated); color: var(--text); border-color: var(--border); }
 .btn-secondary:hover:not(:disabled) { background: var(--bg-hover); border-color: var(--text-muted); }
+.btn-secondary:disabled { opacity: 0.6; cursor: not-allowed; }
 .btn-danger { background: var(--danger-dim); color: var(--danger); border-color: rgba(239, 68, 68, 0.2); }
 .btn-danger:hover:not(:disabled) { background: rgba(239, 68, 68, 0.2); }
 .btn-success { background: var(--success-dim); color: var(--success); border-color: rgba(16, 185, 129, 0.2); }
