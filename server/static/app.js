@@ -1799,13 +1799,14 @@ function showSettingsSection(section) {
   } else if (section === 'cache') {
     el.innerHTML = `<div class="card"><div class="card-header"><h3><i class="bi bi-database"></i> Cache</h3></div><div class="card-body">
       <div class="info-grid">
-        <div class="info-item"><span class="info-label">Rootfs Size</span><span id="info-rootfs">${info.rootfs_size||'-'}</span></div>
-        <div class="info-item"><span class="info-label">Containers Data</span><span id="info-containers-size">${info.containers_size||'-'}</span></div>
-        <div class="info-item"><span class="info-label">Total Used</span><span id="info-total-size">${info.total_size||'-'}</span></div>
+        <div class="info-item"><span class="info-label">Rootfs Size</span><span id="info-rootfs">...</span></div>
+        <div class="info-item"><span class="info-label">Containers Data</span><span id="info-containers-size">...</span></div>
+        <div class="info-item"><span class="info-label">Total Used</span><span id="info-total-size">...</span></div>
         <div class="info-item"><span class="info-label">Device Free</span><span id="info-device-free">${info.device_free||'-'}</span></div>
       </div>
       <button class="btn btn-ghost" style="margin-top:12px" onclick="refreshCacheInfo()"><i class="bi bi-arrow-clockwise"></i> Refresh</button>
     </div></div>`;
+    refreshCacheInfo();
   } else if (section === 'about') {
     const sysInfo = settingsInfo || {};
     const diskFree = sysInfo.device_free || '-';
@@ -1848,8 +1849,11 @@ async function loadSettings() {
 
 async function refreshCacheInfo() {
   try {
-    settingsInfo = await api('GET', '/system/info');
-    showSettingsSection('cache');
+    const c = await api('GET', '/system/cache');
+    const el = (id) => document.getElementById(id);
+    if (el('info-rootfs')) el('info-rootfs').textContent = c.rootfs_size || '-';
+    if (el('info-containers-size')) el('info-containers-size').textContent = c.containers_size || '-';
+    if (el('info-total-size')) el('info-total-size').textContent = c.total_size || '-';
     toast('Cache info updated', 'success');
   } catch(e) { toast('Failed to refresh', 'error'); }
 }

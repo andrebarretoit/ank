@@ -1725,6 +1725,8 @@ small{color:#334155}
             self.api_alpine_versions()
         elif path == "/api/system/info":
             self.api_system_info()
+        elif path == "/api/system/cache":
+            self.api_system_cache()
         elif path == "/api/networks":
             self.api_list_networks()
         elif path == "/api/networks/info":
@@ -5030,17 +5032,6 @@ small{color:#334155}
             except Exception:
                 pass
 
-        # Add cache info for Settings > Cache
-        rootfs_size = "-"
-        containers_size = "-"
-        total_size = "-"
-        try:
-            rootfs_size = self._du_human("/data/local/ank/ankfs")
-            containers_size = self._du_human("/data/local/ank/containers")
-            total_size = self._du_human("/data/local/ank")
-        except Exception:
-            pass
-
         self.send_json({
             "mode": mode,
             "kernel": _device_cache["kernel"],
@@ -5059,9 +5050,6 @@ small{color:#334155}
                 "bridge": net.get("bridge", "ank0")
             },
             "device_free": f"{_disk_usage_cache['free']:.1f} GB" if _disk_usage_cache.get("free") else "-",
-            "rootfs_size": rootfs_size,
-            "containers_size": containers_size,
-            "total_size": total_size
         })
 
     def _fmt_size(self, size):
@@ -5092,6 +5080,22 @@ small{color:#334155}
             return f"{size} B"
         except Exception:
             return "-"
+
+    def api_system_cache(self):
+        rootfs_size = "-"
+        containers_size = "-"
+        total_size = "-"
+        try:
+            rootfs_size = self._du_human("/data/local/ank/ankfs")
+            containers_size = self._du_human("/data/local/ank/containers")
+            total_size = self._du_human("/data/local/ank")
+        except Exception:
+            pass
+        self.send_json({
+            "rootfs_size": rootfs_size,
+            "containers_size": containers_size,
+            "total_size": total_size
+        })
 
     def _df_free(self):
         try:

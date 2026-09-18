@@ -841,14 +841,14 @@ def _ws_node_shell_relay(handler, node_id, cols=80, rows=24):
             pass
     finally:
         if remote_sock:
+            try:
+                remote_sock.close()
+            except Exception:
+                pass
         try:
-            remote_sock.close()
+            _ws_send_close(client_sock)
         except Exception:
             pass
-    try:
-        _ws_send_close(client_sock)
-    except Exception:
-        pass
 
 def _ws_node_container_terminal_relay(handler, node_id, container_name, cols=80, rows=24):
     """Relay a browser WebSocket terminal session to a remote node's container terminal."""
