@@ -194,17 +194,21 @@ if [ "$SSH_ENABLED" = "1" ] && [ -f "$ROOTFS/usr/sbin/sshd" ]; then
     # Set root password from config
     ANK_PASS=$(grep -o '"password":"[^"]*"' "$CONFIG" 2>/dev/null | head -1 | cut -d'"' -f4)
     [ -z "$ANK_PASS" ] && ANK_PASS="ank123"
-    # Generate hash and write to shadow directly
+    # Generate SHA-512 hash and write to shadow directly
     if [ -f "$ROOTFS/usr/bin/openssl" ] || [ -f "$ROOTFS/usr/sbin/openssl" ]; then
-        ENC_PASS=$(chroot "$ROOTFS" /usr/bin/openssl passwd -1 "$ANK_PASS" 2>/dev/null || \
-                   chroot "$ROOTFS" /usr/sbin/openssl passwd -1 "$ANK_PASS" 2>/dev/null)
+        ENC_PASS=$(chroot "$ROOTFS" /usr/bin/openssl passwd -6 "$ANK_PASS" 2>/dev/null || \
+                   chroot "$ROOTFS" /usr/sbin/openssl passwd -6 "$ANK_PASS" 2>/dev/null)
         if [ -n "$ENC_PASS" ] && [ -f "$ROOTFS/etc/shadow" ]; then
             sed -i "s|^root:[^:]*:|root:${ENC_PASS}:|" "$ROOTFS/etc/shadow" 2>/dev/null
-            # pfSense-style: admin user = root (uid 0)
-            if grep -q "^admin:" "$ROOTFS/etc/passwd" 2>/dev/null; then
+            # Create admin user if missing (pfSense-style: admin = root uid 0)
+            if ! grep -q "^admin:" "$ROOTFS/etc/passwd" 2>/dev/null; then
+                echo "admin:x:0:0:Admin:/root:/bin/sh" >> "$ROOTFS/etc/passwd"
+                echo "admin:${ENC_PASS}:19000:0:99999:7:::" >> "$ROOTFS/etc/shadow"
+                log "Created admin user in passwd+shadow"
+            else
                 sed -i "s|^admin:[^:]*:|admin:${ENC_PASS}:|" "$ROOTFS/etc/shadow" 2>/dev/null
             fi
-            log "Password set via shadow (openssl)"
+            log "Password set via shadow (openssl SHA-512)"
         fi
     fi
     # Generate host keys on the HOST (no chroot needed — avoids segfault)
@@ -217,9 +221,8 @@ if [ "$SSH_ENABLED" = "1" ] && [ -f "$ROOTFS/usr/sbin/sshd" ]; then
         elif [ -x /system/bin/ssh-keygen ]; then
             /system/bin/ssh-keygen -t rsa -b 3072 -f "$ROOTFS/etc/ssh/ssh_host_rsa_key" -N "" -q 2>/dev/null
             /system/bin/ssh-keygen -t ed25519 -f "$ROOTFS/etc/ssh/ssh_host_ed25519_key" -N "" -q 2>/dev/null
-        elif [ -f "$ROOTFS/usr/bin/ssh-keygen" ] && [ -f "$ROOTFS/lib/ld-musl-armhf.so.1" ]; then
-            # Fallback: run ankfs ssh-keygen via musl loader (host can execute musl static-linked bins)
-            MUSL="$ROOTFS/lib/ld-musl-armhf.so.1"
+        elif [ -f "$ROOTFS/usr/bin/ssh-keygen" ] && [ -f "$MUSL" ]; then
+            # Fallback: run ankfs ssh-keygen via musl loader
             "$MUSL" "$ROOTFS/usr/bin/ssh-keygen" -t rsa -b 3072 -f "$ROOTFS/etc/ssh/ssh_host_rsa_key" -N "" -q 2>/dev/null
             "$MUSL" "$ROOTFS/usr/bin/ssh-keygen" -t ed25519 -f "$ROOTFS/etc/ssh/ssh_host_ed25519_key" -N "" -q 2>/dev/null
         fi

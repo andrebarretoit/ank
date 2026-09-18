@@ -225,6 +225,8 @@ body::before {
 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
 @keyframes shimmer { 0% { background-position: -200% 0; } 100% { background-position: 200% 0; } }
 @keyframes spin { to { transform: rotate(360deg); } }
+@keyframes flash { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
+@keyframes refreshPulse { 0% { box-shadow: 0 0 0 0 rgba(59,130,246,0.4); } 70% { box-shadow: 0 0 0 8px rgba(59,130,246,0); } 100% { box-shadow: 0 0 0 0 rgba(59,130,246,0); } }
 @keyframes countUp { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
 
 /* ═══════ LOGIN ═══════ */
@@ -421,6 +423,8 @@ body::before {
 .btn-icon { width: 34px; height: 34px; padding: 0; display: flex; align-items: center; justify-content: center; border-radius: var(--radius-sm); }
 .btn-icon.sm { width: 28px; height: 28px; font-size: 13px; }
 .spin { animation: spin 1s linear infinite; }
+.flash { animation: flash 0.5s ease 2; }
+.refresh-pulse { animation: refreshPulse 0.6s ease 1; }
 
 /* ═══════ FORMS ═══════ */
 .form-group { margin-bottom: 16px; }
@@ -570,6 +574,7 @@ tr:hover td { background: var(--bg-hover); }
 .terminal-container {
   border-radius: var(--radius); overflow: hidden;
   border-top: 1px solid var(--glass-border);
+  display: flex; flex-direction: column; flex: 1; min-height: 0;
 }
 .terminal-header { display: flex; align-items: center; gap: 8px; padding: 10px 16px; border-bottom: 1px solid var(--glass-border);}
 .terminal-dot { width: 12px; height: 12px; border-radius: 50%; }
@@ -577,7 +582,8 @@ tr:hover td { background: var(--bg-hover); }
 .terminal-dot.yellow { background: #f59e0b; }
 .terminal-dot.green { background: #10b981; }
 .terminal-title { margin-left: 8px; font-size: 12px; color: var(--text-muted); font-family: monospace; }
-.terminal-body { padding: 12px; min-height: 400px; flex: 1; display: flex; flex-direction: column; }
+.terminal-body { padding: 12px; min-height: 400px; flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+#page-shell.active { display: flex; flex-direction: column; height: calc(100vh - 160px); }
 .xterm .xterm-viewport { background-color: transparent !important; }
 
 /* ═══════ EMPTY STATE ═══════ */

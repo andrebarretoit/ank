@@ -501,13 +501,15 @@ ank_history() {
 # ANK: ps
 # ============================================================
 ank_ps() {
-    _print_row "NAME" "STATUS" "IP" "IMAGE" "PID"
+    _print_row "NAME" "STATUS" "IP" "IMAGE" "PID" "NODE"
     printf "%s\n" "----------------------------------------------------------------------"
     local found=0
     if command -v curl >/dev/null 2>&1; then
         local json=$(_api_get "/api/containers/all")
         if [ -n "$json" ] && echo "$json" | grep -q '"name"'; then
-            echo "$json" | sed 's/},{/}\n{/g' | while IFS= read -r obj; do
+            local tmpfile=$(mktemp /data/local/ank/tmp/ankps.XXXXXX 2>/dev/null || echo "/data/local/ank/tmp/ankps_tmp")
+            echo "$json" | sed 's/},{/}\n{/g' > "$tmpfile" 2>/dev/null
+            while IFS= read -r obj; do
                 [ -z "$obj" ] && continue
                 local name=$(echo "$obj" | grep -o '"name"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"$/\1/')
                 local status=$(echo "$obj" | grep -o '"status"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"$/\1/')
@@ -518,13 +520,16 @@ ank_ps() {
                 local node=$(echo "$obj" | grep -o '"node"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"$/\1/')
                 [ -z "$ip" ] && ip="N/A"
                 [ -z "$pid" ] && pid="-"
-                if [ "$node" != "local" ] && [ -n "$node" ]; then
-                    _print_row "$name" "$status" "$ip" "$image" "$pid" "[$node]"
+                local node_display=""
+                if [ "$node" = "local" ] || [ -z "$node" ]; then
+                    node_display="local"
                 else
-                    _print_row "$name" "$status" "$ip" "$image" "$pid"
+                    node_display=$(_node_alias "$node")
                 fi
+                _print_row "$name" "$status" "$ip" "$image" "$pid" "$node_display"
                 found=1
-            done
+            done < "$tmpfile"
+            rm -f "$tmpfile" 2>/dev/null
         fi
     fi
     if [ "$found" -eq 0 ]; then
@@ -536,7 +541,7 @@ ank_ps() {
             local pid=$(_json_num "$cfg" "pid")
             [ -z "$ip" ] && ip="N/A"
             [ -z "$pid" ] && pid="-"
-            _print_row "$name" "$status" "$ip" "$image" "$pid"
+            _print_row "$name" "$status" "$ip" "$image" "$pid" "local"
             found=1
         done
     fi
