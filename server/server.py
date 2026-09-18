@@ -1925,6 +1925,10 @@ small{color:#334155}
             self.api_delete_stack(path.split("/")[3])
         elif path.startswith("/api/stacks/") and path.endswith("/update"):
             self.api_update_stack(path.split("/")[3], data)
+        elif path.startswith("/api/stacks/") and path.endswith("/rolling-update"):
+            self.api_rolling_update(path.split("/")[3], data)
+        elif path.startswith("/api/stacks/") and path.endswith("/healing"):
+            self.api_start_healing(path.split("/")[3])
         elif path == "/api/backups":
             self.api_create_backup_routine(data)
         elif path.startswith("/api/backups/") and path.endswith("/execute"):
@@ -5250,8 +5254,18 @@ small{color:#334155}
         if not sm:
             self.send_json({"lines": []})
             return
-        lines = sm.get_stack_logs(name, 200)
-        self.send_json({"lines": lines})
+        lines = []
+        stack_config = sm._load_stack_config(name)
+        if stack_config:
+            for cname in stack_config.get("containers", []):
+                log_path = os.path.join(CONTAINERS_DIR, cname, "logs", "ankd.log")
+                if os.path.exists(log_path):
+                    try:
+                        with open(log_path, "r", encoding="utf-8", errors="replace") as f:
+                            lines.extend(f.readlines()[-50:])
+                    except Exception:
+                        pass
+        self.send_json({"lines": lines[-200:]})
 
     def api_stack_metrics(self, name):
         sm = self._get_stack_manager()
@@ -5285,7 +5299,12 @@ small{color:#334155}
                 "port": data.get("lb_port", data.get("port")),
                 "trigger": data.get("trigger", "requests"),
                 "root_password": data.get("root_password", "ankstack"),
-                "load_balance": data.get("load_balance", "least_conn")
+                "load_balance": data.get("load_balance", "least_conn"),
+                "shared_volume": data.get("shared_volume", False),
+                "threshold_up": data.get("threshold_up", 100),
+                "threshold_down": data.get("threshold_down", 20),
+                "scale_up_after": data.get("scale_up_after", 30),
+                "scale_down_after": data.get("scale_down_after", 120),
             }
             result = sm.create_stack(config)
             self.send_json(result)
@@ -5298,11 +5317,11 @@ small{color:#334155}
             self.send_json({"error": "stack_manager not available"}, 500)
             return
         count = data.get("count", 1)
-        result = sm.scale_up(name, count)
-        if "error" in result:
-            self.send_json(result, 400)
-        else:
-            self.send_json(result)
+        try:
+            created = sm.scale_up(name, count)
+            self.send_json({"status": "ok", "created": created})
+        except ValueError as e:
+            self.send_json({"error": str(e)}, 400)
 
     def api_scale_down_stack(self, name, data):
         sm = self._get_stack_manager()
@@ -5310,33 +5329,57 @@ small{color:#334155}
             self.send_json({"error": "stack_manager not available"}, 500)
             return
         count = data.get("count", 1)
-        result = sm.scale_down(name, count)
-        if "error" in result:
-            self.send_json(result, 400)
-        else:
-            self.send_json(result)
+        try:
+            removed = sm.scale_down(name, count)
+            self.send_json({"status": "ok", "removed": removed})
+        except ValueError as e:
+            self.send_json({"error": str(e)}, 400)
 
     def api_delete_stack(self, name):
         sm = self._get_stack_manager()
         if not sm:
             self.send_json({"error": "stack_manager not available"}, 500)
             return
-        result = sm.delete_stack(name)
-        if "error" in result:
-            self.send_json(result, 400)
-        else:
-            self.send_json(result)
+        try:
+            sm.delete_stack(name)
+            self.send_json({"status": "ok"})
+        except ValueError as e:
+            self.send_json({"error": str(e)}, 400)
 
     def api_update_stack(self, name, data):
         sm = self._get_stack_manager()
         if not sm:
             self.send_json({"error": "stack_manager not available"}, 500)
             return
-        result = sm.update_stack(name, data)
-        if "error" in result:
-            self.send_json(result, 400)
-        else:
+        try:
+            result = sm.update_stack(name, data)
             self.send_json(result)
+        except ValueError as e:
+            self.send_json({"error": str(e)}, 400)
+
+    def api_rolling_update(self, name, data):
+        sm = self._get_stack_manager()
+        if not sm:
+            self.send_json({"error": "stack_manager not available"}, 500)
+            return
+        try:
+            new_template = data.get("template")
+            new_ankfile = data.get("ankfile")
+            result = sm.rolling_update(name, new_template, new_ankfile)
+            self.send_json(result)
+        except ValueError as e:
+            self.send_json({"error": str(e)}, 400)
+
+    def api_start_healing(self, name):
+        sm = self._get_stack_manager()
+        if not sm:
+            self.send_json({"error": "stack_manager not available"}, 500)
+            return
+        try:
+            sm.start_healing(name)
+            self.send_json({"status": "ok", "message": f"Healing started for '{name}'"})
+        except Exception as e:
+            self.send_json({"error": str(e)}, 500)
 
     # ============================================================
     # Backups API

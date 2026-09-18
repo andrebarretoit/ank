@@ -1512,6 +1512,7 @@ function showStackDetail(name) {
         <div class="sr-actions">
           <button class="btn btn-secondary btn-sm" onclick="scaleStackUp('${esc(s.name)}')" title="Scale Up"><i class="bi bi-plus-lg"></i></button>
           <button class="btn btn-secondary btn-sm" onclick="scaleStackDown('${esc(s.name)}')" title="Scale Down"><i class="bi bi-dash-lg"></i></button>
+          <button class="btn btn-secondary btn-sm" onclick="rollingUpdateStack('${esc(s.name)}')" title="Rolling Update"><i class="bi bi-arrow-clockwise"></i></button>
           <button class="btn btn-danger btn-sm" onclick="deleteStack('${esc(s.name)}')"><i class="bi bi-trash3"></i></button>
         </div>
       </div>
@@ -1519,15 +1520,25 @@ function showStackDetail(name) {
         <div class="sr-info-item"><div class="sr-label">Template</div><div class="sr-value">${esc(s.template||s.image||'-')}</div></div>
         <div class="sr-info-item"><div class="sr-label">Status</div><div class="sr-value">${running}/${total} running</div></div>
         <div class="sr-info-item"><div class="sr-label">LB Port</div><div class="sr-value">${s.port||s.lb_port||'-'}</div></div>
+        <div class="sr-info-item"><div class="sr-label">LB Algorithm</div><div class="sr-value">${esc(s.load_balance||'least_conn')}</div></div>
+        <div class="sr-info-item"><div class="sr-label">Scale Range</div><div class="sr-value">${s.min||1} — ${s.max||10}</div></div>
+        <div class="sr-info-item"><div class="sr-label">Trigger</div><div class="sr-value">${esc(s.trigger||'none')}</div></div>
       </div>
       <div style="font-size:12px;font-weight:600;color:var(--text-secondary);margin-bottom:10px">Containers</div>
       ${(s.containers||[]).map(c => {
         const sc = getStatusBadgeClass(c.status);
         return `<div style="display:flex;align-items:center;justify-content:space-between;padding:8px 12px;border:1px solid var(--border);border-radius:8px;margin-bottom:6px">
           <span style="font-size:13px">${esc(c.name)} <span class="badge ${sc}" style="font-size:9px">${getStatusLabel(c.status)}</span></span>
+          <span style="font-size:11px;color:var(--text-muted)">${esc(c.ip||'-')}</span>
         </div>`;
       }).join('') || '<div style="text-align:center;padding:16px;color:var(--text-muted);font-size:12px">No containers</div>'}`;
   }).catch(e => { el.innerHTML = `<div style="color:var(--danger);padding:20px">${esc(e.message)}</div>`; });
+}
+
+async function rollingUpdateStack(name) {
+  const ok = await confirmAction('Rolling Update', `Perform rolling update on stack "${name}"? This will replace containers one by one.`);
+  if (!ok) return;
+  try { await api('POST', `/stacks/${encodeURIComponent(name)}/rolling-update`, {}); toast('Rolling update started', 'info'); loadStacks(); } catch(e) { toast(`Failed: ${e.message}`, 'error'); }
 }
 
 document.getElementById('btn-create-stack')?.addEventListener('click', () => {
@@ -1538,8 +1549,11 @@ function toggleStackAnkfile() { const sel = document.getElementById('stack-image
 async function createStack() {
   const name = document.getElementById('stack-name')?.value?.trim();
   const image = document.getElementById('stack-image')?.value;
-  const instances = parseInt(document.getElementById('stack-instances')?.value || '1');
+  const min = parseInt(document.getElementById('stack-min')?.value || '1');
+  const max = parseInt(document.getElementById('stack-max')?.value || '5');
   const lbPort = parseInt(document.getElementById('stack-lb-port')?.value || '30000');
+  const lbAlgo = document.getElementById('stack-lb-algo')?.value || 'least_conn';
+  const rootPass = document.getElementById('stack-root-pass')?.value || 'ankstack';
   const volume = document.getElementById('stack-volume')?.checked;
   const trigger = document.getElementById('stack-trigger')?.value;
   const ankfile = image === 'ankfile' ? (document.getElementById('stack-ankfile')?.value?.trim() || '') : '';
@@ -1547,7 +1561,7 @@ async function createStack() {
   if (image === 'ankfile' && !ankfile) { toast('Ankfile content required', 'error'); return; }
   try {
     toast(`Creating stack "${name}"...`, 'info');
-    await api('POST', '/stacks', { name, template: image, instances, lb_port: lbPort, shared_volume: volume, trigger: trigger === 'none' ? null : trigger, ankfile });
+    await api('POST', '/stacks', { name, template: image, min, max, lb_port: lbPort, load_balance: lbAlgo, root_password: rootPass, shared_volume: volume, trigger: trigger === 'none' ? null : trigger, ankfile });
     closeModalById('stack-modal-overlay');
     toast(`Stack "${name}" created`, 'success');
     loadStacks();

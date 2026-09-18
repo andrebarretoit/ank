@@ -437,10 +437,17 @@
         <div class="form-group"><label class="form-label">Stack Name</label><input type="text" class="form-input" id="stack-name" placeholder="my-stack" required></div>
         <div class="form-group"><label class="form-label">Image</label><select class="form-select" id="stack-image" onchange="toggleStackAnkfile()"><option value="nginx">nginx</option><option value="apache">apache</option><option value="php">php</option><option value="node">node</option><option value="python">python</option><option value="ankfile">Custom (Ankfile)</option></select></div>
         <div id="stack-ankfile-section" style="display:none"><div class="form-group"><label class="form-label">Ankfile</label><textarea class="ankfile-editor" id="stack-ankfile" rows="8" placeholder="FROM alpine-3.20&#10;PASSWD ank123&#10;RUN apk add --allow-untrusted nginx&#10;EXPOSE 8080"></textarea></div></div>
-        <div class="form-group"><label class="form-label">Instances</label><input type="number" class="form-input" id="stack-instances" value="1" min="1" max="10"></div>
-        <div class="form-group"><label class="form-label">LB Port (30000-39999)</label><input type="number" class="form-input" id="stack-lb-port" value="30000" min="30000" max="39999"></div>
+        <div class="form-row">
+          <div class="form-group"><label class="form-label">Min Instances</label><input type="number" class="form-input" id="stack-min" value="1" min="1" max="10"></div>
+          <div class="form-group"><label class="form-label">Max Instances</label><input type="number" class="form-input" id="stack-max" value="5" min="1" max="20"></div>
+        </div>
+        <div class="form-row">
+          <div class="form-group"><label class="form-label">LB Port (30000-39999)</label><input type="number" class="form-input" id="stack-lb-port" value="30000" min="30000" max="39999"></div>
+          <div class="form-group"><label class="form-label">Load Balance</label><select class="form-select" id="stack-lb-algo"><option value="least_conn">Least Connections</option><option value="round_robin">Round Robin</option><option value="ip_hash">IP Hash</option></select></div>
+        </div>
+        <div class="form-group"><label class="form-label">Root Password</label><input type="password" class="form-input" id="stack-root-pass" value="ankstack" placeholder="ankstack"></div>
         <div class="form-group"><label class="checkbox-label" style="display:flex;align-items:center;gap:8px;cursor:pointer"><input type="checkbox" id="stack-volume" checked style="width:18px;height:18px;accent-color:var(--accent)"><i class="bi bi-hdd" style="color:var(--accent)"></i> Mount shared data/ volume</label></div>
-        <div class="form-group"><label class="form-label">Trigger (auto-scale)</label><select class="form-select" id="stack-trigger"><option value="none">Disabled</option><option value="requests">Requests/sec</option><option value="cpu">CPU</option><option value="mem">Memory</option></select></div>
+        <div class="form-group"><label class="form-label">Trigger (auto-scale)</label><select class="form-select" id="stack-trigger"><option value="none">Disabled</option><option value="requests">Requests/sec</option><option value="cpu">CPU</option><option value="mem">Memory</option><option value="combined">Combined</option></select></div>
         <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
           <button type="button" class="btn btn-secondary" onclick="closeModalById('stack-modal-overlay')">Cancel</button>
           <button type="button" class="btn btn-primary" onclick="createStack()"><i class="bi bi-check-lg"></i> Create</button>
