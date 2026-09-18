@@ -72,13 +72,12 @@ sleep 1
 
 # Ensure /dev nodes exist in ankfs for Python/PTY
 mkdir -p "$ROOTFS/dev"
-[ -e "$ROOTFS/dev/null" ] || mknod "$ROOTFS/dev/null" c 1 3 2>/dev/null
-[ -e "$ROOTFS/dev/urandom" ] || mknod "$ROOTFS/dev/urandom" c 1 9 2>/dev/null
-[ -e "$ROOTFS/dev/random" ] || mknod "$ROOTFS/dev/random" c 1 8 2>/dev/null
-[ -e "$ROOTFS/dev/tty" ] || mknod "$ROOTFS/dev/tty" c 5 0 2>/dev/null
-[ -e "$ROOTFS/dev/ptmx" ] || mknod "$ROOTFS/dev/ptmx" c 5 2 2>/dev/null
-[ -e "$ROOTFS/dev/console" ] || mknod "$ROOTFS/dev/console" c 5 1 2>/dev/null
-chmod 666 "$ROOTFS/dev/null" "$ROOTFS/dev/urandom" "$ROOTFS/dev/random" "$ROOTFS/dev/tty" "$ROOTFS/dev/ptmx" "$ROOTFS/dev/console" 2>/dev/null
+# Bind-mount host /dev nodes — mknod on Android creates regular files (SELinux)
+for _dn in null urandom random tty ptmx console; do
+    [ -e "/dev/$_dn" ] && mount --bind "/dev/$_dn" "$ROOTFS/dev/$_dn" 2>/dev/null
+    [ -e "$ROOTFS/dev/$_dn" ] || mknod "$ROOTFS/dev/$_dn" c 1 3 2>/dev/null
+    chmod 666 "$ROOTFS/dev/$_dn" 2>/dev/null
+done
 
 # Verify Python exists
 if [ ! -f "$ROOTFS/usr/bin/python3" ]; then
@@ -100,13 +99,12 @@ fi
 if ! mountpoint -q "$ROOTFS/dev/pts" 2>/dev/null; then
     umount "$ROOTFS/dev" 2>/dev/null
     mount -t tmpfs -o size=16m tmpfs "$ROOTFS/dev" 2>/dev/null
-    mknod "$ROOTFS/dev/null" c 1 3 2>/dev/null; chmod 666 "$ROOTFS/dev/null" 2>/dev/null
-    mknod "$ROOTFS/dev/zero" c 1 5 2>/dev/null; chmod 666 "$ROOTFS/dev/zero" 2>/dev/null
-    mknod "$ROOTFS/dev/random" c 1 8 2>/dev/null; chmod 666 "$ROOTFS/dev/random" 2>/dev/null
-    mknod "$ROOTFS/dev/urandom" c 1 9 2>/dev/null; chmod 666 "$ROOTFS/dev/urandom" 2>/dev/null
-    mknod "$ROOTFS/dev/tty" c 5 0 2>/dev/null; chmod 666 "$ROOTFS/dev/tty" 2>/dev/null
-    mknod "$ROOTFS/dev/ptmx" c 5 2 2>/dev/null; chmod 666 "$ROOTFS/dev/ptmx" 2>/dev/null
-    mknod "$ROOTFS/dev/console" c 5 1 2>/dev/null; chmod 666 "$ROOTFS/dev/console" 2>/dev/null
+    # Bind-mount host /dev nodes — mknod on Android creates regular files (SELinux)
+    for _dn in null zero random urandom tty ptmx console; do
+        [ -e "/dev/$_dn" ] && mount --bind "/dev/$_dn" "$ROOTFS/dev/$_dn" 2>/dev/null
+        [ -e "$ROOTFS/dev/$_dn" ] || mknod "$ROOTFS/dev/$_dn" c 1 3 2>/dev/null
+        chmod 666 "$ROOTFS/dev/$_dn" 2>/dev/null
+    done
     mkdir -p "$ROOTFS/dev/pts" "$ROOTFS/dev/shm" 2>/dev/null
     mount -t devpts devpts "$ROOTFS/dev/pts" 2>/dev/null
     log "Mounted tmpfs on /dev (kernel 3.10 workaround)"

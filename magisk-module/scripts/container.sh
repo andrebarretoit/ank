@@ -70,8 +70,15 @@ _ensure_ankbase() {
     mkdir -p "$ANKBASE/dev/pts" "$ANKBASE/dev/shm" 2>/dev/null
     umount "$ANKBASE/dev" 2>/dev/null
     mount -t tmpfs -o size=16m tmpfs "$ANKBASE/dev" 2>/dev/null
-    [ -e "$ANKBASE/dev/null" ] || mknod "$ANKBASE/dev/null" c 1 3 2>/dev/null; chmod 666 "$ANKBASE/dev/null" 2>/dev/null
-    [ -e "$ANKBASE/dev/urandom" ] || mknod "$ANKBASE/dev/urandom" c 1 9 2>/dev/null; chmod 666 "$ANKBASE/dev/urandom" 2>/dev/null
+    # Bind-mount host /dev nodes — mknod on Android creates regular files (SELinux)
+    for _devnode in "null:1:3" "urandom:1:9" "random:1:8" "tty:5:0" "ptmx:5:2"; do
+        _dn=$(echo "$_devnode" | cut -d: -f1)
+        _ct=$(echo "$_devnode" | cut -d: -f2)
+        _cm=$(echo "$_devnode" | cut -d: -f3)
+        [ -e "/dev/$_dn" ] && mount --bind "/dev/$_dn" "$ANKBASE/dev/$_dn" 2>/dev/null
+        [ -e "$ANKBASE/dev/$_dn" ] || mknod "$ANKBASE/dev/$_dn" c "$_ct" "$_cm" 2>/dev/null
+        chmod 666 "$ANKBASE/dev/$_dn" 2>/dev/null
+    done
 
     # Install packages (stream output)
     echo "Installing openssh, bash, busybox, shadow, openssl..."
@@ -654,12 +661,14 @@ cmd_create() {
     mkdir -p "$ROOTFS/dev/pts" "$ROOTFS/dev/shm" 2>/dev/null
     umount "$ROOTFS/dev" 2>/dev/null
     mount -t tmpfs -o size=16m tmpfs "$ROOTFS/dev" 2>/dev/null
-    for node_info in "null:1:3" "zero:1:5" "random:1:8" "urandom:1:9" "tty:5:0" "ptmx:5:2" "console:5:1"; do
-        local _n=$(echo "$node_info" | cut -d: -f1)
-        local _t=$(echo "$node_info" | cut -d: -f2)
-        local _m=$(echo "$node_info" | cut -d: -f3)
-        [ -e "$ROOTFS/dev/$_n" ] || mknod "$ROOTFS/dev/$_n" c "$_t" "$_m" 2>/dev/null
-        chmod 666 "$ROOTFS/dev/$_n" 2>/dev/null
+    # Bind-mount host /dev nodes — mknod on Android creates regular files (SELinux)
+    for _devnode in "null:1:3" "zero:1:5" "random:1:8" "urandom:1:9" "tty:5:0" "ptmx:5:2" "console:5:1"; do
+        _dn=$(echo "$_devnode" | cut -d: -f1)
+        _ct=$(echo "$_devnode" | cut -d: -f2)
+        _cm=$(echo "$_devnode" | cut -d: -f3)
+        [ -e "/dev/$_dn" ] && mount --bind "/dev/$_dn" "$ROOTFS/dev/$_dn" 2>/dev/null
+        [ -e "$ROOTFS/dev/$_dn" ] || mknod "$ROOTFS/dev/$_dn" c "$_ct" "$_cm" 2>/dev/null
+        chmod 666 "$ROOTFS/dev/$_dn" 2>/dev/null
     done
     # Generate SSH host keys if missing
     if [ ! -f "$ROOTFS/etc/ssh/ssh_host_rsa_key" ]; then

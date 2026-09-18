@@ -419,12 +419,11 @@ cd "$ANKFS" && tar xzf "$TARBALL" 2>>"$LOG_FILE"; cd /
 
 # Device nodes for ANKFS
 mkdir -p "$ANKFS/dev"
-[ -e "$ANKFS/dev/null" ] || mknod "$ANKFS/dev/null" c 1 3 2>/dev/null
-[ -e "$ANKFS/dev/urandom" ] || mknod "$ANKFS/dev/urandom" c 1 9 2>/dev/null
-[ -e "$ANKFS/dev/random" ] || mknod "$ANKFS/dev/random" c 1 8 2>/dev/null
-[ -e "$ANKFS/dev/tty" ] || mknod "$ANKFS/dev/tty" c 5 0 2>/dev/null
-[ -e "$ANKFS/dev/ptmx" ] || mknod "$ANKFS/dev/ptmx" c 5 2 2>/dev/null
-chmod 666 "$ANKFS/dev/null" "$ANKFS/dev/urandom" "$ANKFS/dev/random" "$ANKFS/dev/tty" "$ANKFS/dev/ptmx" 2>/dev/null
+for _dn in null urandom random tty ptmx; do
+    [ -e "/dev/$_dn" ] && mount --bind "/dev/$_dn" "$ANKFS/dev/$_dn" 2>/dev/null
+    [ -e "$ANKFS/dev/$_dn" ] || mknod "$ANKFS/dev/$_dn" c 1 3 2>/dev/null
+    chmod 666 "$ANKFS/dev/$_dn" 2>/dev/null
+done
 
 # DNS in ANKFS
 mkdir -p "$ANKFS/etc"
@@ -454,12 +453,12 @@ cd "$ANKBASE" && tar xzf "$TARBALL" 2>>"$LOG_FILE"; cd /
 
 # Device nodes for ANK-ALPINEBASE
 mkdir -p "$ANKBASE/dev"
-[ -e "$ANKBASE/dev/null" ] || mknod "$ANKBASE/dev/null" c 1 3 2>/dev/null
-[ -e "$ANKBASE/dev/urandom" ] || mknod "$ANKBASE/dev/urandom" c 1 9 2>/dev/null
-[ -e "$ANKBASE/dev/random" ] || mknod "$ANKBASE/dev/random" c 1 8 2>/dev/null
-[ -e "$ANKBASE/dev/tty" ] || mknod "$ANKBASE/dev/tty" c 5 0 2>/dev/null
-[ -e "$ANKBASE/dev/ptmx" ] || mknod "$ANKBASE/dev/ptmx" c 5 2 2>/dev/null
-chmod 666 "$ANKBASE/dev/null" "$ANKBASE/dev/urandom" "$ANKBASE/dev/random" "$ANKBASE/dev/tty" "$ANKBASE/dev/ptmx" 2>/dev/null
+# Bind-mount host /dev nodes — mknod on Android creates regular files (SELinux)
+for _dn in null urandom random tty ptmx; do
+    [ -e "/dev/$_dn" ] && mount --bind "/dev/$_dn" "$ANKBASE/dev/$_dn" 2>/dev/null
+    [ -e "$ANKBASE/dev/$_dn" ] || mknod "$ANKBASE/dev/$_dn" c 1 3 2>/dev/null
+    chmod 666 "$ANKBASE/dev/$_dn" 2>/dev/null
+done
 
 # DNS + repos for ANK-ALPINEBASE
 mkdir -p "$ANKBASE/etc/apk" "$ANKBASE/var/cache/apk"
