@@ -139,7 +139,13 @@ function navigateTo(page) {
   document.getElementById('mobile-expanded')?.classList.remove('active');
   if (page === 'dashboard') loadDashboard();
   if (page === 'containers') loadContainers();
-  if (page === 'images') { loadImages().then(() => { const sel = document.querySelector('#images-list .split-list-card.selected'); if (!sel) showImageSection('quick-deploy'); }); }
+  if (page === 'images') {
+    showImageSection('quick-deploy');
+    loadImages().then(() => {
+      const sel = document.querySelector('#images-list .split-list-card.selected');
+      if (!sel) showImageSection('quick-deploy');
+    });
+  }
   if (page === 'nodes') { loadNodes(); loadPairingRequests(); }
   if (page === 'stacks') loadStacks();
   if (page === 'backups') loadBackups();
@@ -1102,6 +1108,8 @@ async function showImageSection(section) {
   if (section === 'quick-deploy') {
     if (cachedTemplates.length) {
       el.innerHTML = `<div class="sr-header"><h2><i class="bi bi-lightning-charge" style="color:var(--accent)"></i> Quick Deploy</h2></div><p style="font-size:13px;color:var(--text-muted);margin-bottom:16px">One-click containers — pick a template, name it, deploy.</p><div class="templates-grid">${cachedTemplates.map(t => `<div class="template-card" style="border-left:3px solid ${t.color||'var(--primary)'}" onclick="deployTemplate('${esc(t.id)}','${esc(t.name)}',${t.base_ready})"><div class="template-icon" style="color:${t.color||'var(--primary)'}"><i class="bi ${t.icon||'bi-box-seam'}"></i></div><div class="template-name">${esc(t.name)}</div><div class="template-desc">${esc(t.description||'')}</div><span class="template-badge ${t.base_ready?'ready':'pending'}">${t.base_ready?'Ready':'Pull base first'}</span></div>`).join('')}</div>`;
+    } else if (cachedImages.length === 0 && !cachedTemplates.length && document.querySelector('#page-images.active')) {
+      el.innerHTML = `<div class="sr-header"><h2><i class="bi bi-lightning-charge" style="color:var(--accent)"></i> Quick Deploy</h2></div><div class="empty-state" style="padding:40px"><div class="spinner" style="width:24px;height:24px;margin:0 auto 8px"></div><p style="color:var(--text-muted)">Loading templates...</p></div>`;
     } else {
       el.innerHTML = `<div class="sr-header"><h2><i class="bi bi-lightning-charge" style="color:var(--accent)"></i> Quick Deploy</h2></div><div class="empty-state" style="padding:40px"><i class="bi bi-cloud-download" style="font-size:32px;color:var(--text-muted)"></i><p style="margin-top:8px;color:var(--text-muted)">No templates available.<br>Pull an Alpine image first.</p></div>`;
     }
