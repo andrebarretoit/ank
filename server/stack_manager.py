@@ -77,10 +77,16 @@ def _find_free_port(start=LB_PORT_RANGE[0], end=LB_PORT_RANGE[1]):
             with open(cfg_file) as f:
                 cfg = json.load(f)
             if cfg.get("ssh_port"):
-                used.add(int(cfg["ssh_port"]))
+                try:
+                    used.add(int(cfg["ssh_port"]))
+                except (ValueError, TypeError):
+                    pass
             for pm in cfg.get("port_mappings", []):
                 if pm.get("host_port"):
-                    used.add(int(pm["host_port"]))
+                    try:
+                        used.add(int(pm["host_port"]))
+                    except (ValueError, TypeError):
+                        pass
         except Exception:
             pass
     for cfg_file in glob.glob(os.path.join(STACKS_DIR, "*/config.json")):
@@ -88,7 +94,10 @@ def _find_free_port(start=LB_PORT_RANGE[0], end=LB_PORT_RANGE[1]):
             with open(cfg_file) as f:
                 cfg = json.load(f)
             if cfg.get("port"):
-                used.add(int(cfg["port"]))
+                try:
+                    used.add(int(cfg["port"]))
+                except (ValueError, TypeError):
+                    pass
         except Exception:
             pass
     for port in range(start, end):
@@ -118,7 +127,10 @@ def _get_free_replica_port():
             for pm in cfg.get("port_mappings", []):
                 hp = pm.get("host_port")
                 if hp:
-                    used.add(int(hp))
+                    try:
+                        used.add(int(hp))
+                    except (ValueError, TypeError):
+                        pass
         except Exception:
             pass
     for port in range(REPLICA_PORT_BASE, 60000):
@@ -332,7 +344,12 @@ class StackManager:
                 _log(f"Rolling update: replacing {cname}")
                 self._destroy_container(cname)
 
-                idx = stack_config["containers"].index(cname) + 1
+                try:
+                    idx = stack_config["containers"].index(cname) + 1
+                except ValueError:
+                    _log(f"Rolling update: {cname} no longer in container list, appending")
+                    idx = len(stack_config["containers"]) + 1
+                    stack_config["containers"].append(f"stack-{stack_name}-{idx}")
                 new_cname = f"stack-{stack_name}-{idx}"
                 if self._create_stack_container(stack_name, new_cname, template, root_password,
                                                 ankfile=ankfile,
@@ -510,14 +527,20 @@ class StackManager:
             return 80
         for pm in config.get("port_mappings", []):
             if pm.get("container_port"):
-                return int(pm["container_port"])
+                try:
+                    return int(pm["container_port"])
+                except (ValueError, TypeError):
+                    pass
         ank_dir = os.path.join(CONTAINERS_DIR, cname, "merged", "etc", "ankd", "services.d")
         for f in glob.glob(os.path.join(ank_dir, "*.ankd")):
             try:
                 with open(f) as fh:
                     for line in fh:
                         if line.startswith("PORT="):
-                            return int(line.split("=", 1)[1].strip())
+                            try:
+                                return int(line.split("=", 1)[1].strip())
+                            except (ValueError, TypeError):
+                                pass
             except (OSError, ValueError):
                 continue
         return 80

@@ -120,6 +120,7 @@ class LoadBalancer:
         self._backends_lock = threading.Lock()
         self._backends: dict[str, BackendState] = {}
         self._rr_index = 0  # round‑robin cursor
+        self._rr_lock = threading.Lock()  # dedicated lock for round-robin counter
 
         self._server = None
         self._server_thread = None
@@ -189,7 +190,7 @@ class LoadBalancer:
         addrs = list(states.keys())
         if not addrs:
             return None
-        with self._backends_lock:
+        with self._rr_lock:
             idx = self._rr_index % len(addrs)
             self._rr_index += 1
         return states[addrs[idx]]
@@ -238,7 +239,7 @@ class LoadBalancer:
             sock.sendall(req.encode())
             resp = sock.recv(1024)
             st = self._get_state(addr)
-            if st and b"200" in resp:
+            if st and self._is_healthy_status(resp):
                 st.mark_healthy()
             else:
                 self._record_failure(addr)
@@ -249,6 +250,19 @@ class LoadBalancer:
                 sock.close()
             except Exception:
                 pass
+
+    @staticmethod
+    def _is_healthy_status(resp: bytes) -> bool:
+        """Parse HTTP response status line to check for 2xx status code."""
+        try:
+            status_line = resp.split(b"\r\n", 1)[0]
+            parts = status_line.split(b" ", 2)
+            if len(parts) >= 2:
+                code = int(parts[1])
+                return 200 <= code < 300
+        except (ValueError, IndexError):
+            pass
+        return False
 
     def _record_failure(self, addr: str):
         st = self._get_state(addr)

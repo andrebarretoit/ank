@@ -1,6 +1,7 @@
 import os
 import subprocess
 import json
+import shlex
 
 
 class BackupBrowser:
@@ -13,18 +14,19 @@ class BackupBrowser:
         user = self.remote["user"]
         password = self.remote["password"]
         cmd = [
-            "sshpass", "-p", password,
+            "sshpass", "-e",
             "ssh", "-p", str(port),
             "-o", "StrictHostKeyChecking=no",
             f"{user}@{host}",
             command
         ]
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        env = {**os.environ, "SSHPASS": password}
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30, env=env)
         return result.stdout, result.stderr, result.returncode
 
     def list_files(self, path=""):
         base = self.remote["path"].rstrip("/")
-        full_path = f"{base}/{path}".rstrip("/") if path else base
+        full_path = shlex.quote(f"{base}/{path}".rstrip("/") if path else base)
         stdout, stderr, rc = self._ssh(f"ls -la --time-style=long-iso {full_path}")
         if rc != 0:
             return []
@@ -51,8 +53,8 @@ class BackupBrowser:
 
     def get_file_info(self, path):
         base = self.remote["path"].rstrip("/")
-        full_path = f"{base}/{path}"
-        stdout, stderr, rc = self._ssh(f"stat --format='%s %Y %F' '{full_path}'")
+        full_path = shlex.quote(f"{base}/{path}")
+        stdout, stderr, rc = self._ssh(f"stat --format='%s %Y %F' {full_path}")
         if rc != 0:
             return None
         parts = stdout.strip().split(None, 2)
@@ -67,21 +69,21 @@ class BackupBrowser:
 
     def delete_file(self, path):
         base = self.remote["path"].rstrip("/")
-        full_path = f"{base}/{path}"
-        _, _, rc = self._ssh(f"rm -f '{full_path}'")
+        full_path = shlex.quote(f"{base}/{path}")
+        _, _, rc = self._ssh(f"rm -f {full_path}")
         return rc == 0
 
     def delete_dir(self, path):
         base = self.remote["path"].rstrip("/")
-        full_path = f"{base}/{path}"
-        _, _, rc = self._ssh(f"rm -rf '{full_path}'")
+        full_path = shlex.quote(f"{base}/{path}")
+        _, _, rc = self._ssh(f"rm -rf {full_path}")
         return rc == 0
 
     def rename(self, old_path, new_path):
         base = self.remote["path"].rstrip("/")
-        full_old = f"{base}/{old_path}"
-        full_new = f"{base}/{new_path}"
-        _, _, rc = self._ssh(f"mv '{full_old}' '{full_new}'")
+        full_old = shlex.quote(f"{base}/{old_path}")
+        full_new = shlex.quote(f"{base}/{new_path}")
+        _, _, rc = self._ssh(f"mv {full_old} {full_new}")
         return rc == 0
 
     def download_file(self, remote_path, local_path):
@@ -93,20 +95,21 @@ class BackupBrowser:
         full_remote = f"{base}/{remote_path}"
         os.makedirs(os.path.dirname(local_path) or ".", exist_ok=True)
         cmd = [
-            "sshpass", "-p", password,
+            "sshpass", "-e",
             "scp", "-P", str(port),
             "-o", "StrictHostKeyChecking=no",
             f"{user}@{host}:{full_remote}",
             local_path
         ]
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+        env = {**os.environ, "SSHPASS": password}
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300, env=env)
         if result.returncode != 0:
             raise RuntimeError(f"SCP download failed: {result.stderr}")
         return local_path
 
     def get_disk_usage(self):
-        base = self.remote["path"].rstrip("/")
-        stdout, stderr, rc = self._ssh(f"du -sh '{base}'")
+        base = shlex.quote(self.remote["path"].rstrip("/"))
+        stdout, stderr, rc = self._ssh(f"du -sh {base}")
         if rc != 0:
             return None
         parts = stdout.strip().split(None, 1)
@@ -115,8 +118,8 @@ class BackupBrowser:
         return {"size_human": parts[0], "path": parts[1]}
 
     def get_total_backups(self):
-        base = self.remote["path"].rstrip("/")
-        stdout, stderr, rc = self._ssh(f"find '{base}' -name '*.tar.gz' -type f | wc -l")
+        base = shlex.quote(self.remote["path"].rstrip("/"))
+        stdout, stderr, rc = self._ssh(f"find {base} -name '*.tar.gz' -type f | wc -l")
         if rc != 0:
             return 0
         try:
@@ -125,8 +128,8 @@ class BackupBrowser:
             return 0
 
     def get_storage_used(self):
-        base = self.remote["path"].rstrip("/")
-        stdout, stderr, rc = self._ssh(f"find '{base}' -name '*.tar.gz' -type f -exec stat --format='%s' {{}} \\;")
+        base = shlex.quote(self.remote["path"].rstrip("/"))
+        stdout, stderr, rc = self._ssh(f"find {base} -name '*.tar.gz' -type f -exec stat --format='%s' {{}} \\;")
         if rc != 0:
             return 0
         total = 0

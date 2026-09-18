@@ -4835,13 +4835,19 @@ small{color:#334155}
 
     def api_restart_device(self):
         """Reboot the Android device."""
-        log("RESTART_DEVICE: Rebooting device...")
+        client_ip = self.client_address[0] if self.client_address else "unknown"
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        log(f"RESTART_DEVICE: [RESTART-DEVICE] {ts} from {client_ip} - Rebooting device...")
         self.send_json({"message": "Device rebooting..."})
         import threading
         def _reboot():
             import time
             time.sleep(1)
-            os.system("svc power reboot 2>/dev/null || reboot 2>/dev/null || su -c reboot 2>/dev/null")
+            rc = os.system("svc power reboot 2>/dev/null || reboot 2>/dev/null || su -c reboot 2>/dev/null")
+            if rc == 0:
+                log(f"RESTART_DEVICE: [RESTART-DEVICE] {ts} from {client_ip} - Reboot command sent successfully")
+            else:
+                log(f"RESTART_DEVICE: [RESTART-DEVICE] {ts} from {client_ip} - Reboot command failed (rc={rc})")
         threading.Thread(target=_reboot, daemon=True).start()
 
     def api_restart_server(self):
@@ -4909,46 +4915,52 @@ small{color:#334155}
         self.send_json(result)
 
     def api_ank_manager_stop(self):
-        """Gracefully stop all containers then the server."""
-        import threading
-        def _stop():
-            log("ANK_MANAGER: Stopping all containers...")
-            for cfg_file in glob.glob(os.path.join(CONTAINERS_DIR, "*/config.json")):
-                try:
-                    with open(cfg_file) as f:
-                        cfg = json.load(f)
-                    if cfg.get("status") == "running":
-                        name = cfg.get("name")
-                        if name:
-                            run_script("container.sh", "stop", name)
-                except Exception:
-                    pass
-            log("ANK_MANAGER: Sending SIGUSR1 to self...")
-            time.sleep(1)
+        """Gracefully stop the ankd service (server process) via SIGUSR1."""
+        client_ip = self.client_address[0] if self.client_address else "unknown"
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        log(f"ANK_MANAGER: [STOP] {ts} from {client_ip} - Stopping ankd service...")
+        try:
             os.kill(os.getpid(), signal.SIGUSR1)
-        threading.Thread(target=_stop, daemon=True).start()
-        self.send_json({"message": "Stopping all containers and server..."})
+            log(f"ANK_MANAGER: [STOP] {ts} from {client_ip} - SIGUSR1 sent successfully")
+        except Exception as e:
+            log(f"ANK_MANAGER: [STOP] {ts} from {client_ip} - FAILED: {e}")
+        self.send_json({"message": "Stopping ankd service..."})
 
     def api_ank_manager_restart_server(self):
         """Graceful server restart via SIGHUP."""
-        log("ANK_MANAGER: Restart server via SIGHUP")
-        self.send_json({"message": "Server restarting..."})
-        time.sleep(0.5)
-        os.kill(os.getpid(), signal.SIGHUP)
+        client_ip = self.client_address[0] if self.client_address else "unknown"
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        log(f"ANK_MANAGER: [RESTART-SERVER] {ts} from {client_ip} - Sending SIGHUP...")
+        try:
+            self.send_json({"message": "Server restarting..."})
+            time.sleep(0.5)
+            os.kill(os.getpid(), signal.SIGHUP)
+            log(f"ANK_MANAGER: [RESTART-SERVER] {ts} from {client_ip} - SIGHUP sent successfully")
+        except Exception as e:
+            log(f"ANK_MANAGER: [RESTART-SERVER] {ts} from {client_ip} - FAILED: {e}")
+            self.send_json({"error": str(e)}, 500)
 
     def api_ank_manager_restart_device(self):
         """Reboot the Android device."""
-        log("ANK_MANAGER: Rebooting device...")
+        client_ip = self.client_address[0] if self.client_address else "unknown"
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        log(f"ANK_MANAGER: [RESTART-DEVICE] {ts} from {client_ip} - Rebooting device...")
         self.send_json({"message": "Device rebooting..."})
         import threading
         def _reboot():
             time.sleep(1)
-            os.system("svc power reboot 2>/dev/null || reboot 2>/dev/null || su -c reboot 2>/dev/null")
+            rc = os.system("svc power reboot 2>/dev/null || reboot 2>/dev/null || su -c reboot 2>/dev/null")
+            if rc == 0:
+                log(f"ANK_MANAGER: [RESTART-DEVICE] {ts} from {client_ip} - Reboot command sent successfully")
+            else:
+                log(f"ANK_MANAGER: [RESTART-DEVICE] {ts} from {client_ip} - Reboot command failed (rc={rc})")
         threading.Thread(target=_reboot, daemon=True).start()
 
     def api_ank_manager_uninstall(self):
         """Run the full uninstall.sh script."""
-        log("ANK_MANAGER: Starting full uninstall...")
+        client_ip = self.client_address[0] if self.client_address else "unknown"
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        log(f"ANK_MANAGER: [UNINSTALL] {ts} from {client_ip} - Starting full uninstall...")
         import subprocess
         # Find uninstall script
         candidates = [
@@ -4962,13 +4974,18 @@ small{color:#334155}
                 script = c
                 break
         if not script:
+            log(f"ANK_MANAGER: [UNINSTALL] {ts} from {client_ip} - FAILED: uninstall.sh not found")
             self.send_json({"error": "uninstall.sh not found"}, 404)
             return
-        log(f"ANK_MANAGER: Running {script}")
+        log(f"ANK_MANAGER: [UNINSTALL] {ts} from {client_ip} - Running {script}")
         self.send_json({"message": "Uninstalling ANK... device will reboot."})
         # Run in background — script will reboot device
         log_file = os.path.join(ANK_DIR, "logs", "uninstall.log")
-        subprocess.Popen(["sh", script], stdout=open(log_file, "w"), stderr=subprocess.STDOUT)
+        try:
+            subprocess.Popen(["sh", script], stdout=open(log_file, "w"), stderr=subprocess.STDOUT)
+            log(f"ANK_MANAGER: [UNINSTALL] {ts} from {client_ip} - Uninstall process started successfully")
+        except Exception as e:
+            log(f"ANK_MANAGER: [UNINSTALL] {ts} from {client_ip} - FAILED to start uninstall: {e}")
 
     def api_ank_manager_logs(self, parsed=None):
         """Get last N lines of server logs for real-time tail."""
@@ -5104,9 +5121,12 @@ small{color:#334155}
                 pass
 
     def api_uninstall(self):
+        client_ip = self.client_address[0] if self.client_address else "unknown"
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        log(f"UNINSTALL: [UNINSTALL] {ts} from {client_ip} - Starting complete ANK removal...")
         import threading
         def do_uninstall():
-            log("UNINSTALL: Starting complete ANK removal...")
+            log(f"UNINSTALL: [UNINSTALL] {ts} from {client_ip} - Stopping containers and cleaning up...")
             try:
                 for name in os.listdir(CONTAINERS_DIR):
                     cdir = os.path.join(CONTAINERS_DIR, name)
@@ -5122,7 +5142,7 @@ small{color:#334155}
                             subprocess.run(["umount", os.path.join(merged, m)], capture_output=True, timeout=5)
                         subprocess.run(["umount", merged], capture_output=True, timeout=5)
             except Exception as e:
-                log(f"UNINSTALL: cleanup error: {e}")
+                log(f"UNINSTALL: [UNINSTALL] {ts} from {client_ip} - cleanup error: {e}")
             try:
                 # Only remove ANK-specific iptables rules, not all NAT rules
                 result = subprocess.run(["iptables", "-t", "nat", "-S"], capture_output=True, text=True, timeout=5)
@@ -5138,12 +5158,13 @@ small{color:#334155}
                 subprocess.run(["rm", "-rf", ANK_DIR], capture_output=True, timeout=30)
             except Exception:
                 pass
-            log("UNINSTALL: Removing Magisk module...")
+            log(f"UNINSTALL: [UNINSTALL] {ts} from {client_ip} - Removing Magisk module...")
             try:
                 subprocess.run(["magisk", "--remove-module", "ank"], capture_output=True, timeout=15)
+                log(f"UNINSTALL: [UNINSTALL] {ts} from {client_ip} - Magisk module removed successfully")
             except Exception as e:
-                log(f"UNINSTALL: magisk --remove-module error: {e}")
-            log("UNINSTALL: ANK removed. Reboot to complete.")
+                log(f"UNINSTALL: [UNINSTALL] {ts} from {client_ip} - magisk --remove-module error: {e}")
+            log(f"UNINSTALL: [UNINSTALL] {ts} from {client_ip} - ANK removed. Reboot to complete.")
             import time; time.sleep(2)
             os._exit(0)
         threading.Thread(target=do_uninstall, daemon=True).start()

@@ -6,6 +6,8 @@ __pycache__/
 *.pyc
 *.ico
 *.png
+!docs/screenshots/*.png
+!screenshots/mapping/*.png
 *.svg
 *.apk
 *.tar.gz

@@ -113,9 +113,9 @@ fi
 # Start server on HOST using musl linker
 cd "$ROOTFS"
 env LD_LIBRARY_PATH="$PYLIB" nohup "$MUSL" "$ROOTFS/usr/bin/python3" "$SERVER" > "$ANK_DIR/logs/server.log" 2>&1 &
-echo $! > "$SERVER_PID_FILE"
+echo "$!" > "$SERVER_PID_FILE"
 
-log "Server started (PID: $(cat $SERVER_PID_FILE)) | Arch: $ARCH | Musl: $MUSL"
+log "Server started (PID: $(cat "$SERVER_PID_FILE")) | Arch: $ARCH | Musl: $MUSL"
 log "Panel: http://localhost:8001"
 
 # Ensure ANK shell + MOTD exist

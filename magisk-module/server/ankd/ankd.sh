@@ -40,11 +40,11 @@ ANKD_PIDS="/etc/ankd/pids"
 # INIT DIRECTORIES
 # ============================================================
 _ankd_init_dirs() {
-    mkdir -p "$ANKD_SERVICES" 2>/dev/null
-    mkdir -p "$ANKD_GENERATED" 2>/dev/null
-    mkdir -p "$ANKD_RUN" 2>/dev/null
-    mkdir -p "$ANKD_LOG" 2>/dev/null
-    mkdir -p "$ANKD_PIDS" 2>/dev/null
+    mkdir -p "$ANKD_SERVICES" 2>/dev/null || _ankd_log "WARN" "Failed to create $ANKD_SERVICES"
+    mkdir -p "$ANKD_GENERATED" 2>/dev/null || _ankd_log "WARN" "Failed to create $ANKD_GENERATED"
+    mkdir -p "$ANKD_RUN" 2>/dev/null || _ankd_log "WARN" "Failed to create $ANKD_RUN"
+    mkdir -p "$ANKD_LOG" 2>/dev/null || _ankd_log "WARN" "Failed to create $ANKD_LOG"
+    mkdir -p "$ANKD_PIDS" 2>/dev/null || _ankd_log "WARN" "Failed to create $ANKD_PIDS"
 }
 
 # ============================================================
@@ -738,7 +738,7 @@ _ankd_health_listener() {
     local port="$1"
     [ -z "$port" ] && return 1
 
-    # Try busybox nc first, thenncat, then shell-based fallback
+    # Try busybox nc first, then ncat, then shell-based fallback
     local cname="${ANKD_CONTAINER:-ank}"
     if command -v nc >/dev/null 2>&1; then
         # busybox nc: listen mode, exec per connection
@@ -751,14 +751,16 @@ _ankd_health_listener() {
         done &
     else
         # Pure shell fallback: use /dev/tcp or busybox
-        while true; do
-            # Create a minimal TCP responder using a file-based approach
-            local tmp=$(mktemp /tmp/ankd_hc_XXXXXX 2>/dev/null)
-            # Use busybox httpd style or simple echo
-            _ankd_sleep 1
-        done &
+        _ankd_log "WARN" "No nc/ncat found, health listener disabled"
+        return 1
     fi
-    echo $!
+    local listener_pid=$!
+    if [ -n "$listener_pid" ] && kill -0 "$listener_pid" 2>/dev/null; then
+        echo "$listener_pid"
+    else
+        _ankd_log "WARN" "Health listener failed to start"
+        return 1
+    fi
 }
 
 # ============================================================
@@ -774,14 +776,14 @@ _ankd_daemon() {
 
     # Mount filesystems
     _ankd_boot "INFO" "Mounting filesystems..."
-    mkdir -p /dev/pts /dev/shm /run 2>/dev/null
-    mount -t proc proc /proc 2>/dev/null
-    mount -t sysfs sysfs /sys 2>/dev/null
+    mkdir -p /dev/pts /dev/shm /run 2>/dev/null || _ankd_boot "WARN" "Failed to create /dev/pts, /dev/shm, or /run"
+    mount -t proc proc /proc 2>/dev/null || _ankd_boot "WARN" "Failed to mount /proc"
+    mount -t sysfs sysfs /sys 2>/dev/null || _ankd_boot "WARN" "Failed to mount /sys"
     mount -t devpts devpts /dev/pts 2>/dev/null || true
     _ankd_boot "INFO" "Filesystems mounted"
 
     # Set hostname
-    hostname "${ANKD_CONTAINER:-ank}" 2>/dev/null
+    hostname "${ANKD_CONTAINER:-ank}" 2>/dev/null || _ankd_boot "WARN" "Failed to set hostname"
     _ankd_boot "INFO" "Hostname: $(hostname 2>/dev/null)"
 
     # Generate ankctl if not exists

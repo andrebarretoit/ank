@@ -4,6 +4,7 @@ import time
 import json
 import datetime
 import glob
+import shlex
 
 ANK_DIR = os.environ.get("ANK_DIR", "/data/local/ank")
 CONTAINERS_DIR = os.path.join(ANK_DIR, "containers")
@@ -216,13 +217,13 @@ class BackupRunner:
         filename = os.path.basename(tar_path)
         remote_dest = f"{remote_path}/{filename}"
         cmd = [
-            "sshpass", "-p", password,
+            "sshpass", "-e",
             "scp", "-P", str(port),
             "-o", "StrictHostKeyChecking=no",
             tar_path,
             f"{user}@{host}:{remote_dest}"
         ]
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        result = subprocess.run(cmd, capture_output=True, text=True, env={**os.environ, "SSHPASS": password})
         if result.returncode != 0:
             self.log(f"SCP upload failed: {result.stderr}")
             raise RuntimeError(f"SCP upload failed: {result.stderr}")
@@ -236,15 +237,15 @@ class BackupRunner:
         port = self.remote.get("port", 22)
         user = self.remote.get("user", "root")
         password = self.remote.get("password", "")
-        remote_path = self.remote.get("path", "/backups/ank").rstrip("/")
+        remote_path = shlex.quote(self.remote.get("path", "/backups/ank").rstrip("/"))
         cmd = [
-            "sshpass", "-p", password,
+            "sshpass", "-e",
             "ssh", "-p", str(port),
             "-o", "StrictHostKeyChecking=no",
             f"{user}@{host}",
             f"find {remote_path} -maxdepth 1 -name '*.tar.gz' -mtime +{retention_days} -delete"
         ]
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        result = subprocess.run(cmd, capture_output=True, text=True, env={**os.environ, "SSHPASS": password})
         if result.returncode != 0:
             self.log(f"Retention cleanup failed: {result.stderr}")
         else:
@@ -259,33 +260,33 @@ class BackupRunner:
         remote_dir = os.path.dirname(remote_path)
 
         cmd_detect = [
-            "sshpass", "-p", password,
+            "sshpass", "-e",
             "ssh", "-p", str(port),
             "-o", "StrictHostKeyChecking=no",
             f"{user}@{host}",
             "uname -s"
         ]
-        result = subprocess.run(cmd_detect, capture_output=True, text=True, timeout=10)
+        result = subprocess.run(cmd_detect, capture_output=True, text=True, timeout=10, env={**os.environ, "SSHPASS": password})
         os_type = result.stdout.strip().lower()
 
         if "linux" in os_type:
-            immut_cmd = f"chattr +i '{remote_path}' 2>/dev/null || true"
+            immut_cmd = f"chattr +i {shlex.quote(remote_path)} 2>/dev/null || true"
         elif "darwin" in os_type:
-            immut_cmd = f"chflags uchg '{remote_path}'"
+            immut_cmd = f"chflags uchg {shlex.quote(remote_path)}"
         elif "mingw" in os_type or "msys" in os_type or "cygwin" in os_type:
-            immut_cmd = f"attrib +R '{remote_path}'"
+            immut_cmd = f"attrib +R {shlex.quote(remote_path)}"
         else:
             self.log(f"Immutability: unsupported OS '{os_type}', skipping")
             return
 
         cmd = [
-            "sshpass", "-p", password,
+            "sshpass", "-e",
             "ssh", "-p", str(port),
             "-o", "StrictHostKeyChecking=no",
             f"{user}@{host}",
             immut_cmd
         ]
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10, env={**os.environ, "SSHPASS": password})
         if result.returncode == 0:
             self.log(f"Immutability applied to {filename}")
         else:

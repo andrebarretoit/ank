@@ -73,9 +73,12 @@ sleep 1
 # Ensure /dev nodes exist in ankfs for Python/PTY
 mkdir -p "$ROOTFS/dev"
 # Bind-mount host /dev nodes — mknod on Android creates regular files (SELinux)
-for _dn in null urandom random tty ptmx console; do
+for _devnode in "null:1:3" "urandom:1:9" "random:1:8" "tty:5:0" "ptmx:5:2" "console:5:1"; do
+    _dn=$(echo "$_devnode" | cut -d: -f1)
+    _ct=$(echo "$_devnode" | cut -d: -f2)
+    _cm=$(echo "$_devnode" | cut -d: -f3)
     [ -e "/dev/$_dn" ] && mount --bind "/dev/$_dn" "$ROOTFS/dev/$_dn" 2>/dev/null
-    [ -e "$ROOTFS/dev/$_dn" ] || mknod "$ROOTFS/dev/$_dn" c 1 3 2>/dev/null
+    [ -e "$ROOTFS/dev/$_dn" ] || mknod "$ROOTFS/dev/$_dn" c "$_ct" "$_cm" 2>/dev/null
     chmod 666 "$ROOTFS/dev/$_dn" 2>/dev/null
 done
 
@@ -100,9 +103,12 @@ if ! mountpoint -q "$ROOTFS/dev/pts" 2>/dev/null; then
     umount "$ROOTFS/dev" 2>/dev/null
     mount -t tmpfs -o size=16m tmpfs "$ROOTFS/dev" 2>/dev/null
     # Bind-mount host /dev nodes — mknod on Android creates regular files (SELinux)
-    for _dn in null zero random urandom tty ptmx console; do
+    for _devnode in "null:1:3" "zero:1:5" "random:1:8" "urandom:1:9" "tty:5:0" "ptmx:5:2" "console:5:1"; do
+        _dn=$(echo "$_devnode" | cut -d: -f1)
+        _ct=$(echo "$_devnode" | cut -d: -f2)
+        _cm=$(echo "$_devnode" | cut -d: -f3)
         [ -e "/dev/$_dn" ] && mount --bind "/dev/$_dn" "$ROOTFS/dev/$_dn" 2>/dev/null
-        [ -e "$ROOTFS/dev/$_dn" ] || mknod "$ROOTFS/dev/$_dn" c 1 3 2>/dev/null
+        [ -e "$ROOTFS/dev/$_dn" ] || mknod "$ROOTFS/dev/$_dn" c "$_ct" "$_cm" 2>/dev/null
         chmod 666 "$ROOTFS/dev/$_dn" 2>/dev/null
     done
     mkdir -p "$ROOTFS/dev/pts" "$ROOTFS/dev/shm" 2>/dev/null
@@ -113,9 +119,9 @@ fi
 # Start server on HOST using musl linker
 cd "$ROOTFS"
 env LD_LIBRARY_PATH="$PYLIB" nohup "$MUSL" "$ROOTFS/usr/bin/python3" "$SERVER" > "$ANK_DIR/logs/server.log" 2>&1 &
-echo $! > "$SERVER_PID_FILE"
+echo "$!" > "$SERVER_PID_FILE"
 
-log "Server started (PID: $(cat $SERVER_PID_FILE)) | Arch: $ARCH | Musl: $MUSL"
+log "Server started (PID: $(cat "$SERVER_PID_FILE")) | Arch: $ARCH | Musl: $MUSL"
 log "Panel: http://localhost:8001"
 
 # Ensure ANK shell + MOTD exist

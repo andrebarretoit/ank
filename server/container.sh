@@ -841,7 +841,10 @@ cmd_start() {
     # Find shell
     local SHELL=""
     for sh in /bin/sh /bin/ash /usr/bin/sh; do
-        [ -e "$ROOTFS$sh" ] || [ -L "$ROOTFS$sh" ] && { SHELL="$sh"; break; }
+        if [ -e "$ROOTFS$sh" ] || [ -L "$ROOTFS$sh" ]; then
+            SHELL="$sh"
+            break
+        fi
     done
     [ -z "$SHELL" ] && SHELL="/bin/sh"
     echo "  Shell: $SHELL"
@@ -870,7 +873,7 @@ cmd_start() {
         local _n=$(echo "$node_info" | cut -d: -f1)
         local _t=$(echo "$node_info" | cut -d: -f2)
         local _m=$(echo "$node_info" | cut -d: -f3)
-        mknod "$ROOTFS/dev/$_n" c "$_t" "$_m" 2>/dev/null
+        [ -e "$ROOTFS/dev/$_n" ] || mknod "$ROOTFS/dev/$_n" c "$_t" "$_m" 2>/dev/null
         chmod 666 "$ROOTFS/dev/$_n" 2>/dev/null
     done
     mount -t devpts devpts "$ROOTFS/dev/pts" 2>/dev/null
@@ -931,7 +934,7 @@ cmd_start() {
 
     # Kill any stale process holding our SSH port
     if [ "$SSHD_PORT" != "22" ]; then
-        local hex_port=$(printf '%04X' $SSHD_PORT)
+        local hex_port=$(printf '%04X' "$SSHD_PORT")
         local inode=$(awk -v port="$hex_port" '$2 ~ ":"port"$" {split($2,a,":"); print $10}' /proc/net/tcp 2>/dev/null | head -1)
         if [ -n "$inode" ] && [ "$inode" != "0" ]; then
             for fd_dir in /proc/[0-9]*/fd; do
@@ -1640,7 +1643,7 @@ cmd_svc_start() {
     local ANKD_FILE="$ROOTFS/etc/ankd/services.d/"*-"${SVC_UUID}.ankd"
     local GENERATED="/usr/ankd/generated"
 
-    ANKD_FILE=$(ls $ANKD_FILE 2>/dev/null | head -1)
+    ANKD_FILE=$(ls "$ANKD_FILE" 2>/dev/null | head -1)
     if [ ! -f "$ANKD_FILE" ]; then
         echo "ERROR: Service '$SVC_UUID' not found"
         exit 1
@@ -1704,7 +1707,7 @@ cmd_svc_logs() {
     local LOG_DIR="$CONTAINERS_DIR/$NAME/merged/var/log/ankd"
     local ANKD_FILE="$CONTAINERS_DIR/$NAME/merged/etc/ankd/services.d/"*-"${SVC_UUID}.ankd"
 
-    ANKD_FILE=$(ls $ANKD_FILE 2>/dev/null | head -1)
+    ANKD_FILE=$(ls "$ANKD_FILE" 2>/dev/null | head -1)
     local name_val=""
     [ -f "$ANKD_FILE" ] && name_val=$(grep "^NAME=" "$ANKD_FILE" | cut -d= -f2)
 

@@ -36,6 +36,36 @@ except ImportError:
 _port_lock = threading.Lock()
 _build_lock = threading.Lock()
 _building = False
+
+# ============================================================
+# Password hashing (pbkdf2-sha256)
+# ============================================================
+
+def _hash_password(password):
+    """Hash password with pbkdf2-sha256. Returns hash string for storage."""
+    import hashlib as _hl
+    salt = secrets.token_bytes(16)
+    dk = _hl.pbkdf2_hmac("sha256", password.encode(), salt, 100000)
+    return f"$pbkdf2$100000${salt.hex()}${dk.hex()}"
+
+def _verify_password(password, stored):
+    """Verify password against stored hash. Falls back to plaintext comparison for backward compat."""
+    if not stored:
+        return password == ""
+    if stored.startswith("$pbkdf2$"):
+        try:
+            parts = stored.split("$")
+            iterations = int(parts[2])
+            salt = bytes.fromhex(parts[3])
+            expected = bytes.fromhex(parts[4])
+            import hashlib as _hl
+            dk = _hl.pbkdf2_hmac("sha256", password.encode(), salt, iterations)
+            import hmac as _hmac
+            return _hmac.compare_digest(dk, expected)
+        except Exception:
+            return False
+    return password == stored
+
 _pull_status = {}  # version -> {"state": "pulling|building|done|error", "output": [...], "error": ""}
 
 # --- Container status debouncing -------------------------------------------
@@ -50,6 +80,8 @@ _pull_status = {}  # version -> {"state": "pulling|building|done|error", "output
 _status_lock = threading.Lock()
 _status_fail_counts = {}     # name -> consecutive failed-check count
 _status_grace_until = {}     # name -> monotonic() time before which checks are skipped
+_container_state_locks = {}  # name -> threading.Lock for serializing start/stop/restart
+_container_state_locks_lock = threading.Lock()  # protects _container_state_locks dict
 STATUS_FAIL_THRESHOLD = 5    # consecutive failures required before flipping to stopped
 STATUS_GRACE_SECONDS = 30    # skip checks for this long right after a start
 
@@ -516,6 +548,14 @@ def should_mark_stopped(name):
         count = _status_fail_counts.get(name, 0) + 1
         _status_fail_counts[name] = count
         return count >= STATUS_FAIL_THRESHOLD
+
+
+def _get_container_lock(name):
+    """Get or create a per-container threading lock to serialize state transitions."""
+    with _container_state_locks_lock:
+        if name not in _container_state_locks:
+            _container_state_locks[name] = threading.Lock()
+        return _container_state_locks[name]
 
 
 def note_container_started(name):
@@ -1430,9 +1470,12 @@ small{color:#334155}
 
     def do_OPTIONS(self):
         self.send_response(204)
-        self.send_header("Access-Control-Allow-Origin", "*")
+        origin = self.headers.get("Origin", "")
+        if origin and origin != "null":
+            self.send_header("Access-Control-Allow-Origin", origin)
         self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-ANK-Client")
+        self.send_header("Access-Control-Allow-Credentials", "true")
         self.send_security_headers()
         self.end_headers()
 
@@ -2040,10 +2083,17 @@ small{color:#334155}
             self.send_error(429, "Too many login attempts. Try again later.")
             return
 
+        if not isinstance(data, dict):
+            self.send_error(400, "Request body must be a JSON object")
+            return
+
         config = load_config()
         user = data.get("username", "")
         pwd = data.get("password", "")
-        if user == config.get("username") and pwd == config.get("password"):
+        if not user or not pwd:
+            self.send_error(400, "Username and password are required")
+            return
+        if user == config.get("username") and _verify_password(pwd, config.get("password", "")):
             token = _create_token(user)
             self.send_json({
                 "success": True,
@@ -2058,7 +2108,7 @@ small{color:#334155}
     def api_change_password(self, data):
         config = load_config()
         current = data.get("current_password", "")
-        if current != config.get("password"):
+        if not _verify_password(current, config.get("password", "")):
             self.send_error(401, "Current password incorrect")
             return
         new_user = data.get("username") or config.get("username")
@@ -2067,7 +2117,7 @@ small{color:#334155}
             self.send_error(400, "Password must be at least 6 characters")
             return
         config["username"] = new_user
-        config["password"] = new_pass
+        config["password"] = _hash_password(new_pass)
         config["first_boot"] = False
         save_config(config)
         try:
@@ -2216,7 +2266,14 @@ small{color:#334155}
         if not ssh_port:
             ssh_port = self._find_free_port(2201)
         else:
-            ssh_port = int(ssh_port)
+            try:
+                ssh_port = int(ssh_port)
+                if ssh_port < 1 or ssh_port > 65535:
+                    self.send_error(400, "ssh_port must be between 1 and 65535")
+                    return
+            except (ValueError, TypeError):
+                self.send_error(400, "ssh_port must be a valid integer")
+                return
 
         ankd_port = self._find_free_ankd_port()
 
@@ -2323,13 +2380,17 @@ small{color:#334155}
         self.send_json({"message": f"Container '{name}' creating", "name": name, "ssh_port": ssh_port}, 201)
 
     def api_start_container(self, name):
-        config = load_container_config(name)
-        if not config:
-            self.send_error(404, f"Container '{name}' not found")
-            return
-        # Write status BEFORE spawning thread to avoid race condition
-        config["status"] = "starting"
-        save_container_config(name, config)
+        state_lock = _get_container_lock(name)
+        with state_lock:
+            config = load_container_config(name)
+            if not config:
+                self.send_error(404, f"Container '{name}' not found")
+                return
+            if config.get("status") in ("starting", "stopping"):
+                self.send_error(409, f"Container '{name}' is already {config.get('status')}")
+                return
+            config["status"] = "starting"
+            save_container_config(name, config)
 
         # --- LITE MODE ---
         if is_lite():
@@ -2399,14 +2460,18 @@ small{color:#334155}
         self.send_json({"message": f"Container '{name}' starting"})
 
     def api_stop_container(self, name):
-        config = load_container_config(name)
-        if not config:
-            self.send_error(404, f"Container '{name}' not found")
-            return
-        # Write status BEFORE spawning thread
-        config["status"] = "stopping"
-        save_container_config(name, config)
-        note_container_stopped(name)
+        state_lock = _get_container_lock(name)
+        with state_lock:
+            config = load_container_config(name)
+            if not config:
+                self.send_error(404, f"Container '{name}' not found")
+                return
+            if config.get("status") in ("starting", "stopping"):
+                self.send_error(409, f"Container '{name}' is already {config.get('status')}")
+                return
+            config["status"] = "stopping"
+            save_container_config(name, config)
+            note_container_stopped(name)
 
         # --- LITE MODE ---
         if is_lite():
@@ -2699,6 +2764,13 @@ small{color:#334155}
         lines = 50
         if data:
             lines = data.get("lines", 50)
+        try:
+            lines = int(lines)
+        except (ValueError, TypeError):
+            lines = 50
+        if not all(c.isalnum() or c in "-_." for c in service):
+            self.send_error(400, "Invalid service name")
+            return
         merged = os.path.join(CONTAINERS_DIR, name, "merged")
         log_file = os.path.join(merged, "var", "log", "ankd", f"{service}.log")
         if os.path.isfile(log_file):
@@ -2720,6 +2792,13 @@ small{color:#334155}
         config = load_container_config(name)
         if not config:
             self.send_error(404, f"Container '{name}' not found")
+            return
+        try:
+            lines = int(lines)
+        except (ValueError, TypeError):
+            lines = 50
+        if not all(c.isalnum() or c in "-_." for c in service):
+            self.send_error(400, "Invalid service name")
             return
         merged = os.path.join(CONTAINERS_DIR, name, "merged")
         log_dir = os.path.join(merged, "var", "log", "ankd")
@@ -2768,10 +2847,15 @@ small{color:#334155}
             self.send_json({"logs": output, "service": service})
 
     def api_restart_container(self, name):
-        config = load_container_config(name)
-        if not config:
-            self.send_error(404, f"Container '{name}' not found")
-            return
+        state_lock = _get_container_lock(name)
+        with state_lock:
+            config = load_container_config(name)
+            if not config:
+                self.send_error(404, f"Container '{name}' not found")
+                return
+            if config.get("status") in ("starting", "stopping"):
+                self.send_error(409, f"Container '{name}' is already {config.get('status')}")
+                return
         def do_restart():
             try:
                 cfg = load_container_config(name)
@@ -2814,6 +2898,12 @@ small{color:#334155}
         cmd = data.get("command", "")
         if not cmd:
             self.send_error(400, "Command required")
+            return
+        if not isinstance(cmd, str):
+            self.send_error(400, "Command must be a string")
+            return
+        if len(cmd) > 4096:
+            self.send_error(400, "Command too long (max 4096 characters)")
             return
         config = load_container_config(name)
         if not config or config.get("status") != "running":
@@ -2904,10 +2994,14 @@ small{color:#334155}
                 import zipfile, io, tempfile
                 try:
                     with zipfile.ZipFile(io.BytesIO(file_data)) as zf:
+                        dest_real = os.path.realpath(dest)
                         for info in zf.infolist():
                             if info.is_dir():
                                 continue
-                            out_path = os.path.join(dest, info.filename)
+                            out_path = os.path.realpath(os.path.join(dest, info.filename))
+                            if not out_path.startswith(dest_real):
+                                self.send_error(400, f"ZipSlip: path traversal detected in {info.filename}")
+                                return
                             os.makedirs(os.path.dirname(out_path), exist_ok=True)
                             with open(out_path, "wb") as f:
                                 f.write(zf.read(info.filename))
@@ -2937,8 +3031,8 @@ small{color:#334155}
 
     def _safe_path(self, merged, rel_path):
         rel_path = rel_path.lstrip("/")
-        full = os.path.normpath(os.path.join(merged, rel_path))
-        if not full.startswith(merged):
+        full = os.path.realpath(os.path.join(merged, rel_path))
+        if not full.startswith(os.path.realpath(merged)):
             return None
         return full
 
@@ -3156,11 +3250,33 @@ small{color:#334155}
         if not config:
             self.send_error(404, f"Container '{name}' not found")
             return
+        if not isinstance(data, dict):
+            self.send_error(400, "Request body must be a JSON object")
+            return
         if "resources" in data:
+            if not isinstance(data["resources"], dict):
+                self.send_error(400, "resources must be an object")
+                return
             config.setdefault("resources", {}).update(data["resources"])
         if "policies" in data:
+            if not isinstance(data["policies"], dict):
+                self.send_error(400, "policies must be an object")
+                return
             config.setdefault("policies", {}).update(data["policies"])
         if "port_mappings" in data:
+            if not isinstance(data["port_mappings"], list):
+                self.send_error(400, "port_mappings must be an array")
+                return
+            for pm in data["port_mappings"]:
+                if not isinstance(pm, dict):
+                    self.send_error(400, "Each port mapping must be an object")
+                    return
+                if "host_port" in pm:
+                    try:
+                        pm["host_port"] = int(pm["host_port"])
+                    except (ValueError, TypeError):
+                        self.send_error(400, "host_port must be an integer")
+                        return
             config["port_mappings"] = data["port_mappings"]
             # Port mirroring: update .ankd PORT= + config files
             new_port = data["port_mappings"][0]["host_port"] if data["port_mappings"] else None
@@ -3897,6 +4013,12 @@ small{color:#334155}
         if not cmd:
             self.send_error(400, "Command required")
             return
+        if not isinstance(cmd, str):
+            self.send_error(400, "Command must be a string")
+            return
+        if len(cmd) > 4096:
+            self.send_error(400, "Command too long (max 4096 characters)")
+            return
         parts = cmd.strip().split()
         if not parts:
             self.send_json({"stdout": "", "stderr": "", "code": 0})
@@ -4146,7 +4268,7 @@ small{color:#334155}
             uptime_sec = 0
             try:
                 with open("/proc/uptime", "r") as f: uptime_sec = float(f.read().split()[0])
-            except: pass
+            except (OSError, ValueError): pass
             lines = [
                 f"ANK Engine v{config.get('version','0.1')}",
                 f"Uptime:     {int(uptime_sec//3600)}h {int((uptime_sec%3600)//60)}m",
@@ -4181,7 +4303,7 @@ small{color:#334155}
                     for line in f:
                         parts = line.split()
                         if parts[0] == "MemTotal:": mem_total = int(parts[1])
-            except: pass
+            except (OSError, ValueError): pass
             lines = [
                 f"Device:     {device}",
                 f"Kernel:     {kernel}",
@@ -5350,10 +5472,16 @@ small{color:#334155}
             self.send_error(400, f"Invalid tar.gz: {e}")
             return
         os.makedirs(IMAGES_DIR, exist_ok=True)
+        images_real = os.path.realpath(IMAGES_DIR)
         extracted = []
         for member in tar.getmembers():
             if member.isdir():
                 continue
+            member_path = os.path.realpath(os.path.join(IMAGES_DIR, member.name))
+            if not member_path.startswith(images_real):
+                tar.close()
+                self.send_error(400, f"TarSlip: path traversal detected in {member.name}")
+                return
             top = member.name.split("/")[0]
             if top and top not in extracted:
                 extracted.append(top)
@@ -5597,11 +5725,20 @@ small{color:#334155}
         if not sm:
             self.send_json({"error": "stack_manager not available"}, 500)
             return
+        if not isinstance(data, dict):
+            self.send_json({"error": "Request body must be a JSON object"}, 400)
+            return
         name = data.get("name", "").strip()
         template = data.get("template", data.get("image", "nginx"))
         ankfile = data.get("ankfile", "")
         if not name:
             self.send_json({"error": "name required"}, 400)
+            return
+        if len(name) > 64:
+            self.send_json({"error": "name must be 64 characters or less"}, 400)
+            return
+        if not all(c.isalnum() or c in "-_" for c in name):
+            self.send_json({"error": "name must contain only alphanumeric characters, hyphens, or underscores"}, 400)
             return
         if not template and not ankfile:
             self.send_json({"error": "template or ankfile required"}, 400)
@@ -5728,28 +5865,20 @@ small{color:#334155}
             return
         self.send_json(routine)
 
-    def api_backup_browse(self, routine_id, query):
-        from urllib.parse import parse_qs
-        params = parse_qs(query)
-        remote_path = params.get("path", ["/"])[0]
-        try:
-            bm = self._get_backup_manager()
-            if not bm:
-                self.send_json({"error": "backup_manager not available"}, 500)
-                return
-            files = bm.list_remote_files(routine_id, remote_path)
-            self.send_json({"files": files, "path": remote_path})
-        except Exception as e:
-            self.send_json({"error": str(e)}, 500)
-
     def api_create_backup_routine(self, data):
         bm = self._get_backup_manager()
         if not bm:
             self.send_json({"error": "backup_manager not available"}, 500)
             return
+        if not isinstance(data, dict):
+            self.send_json({"error": "Request body must be a JSON object"}, 400)
+            return
         name = data.get("name", "").strip()
         if not name:
             self.send_json({"error": "name required"}, 400)
+            return
+        if len(name) > 128:
+            self.send_json({"error": "name must be 128 characters or less"}, 400)
             return
         config = {
             "name": name,
@@ -6003,9 +6132,15 @@ small{color:#334155}
         if not nm:
             self.send_json({"error": "node_manager not available"}, 500)
             return
+        if not isinstance(data, dict):
+            self.send_json({"error": "Request body must be a JSON object"}, 400)
+            return
         ip = data.get("ip", "").strip()
         if not ip:
             self.send_json({"error": "ip required"}, 400)
+            return
+        if len(ip) > 255:
+            self.send_json({"error": "ip address too long"}, 400)
             return
         try:
             node = nm.add_node(data)
@@ -6566,10 +6701,16 @@ small{color:#334155}
             method()
             if not getattr(self, '_is_websocket', False):
                 self.wfile.flush()
+        except (ConnectionResetError, BrokenPipeError, OSError):
+            self.close_connection = True
         except TimeoutError:
             self.close_connection = True
-        except Exception:
-            pass
+        except Exception as e:
+            try:
+                log(f"[ERROR] Request handling error: {type(e).__name__}: {e}")
+            except Exception:
+                pass
+            self.close_connection = True
 
     def finish(self):
         if getattr(self, '_is_websocket', False):

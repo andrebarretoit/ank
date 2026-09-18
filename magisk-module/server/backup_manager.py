@@ -7,6 +7,7 @@ import glob
 import datetime
 import hashlib
 import hmac
+import shlex
 
 ANK_DIR = os.environ.get("ANK_DIR", "/data/local/ank")
 BACKUPS_DIR = os.path.join(ANK_DIR, "backups")
@@ -220,36 +221,38 @@ class BackupManager:
             return ""
 
     def test_connection(self, remote_config):
-        host = remote_config.get("host", "")
-        port = remote_config.get("port", 22)
-        user = remote_config.get("user", "root")
-        password = remote_config.get("password", "")
-        cmd = [
-            "sshpass", "-p", password,
-            "ssh", "-p", str(port),
-            "-o", "ConnectTimeout=5",
-            "-o", "StrictHostKeyChecking=no",
-            f"{user}@{host}",
-            "echo ok"
-        ]
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+        host = shlex.quote(str(remote_config.get("host", "")))
+        port = shlex.quote(str(remote_config.get("port", 22)))
+        user = shlex.quote(str(remote_config.get("user", "root")))
+        password = shlex.quote(str(remote_config.get("password", "")))
+        cmd = (
+            f"sshpass -e ssh -p {port} "
+            f"-o ConnectTimeout=5 -o StrictHostKeyChecking=no "
+            f"{user}@{host} echo ok"
+        )
+        result = subprocess.run(
+            ["/system/bin/sh", "-c", cmd],
+            capture_output=True, text=True, timeout=15,
+            env={**os.environ, "SSHPASS": remote_config.get("password", "")}
+        )
         return result.returncode == 0 and "ok" in result.stdout
 
     def list_remote_files(self, remote_config, path=""):
         base = remote_config.get("path", "/backups/ank").rstrip("/")
-        full_path = f"{base}/{path}".rstrip("/") if path else base
-        host = remote_config.get("host", "")
-        port = remote_config.get("port", 22)
-        user = remote_config.get("user", "root")
-        password = remote_config.get("password", "")
-        cmd = [
-            "sshpass", "-p", password,
-            "ssh", "-p", str(port),
-            "-o", "StrictHostKeyChecking=no",
-            f"{user}@{host}",
-            f"ls -la --time-style=long-iso {full_path} 2>/dev/null"
-        ]
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        full_path = shlex.quote(f"{base}/{path}".rstrip("/") if path else base)
+        host = shlex.quote(str(remote_config.get("host", "")))
+        port = shlex.quote(str(remote_config.get("port", 22)))
+        user = shlex.quote(str(remote_config.get("user", "root")))
+        cmd = (
+            f"sshpass -e ssh -p {port} "
+            f"-o StrictHostKeyChecking=no "
+            f"{user}@{host} ls -la --time-style=long-iso {full_path} 2>/dev/null"
+        )
+        result = subprocess.run(
+            ["/system/bin/sh", "-c", cmd],
+            capture_output=True, text=True, timeout=30,
+            env={**os.environ, "SSHPASS": remote_config.get("password", "")}
+        )
         if result.returncode != 0:
             return []
         files = []
@@ -274,54 +277,58 @@ class BackupManager:
         return files
 
     def delete_remote_file(self, remote_config, remote_path):
-        host = remote_config.get("host", "")
-        port = remote_config.get("port", 22)
-        user = remote_config.get("user", "root")
-        password = remote_config.get("password", "")
+        host = shlex.quote(str(remote_config.get("host", "")))
+        port = shlex.quote(str(remote_config.get("port", 22)))
+        user = shlex.quote(str(remote_config.get("user", "root")))
         base = remote_config.get("path", "/backups/ank").rstrip("/")
-        full_path = f"{base}/{remote_path}"
-        cmd = [
-            "sshpass", "-p", password,
-            "ssh", "-p", str(port),
-            "-o", "StrictHostKeyChecking=no",
-            f"{user}@{host}",
-            f"rm -f '{full_path}'"
-        ]
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        full_path = shlex.quote(f"{base}/{remote_path}")
+        cmd = (
+            f"sshpass -e ssh -p {port} "
+            f"-o StrictHostKeyChecking=no "
+            f"{user}@{host} rm -f {full_path}"
+        )
+        result = subprocess.run(
+            ["/system/bin/sh", "-c", cmd],
+            capture_output=True, text=True, timeout=30,
+            env={**os.environ, "SSHPASS": remote_config.get("password", "")}
+        )
         return result.returncode == 0
 
     def rename_remote_file(self, remote_config, old_name, new_name):
-        host = remote_config.get("host", "")
-        port = remote_config.get("port", 22)
-        user = remote_config.get("user", "root")
-        password = remote_config.get("password", "")
+        host = shlex.quote(str(remote_config.get("host", "")))
+        port = shlex.quote(str(remote_config.get("port", 22)))
+        user = shlex.quote(str(remote_config.get("user", "root")))
         base = remote_config.get("path", "/backups/ank").rstrip("/")
-        cmd = [
-            "sshpass", "-p", password,
-            "ssh", "-p", str(port),
-            "-o", "StrictHostKeyChecking=no",
-            f"{user}@{host}",
-            f"mv '{base}/{old_name}' '{base}/{new_name}'"
-        ]
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        cmd = (
+            f"sshpass -e ssh -p {port} "
+            f"-o StrictHostKeyChecking=no "
+            f"{user}@{host} mv {shlex.quote(f'{base}/{old_name}')} {shlex.quote(f'{base}/{new_name}')}"
+        )
+        result = subprocess.run(
+            ["/system/bin/sh", "-c", cmd],
+            capture_output=True, text=True, timeout=30,
+            env={**os.environ, "SSHPASS": remote_config.get("password", "")}
+        )
         return result.returncode == 0
 
     def download_remote_file(self, remote_config, remote_name, local_path):
-        host = remote_config.get("host", "")
-        port = remote_config.get("port", 22)
-        user = remote_config.get("user", "root")
-        password = remote_config.get("password", "")
+        host = shlex.quote(str(remote_config.get("host", "")))
+        port = shlex.quote(str(remote_config.get("port", 22)))
+        user = shlex.quote(str(remote_config.get("user", "root")))
         base = remote_config.get("path", "/backups/ank").rstrip("/")
-        full_remote = f"{base}/{remote_name}"
+        full_remote = shlex.quote(f"{base}/{remote_name}")
+        local_path_safe = shlex.quote(local_path)
         os.makedirs(os.path.dirname(local_path) or ".", exist_ok=True)
-        cmd = [
-            "sshpass", "-p", password,
-            "scp", "-P", str(port),
-            "-o", "StrictHostKeyChecking=no",
-            f"{user}@{host}:{full_remote}",
-            local_path
-        ]
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        cmd = (
+            f"sshpass -e scp -P {port} "
+            f"-o StrictHostKeyChecking=no "
+            f"{user}@{host}:{full_remote} {local_path_safe}"
+        )
+        result = subprocess.run(
+            ["/system/bin/sh", "-c", cmd],
+            capture_output=True, text=True, timeout=600,
+            env={**os.environ, "SSHPASS": remote_config.get("password", "")}
+        )
         if result.returncode != 0:
             raise RuntimeError(f"SCP download failed: {result.stderr}")
         return local_path
