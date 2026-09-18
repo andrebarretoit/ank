@@ -739,14 +739,15 @@ _ankd_health_listener() {
     [ -z "$port" ] && return 1
 
     # Try busybox nc first, thenncat, then shell-based fallback
+    local cname="${ANKD_CONTAINER:-ank}"
     if command -v nc >/dev/null 2>&1; then
         # busybox nc: listen mode, exec per connection
         while true; do
-            echo -e "ANKD_OK\nrunning" | nc -l -p "$port" -w 1 2>/dev/null
+            echo -e "ANKD_OK\n${cname}\nrunning" | nc -l -p "$port" -w 1 2>/dev/null
         done &
     elif command -v ncat >/dev/null 2>&1; then
         while true; do
-            echo -e "ANKD_OK\nrunning" | ncat -l "$port" -w 1 2>/dev/null
+            echo -e "ANKD_OK\n${cname}\nrunning" | ncat -l "$port" -w 1 2>/dev/null
         done &
     else
         # Pure shell fallback: use /dev/tcp or busybox

@@ -130,8 +130,6 @@ class InstallThread(QThread):
     def _install_rooted(self):
         # 1. Find zip and ankcore from PyInstaller bundle or disk
         self.progress.emit(0.05, "Extraindo arquivos...")
-        self.log.emit("Executando: Extraindo ank-magisk.zip...")
-
         import sys
         if getattr(sys, 'frozen', False):
             base_path = sys._MEIPASS
@@ -158,18 +156,15 @@ class InstallThread(QThread):
         tmp_zip = os.path.join(tempfile.gettempdir(), "ank-magisk.zip")
         with open(tmp_zip, "wb") as f:
             f.write(zip_data)
-        self.log.emit(f"OK: Zip extraido ({len(zip_data) // 1024}KB)")
 
         # 2. Push zip to device (ankcore tar.gz is bundled inside the zip)
-        self.progress.emit(0.25, "Enviando modulo Magisk...")
-        self.log.emit("Executando: Enviando ank-magisk.zip...")
+        self.progress.emit(0.25, "[ANK-INSTALLER] Verificando atualizações, aguarde...")
         self.adb.push(self.serial, tmp_zip, "/sdcard/Download/ank-magisk.zip")
-        self.log.emit("OK: Zip enviado")
+        self.log.emit("[ANK-INSTALLER] Verificando atualizações, aguarde...")
 
         # 3. Install Magisk module (streaming output)
-        self.progress.emit(0.5, "Instalando modulo Magisk...")
-        self.log.emit("Executando: Instalando modulo Magisk...")
-        self.log.emit("(pode demorar - instalando rootfs + templates...)")
+        self.progress.emit(0.5, "[ANK-INSTALLER] Instalação iniciada, isso pode levar alguns minutos.")
+        self.log.emit("[ANK-INSTALLER] Iniciando instalação, aguarde...")
 
         def on_install_line(line):
             if line.strip():
@@ -190,9 +185,9 @@ class InstallThread(QThread):
             if log_out:
                 self.log.emit(log_out)
             self.log.emit("--- Fim do log ---\n")
-            raise Exception("Instalacao do modulo Magisk falhou")
+            raise Exception("Instalacao do ANK falhou")
 
-        self.log.emit("OK: Modulo instalado")
+        self.log.emit("OK: ANK instalado")
 
         # 4. Verify installation
         self.progress.emit(0.8, "Verificando instalacao...")
@@ -203,7 +198,7 @@ class InstallThread(QThread):
             if log_out:
                 self.log.emit(log_out)
             self.log.emit("--- Fim do log ---\n")
-            raise Exception("Python3 nao foi instalado. Verifique o log acima.")
+            raise Exception("Erro. Verifique o log acima.")
 
         self.log.emit("OK: Servicos configurados")
 

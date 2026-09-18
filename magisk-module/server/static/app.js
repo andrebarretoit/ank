@@ -86,7 +86,7 @@ async function customModal(title, fields) {
     document.getElementById('_cm-ok').onclick = () => {
       const result = {};
       let allFilled = true;
-      fields.forEach(f => { result[f.id] = document.getElementById(`_cm-${f.id}`).value.trim(); if (!result[f.id]) allFilled = false; });
+      fields.forEach(f => { result[f.id] = document.getElementById(`_cm-${f.id}`).value.trim(); if (!result[f.id] && !f.optional) allFilled = false; });
       closeModal();
       resolve(allFilled ? result : null);
     };
@@ -120,12 +120,17 @@ function refreshTab(btn, loadFn) {
   const icon = btn.querySelector('i');
   if (icon) icon.classList.add('spin');
   btn.disabled = true;
+  const done = () => {
+    if (icon) icon.classList.remove('spin');
+    btn.disabled = false;
+    btn.classList.add('refresh-pulse');
+    setTimeout(() => btn.classList.remove('refresh-pulse'), 600);
+  };
   const p = loadFn();
   if (p && typeof p.then === 'function') {
-    p.then(() => { if (icon) icon.classList.remove('spin'); btn.disabled = false; })
-     .catch(() => { if (icon) icon.classList.remove('spin'); btn.disabled = false; });
+    p.then(done).catch(done);
   } else {
-    setTimeout(() => { if (icon) icon.classList.remove('spin'); btn.disabled = false; }, 500);
+    setTimeout(done, 500);
   }
 }
 
@@ -293,7 +298,7 @@ function renderSparkline(id, data) {
 
 async function loadDashboard() {
   try {
-    const [status, info, cfg] = await Promise.all([api('GET', '/status'), api('GET', '/system/info'), api('GET', '/config').catch(()=>({}))]);
+    const [status, info, cfg, dash] = await Promise.all([api('GET', '/status'), api('GET', '/system/info'), api('GET', '/config').catch(()=>({})), api('GET', '/system/dashboard').catch(()=>null)]);
     animateCounter('stat-running', status.containers_running || 0);
     animateCounter('stat-stopped', status.containers_stopped || 0);
     animateCounter('stat-total', status.containers_total || 0);
@@ -308,31 +313,31 @@ async function loadDashboard() {
     document.getElementById('info-battery').textContent = (bat != null && bat >= 0) ? bat + '%' : '-';
     document.getElementById('info-subnet').textContent = (info.network?.subnet || '-') + '/24';
 
-    // CPU
-    const cpuPct = info.cpu_usage != null ? Math.round(info.cpu_usage) : 0;
-    document.getElementById('cpu-cores').textContent = (info.cpu_cores || 0) > 0 ? info.cpu_cores + ' cores' : '';
+    // CPU — use cluster total if manager, else local
+    const cluster = dash?.cluster;
+    const totalCores = cluster ? cluster.cpu_cores : (info.cpu_cores || 0);
+    const cpuPct = cluster ? Math.round(cluster.cpu_percent) : (info.cpu_usage != null ? Math.round(info.cpu_usage) : 0);
+    document.getElementById('cpu-cores').textContent = totalCores > 0 ? totalCores + ' cores' : '';
     document.getElementById('gauge-cpu-text').textContent = cpuPct + '%';
     document.getElementById('gauge-cpu').style.width = cpuPct + '%';
     pushSpark('cpu', cpuPct);
     renderSparkline('spark-cpu', sparkHistory.cpu);
 
-    // RAM
-    const memT = info.memory?.total_kb || 0;
-    const memA = info.memory?.available_kb || 0;
-    const memUsed = memT - memA;
-    const memPct = memT > 0 ? Math.round(memUsed / memT * 100) : 0;
-    document.getElementById('ram-detail').textContent = memT > 0 ? `${fmtBytes(memUsed * 1024)} / ${fmtBytes(memT * 1024)}` : '';
+    // RAM — use cluster total if manager
+    const ramUsedGB = cluster ? cluster.ram_used_gb : ((info.memory?.total_kb || 0) - (info.memory?.available_kb || 0)) / 1048576;
+    const ramTotalGB = cluster ? cluster.ram_total_gb : (info.memory?.total_kb || 0) / 1048576;
+    const memPct = ramTotalGB > 0 ? Math.round(ramUsedGB / ramTotalGB * 100) : 0;
+    document.getElementById('ram-detail').textContent = ramTotalGB > 0 ? `${ramUsedGB.toFixed(1)} GB / ${ramTotalGB.toFixed(1)} GB` : '';
     document.getElementById('gauge-ram-text').textContent = memPct + '%';
     document.getElementById('gauge-ram').style.width = memPct + '%';
     pushSpark('ram', memPct);
     renderSparkline('spark-ram', sparkHistory.ram);
 
-    // Disk
-    const disk = status.disk || {};
-    const diskTotal = disk.total || 0;
-    const diskUsedNum = disk.used_num || 0;
-    const diskPct = diskTotal > 0 ? Math.round(diskUsedNum / diskTotal * 100) : 0;
-    document.getElementById('disk-detail').textContent = diskTotal > 0 ? `${disk.used || '-'} / ${diskTotal} GB` : '';
+    // Disk — use cluster total if manager
+    const diskUsedGB = cluster ? cluster.disk_used_gb : (status.disk?.used_num || 0);
+    const diskTotalGB = cluster ? cluster.disk_total_gb : (status.disk?.total || 0);
+    const diskPct = cluster ? Math.round(cluster.disk_percent) : (diskTotalGB > 0 ? Math.round(diskUsedGB / diskTotalGB * 100) : 0);
+    document.getElementById('disk-detail').textContent = diskTotalGB > 0 ? `${diskUsedGB.toFixed(1)} GB / ${diskTotalGB.toFixed(1)} GB` : '';
     document.getElementById('gauge-disk-text').textContent = diskPct + '%';
     document.getElementById('gauge-disk').style.width = diskPct + '%';
     pushSpark('disk', diskPct);
@@ -562,7 +567,7 @@ async function showContainerDetail(name, nodeId) {
             <button class="btn btn-primary btn-sm" onclick="remoteContainerAction('${nodeId}','${esc(name)}','restart')"><i class="bi bi-arrow-repeat"></i></button>
             <button class="btn btn-danger btn-sm" onclick="remoteDeleteContainer('${nodeId}','${esc(name)}')"><i class="bi bi-trash3"></i></button>
           ` : `
-            <button class="btn btn-success btn-sm" id="detail-start" onclick="startContainer('${esc(name)}')" ${(isRunning||s==='starting')?'disabled':''}><i class="bi bi-play-fill"></i> Start</button>
+            <button class="btn btn-success btn-sm" id="detail-start" onclick="startContainer('${esc(name)}')" ${(isRunning||isBuilding||s==='starting')?'disabled':''}><i class="bi bi-play-fill"></i> Start</button>
             <button class="btn btn-secondary btn-sm" id="detail-stop" onclick="stopContainer('${esc(name)}')" ${(!isRunning)?'disabled':''}><i class="bi bi-stop-fill"></i> Stop</button>
             <button class="btn btn-primary btn-sm" id="detail-restart" onclick="restartContainer('${esc(name)}')" ${isTransient?'disabled':''}><i class="bi bi-arrow-repeat"></i></button>
             <button class="btn btn-danger btn-sm" id="detail-delete" onclick="deleteContainer('${esc(name)}')" ${(isRunning||isBuilding)?'disabled':''}><i class="bi bi-trash3"></i></button>
@@ -980,14 +985,14 @@ function updateDetailButtons(name, status) {
   const isBuilding = status === 'building';
   const isFailed = status === 'failed';
   const isTransient = isBuilding || isFailed || status === 'starting' || status === 'stopping';
-  const startBtn = document.getElementById('detail-start');
-  const stopBtn = document.getElementById('detail-stop');
-  const restartBtn = document.getElementById('detail-restart');
-  const deleteBtn = document.getElementById('detail-delete');
-  if (startBtn) startBtn.disabled = isRunning || status === 'starting';
-  if (stopBtn) stopBtn.disabled = !isRunning && status !== 'running';
-  if (restartBtn) restartBtn.disabled = isTransient;
-  if (deleteBtn) deleteBtn.disabled = isRunning || isBuilding;
+    const startBtn = document.getElementById('detail-start');
+    const stopBtn = document.getElementById('detail-stop');
+    const restartBtn = document.getElementById('detail-restart');
+    const deleteBtn = document.getElementById('detail-delete');
+    if (startBtn) startBtn.disabled = isRunning || isBuilding || status === 'starting';
+    if (stopBtn) stopBtn.disabled = !isRunning && status !== 'running';
+    if (restartBtn) restartBtn.disabled = isTransient;
+    if (deleteBtn) deleteBtn.disabled = isRunning || isBuilding;
 }
 
 async function pollContainerStatus(name, attempt) {
@@ -1114,7 +1119,7 @@ async function showImageSection(section) {
       el.innerHTML = `<div class="sr-header"><h2><i class="bi bi-lightning-charge" style="color:var(--accent)"></i> Quick Deploy</h2></div><div class="empty-state" style="padding:40px"><i class="bi bi-cloud-download" style="font-size:32px;color:var(--text-muted)"></i><p style="margin-top:8px;color:var(--text-muted)">No templates available.<br>Pull an Alpine image first.</p></div>`;
     }
   } else if (section === 'ankfile') {
-    el.innerHTML = `<div class="sr-header"><h2><i class="bi bi-file-earmark-code" style="color:var(--accent)"></i> Ankfile Build</h2></div><p style="font-size:13px;color:var(--text-muted);margin-bottom:16px">Build custom images from an Ankfile (like Dockerfile).</p><div class="card" style="border:1px solid var(--accent)"><div class="card-body"><div class="form-group"><label class="form-label">Container Name</label><input type="text" class="form-input" id="ankfile-name" placeholder="my-app" value="ank-build"></div><div class="form-group"><label class="form-label">Ankfile</label><textarea class="ankfile-editor" id="ankfile-content" rows="10" placeholder="# FROM alpine-3.20&#10;PASSWD ank123&#10;RUN apk add nginx">FROM alpine-3.20\nPASSWD ank123\nRUN apk add --allow-untrusted nginx\nRUN mkdir -p /var/www/html\nRUN echo "&lt;h1&gt;Custom ANK Image&lt;/h1&gt;" > /var/www/html/index.html\nEXPOSE 8080</textarea></div><div class="form-group" style="display:flex;align-items:center;gap:8px"><label class="checkbox-label" style="display:flex;align-items:center;gap:8px;cursor:pointer"><input type="checkbox" id="ankfile-save-image" style="width:18px;height:18px;accent-color:var(--accent)"><i class="bi bi-bookmark" style="color:var(--accent)"></i> Save as Image</label></div><div class="form-group" id="ankfile-image-name-group" style="display:none"><label class="form-label">Image Name</label><input type="text" class="form-input" id="ankfile-image-name" placeholder="my-custom-image" pattern="[a-zA-Z0-9._-]+" maxlength="40"><small class="form-hint">Letters, numbers, dots, dashes only</small></div><div style="display:flex;gap:8px"><button type="button" class="btn btn-primary" id="ankfile-build-btn"><i class="bi bi-hammer"></i> Build</button><button type="button" class="btn btn-ghost" id="ankfile-example-btn"><i class="bi bi-filetype-json"></i> Load Example</button></div></div></div><div class="card" style="border:1px dashed var(--border);margin-top:12px"><div class="card-body" id="ank-drop-zone" style="text-align:center;padding:24px;cursor:pointer;transition:background 0.2s"><i class="bi bi-cloud-arrow-up" style="font-size:28px;color:var(--accent);display:block;margin-bottom:8px"></i><p style="font-size:13px;color:var(--text-muted);margin:0">Drag & drop a <code>.ank</code> file here</p><p style="font-size:11px;color:var(--text-muted);margin:4px 0 0">or click to browse</p><input type="file" id="ank-file-input" accept=".ank,.txt" style="display:none"></div></div>`;
+    el.innerHTML = `<div class="sr-header"><h2><i class="bi bi-file-earmark-code" style="color:var(--accent)"></i> Ankfile Build</h2></div><p style="font-size:13px;color:var(--text-muted);margin-bottom:16px">Build custom images from an Ankfile (like Dockerfile).</p><div class="card" style="border:1px solid var(--accent)"><div class="card-body"><div class="form-group"><label class="form-label">Container Name</label><input type="text" class="form-input" id="ankfile-name" placeholder="my-app" value="ank-build"></div><div class="form-group"><label class="form-label">Ankfile</label><textarea class="ankfile-editor" id="ankfile-content" rows="10" placeholder="# FROM alpine-3.20&#10;PASSWD ank123&#10;RUN apk add nginx">FROM alpine-3.20\nPASSWD ank123\nRUN apk add --allow-untrusted nginx\nRUN mkdir -p /var/www/html\nRUN echo "&lt;h1&gt;Custom ANK Image&lt;/h1&gt;" > /var/www/html/index.html\nEXPOSE 8080</textarea></div><div class="form-group" style="display:flex;align-items:center;gap:8px"><label class="checkbox-label" style="display:flex;align-items:center;gap:8px;cursor:pointer"><input type="checkbox" id="ankfile-save-image" style="width:18px;height:18px;accent-color:var(--accent)"><i class="bi bi-bookmark" style="color:var(--accent)"></i> Save as Image</label></div><div class="form-group" id="ankfile-image-name-group" style="display:none"><label class="form-label">Image Name</label><input type="text" class="form-input" id="ankfile-image-name" placeholder="my-custom-image" pattern="[a-zA-Z0-9._-]+" maxlength="40"><small class="form-hint">Letters, numbers, dots, dashes only</small></div><div id="ankfile-node-select-container"></div><div style="display:flex;gap:8px"><button type="button" class="btn btn-primary" id="ankfile-build-btn"><i class="bi bi-hammer"></i> Build</button><button type="button" class="btn btn-ghost" id="ankfile-example-btn"><i class="bi bi-filetype-json"></i> Load Example</button></div></div></div><div class="card" style="border:1px dashed var(--border);margin-top:12px"><div class="card-body" id="ank-drop-zone" style="text-align:center;padding:24px;cursor:pointer;transition:background 0.2s"><i class="bi bi-cloud-arrow-up" style="font-size:28px;color:var(--accent);display:block;margin-bottom:8px"></i><p style="font-size:13px;color:var(--text-muted);margin:0">Drag & drop a <code>.ank</code> file here</p><p style="font-size:11px;color:var(--text-muted);margin:4px 0 0">or click to browse</p><input type="file" id="ank-file-input" accept=".ank,.txt" style="display:none"></div></div>`;
     document.getElementById('ank-drop-zone')?.addEventListener('click', () => document.getElementById('ank-file-input')?.click());
     const dz = document.getElementById('ank-drop-zone');
     const fi = document.getElementById('ank-file-input');
@@ -1423,7 +1428,7 @@ async function sendPairingRequest() {
     { id: 'port', label: 'Port', type: 'text', value: '8001' },
     { id: 'user', label: 'Username', type: 'text', value: 'admin' },
     { id: 'password', label: 'Password', type: 'text' },
-    { id: 'alias', label: 'Alias (optional)', type: 'text', placeholder: 'Auto-fills from node name' }
+    { id: 'alias', label: 'Alias (optional)', type: 'text', placeholder: 'Auto-fills from node name', optional: true }
   ]);
   if (!result) return;
   try { await api('POST', '/nodes/pairing/send', { ip: result.ip, port: parseInt(result.port), user: result.user || 'admin', password: result.password, alias: result.alias }); toast('Pairing request sent', 'success'); loadNodes(); } catch(e) { toast(`Failed: ${e.message}`, 'error'); }
@@ -1887,16 +1892,21 @@ async function detectWsProtocol() {
   try { const res = await fetch(API+'/protocol', { headers: { 'X-ANK-Client': 'ank-panel', 'Authorization': 'Bearer '+ankToken } }); if (res.ok) { const d = await res.json(); wsProtocol = d.protocol==='https'?'wss:':'ws:'; } } catch(e) {}
 }
 
-function initCoreTerminal() {
+async function initCoreTerminal() {
   const el = document.getElementById('terminal');
   if (!el) return;
   if (coreTerminal) { try { coreTerminal.dispose(); } catch(e){} coreTerminal = null; }
   if (coreWs) { try { coreWs.close(); } catch(e){} coreWs = null; }
   el.innerHTML = '';
+  let nodeLabel = 'ank-shell';
+  try { const c = await api('GET', '/config'); nodeLabel = c.node_name || 'ank-shell'; } catch(e) {}
   try {
     coreTerminal = new Terminal({ cursorBlink: true, fontSize: 14, fontFamily: "'Cascadia Code','Fira Code',monospace", theme: { background: '#0a0d12', foreground: '#d3d9e3', cursor: '#58a6ff' }, scrollback: 5000 });
     coreTerminal.open(el);
     coreTerminal.writeln('\x1b[1;36m  ANK \x1b[1;32m●\x1b[0m \x1b[1;36mAndroid Konteiner\x1b[0m\r\n');
+    coreTerminal.writeln('\x1b[90m  root@' + nodeLabel + '\x1b[0m\r\n');
+    const titleEl = document.getElementById('shell-terminal-title');
+    if (titleEl) titleEl.textContent = 'root@' + nodeLabel;
     coreTerminal.focus();
     connectCoreWs();
     const resize = () => { const rect = el.getBoundingClientRect(); const cols = Math.floor(rect.width/8.4); const rows = Math.floor(rect.height/18); if (cols>0&&rows>0) { coreTerminal.resize(cols,rows); if (coreWs&&coreWs.readyState===WebSocket.OPEN) coreWs.send(JSON.stringify({type:'resize',cols,rows})); } };
@@ -1912,7 +1922,20 @@ async function connectCoreWs() {
   const basePath = isRemote ? `/ws/node-shell/${encodeURIComponent(nodeId)}` : '/ws/shell';
   const url = wsProtocol+'//'+location.host+basePath+'?cols='+(coreTerminal?coreTerminal.cols:80)+'&rows='+(coreTerminal?coreTerminal.rows:24)+'&token='+encodeURIComponent(ankToken);
   coreWs = new WebSocket(url);
-  coreWs.onopen = () => { if(coreTerminal) { coreTerminal.writeln('\x1b[90m  Connected.\x1b[0m\r\n'); coreTerminal.focus(); } };
+  coreWs.onopen = () => {
+    if (coreTerminal) {
+      let remoteLabel = '';
+      if (isRemote) {
+        try {
+          const sel = document.getElementById('shell-container-select');
+          remoteLabel = sel?.options[sel.selectedIndex]?.text || nodeId;
+        } catch(e) { remoteLabel = nodeId; }
+      }
+      const label = isRemote ? remoteLabel : (document.getElementById('shell-terminal-title')?.textContent?.replace('root@','') || 'ank-shell');
+      coreTerminal.writeln('\x1b[90m  Connected' + (isRemote ? ' to ' + label : '') + '.\x1b[0m\r\n');
+      coreTerminal.focus();
+    }
+  };
   coreWs.onmessage = ev => { if(coreTerminal) coreTerminal.write(ev.data); };
   coreWs.onclose = () => { if(coreTerminal) coreTerminal.writeln('\r\n\x1b[31m[Connection closed]\x1b[0m'); };
   coreWs.onerror = () => { if(coreTerminal) coreTerminal.writeln('\r\n\x1b[31m[Connection error]\x1b[0m'); };
