@@ -1,5 +1,7 @@
 """
-ANK Installer - Step 4: Rebooting (PySide6)
+ANK Installer - Step: Rebooting (PySide6)
+Shared by all modes: whichever device should come back online is expected
+in self.app.device_data (for Clone/Migrate this is set to the target).
 """
 
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QLabel, QFrame
@@ -22,18 +24,18 @@ class RebootThread(QThread):
         import urllib.request
         import urllib.error
 
-        self.status.emit("Reiniciando dispositivo...")
+        self.status.emit("Rebooting device...")
         self.adb.reboot(self.serial)
 
         time.sleep(15)
 
-        self.status.emit("Aguardando ADB voltar...")
+        self.status.emit("Waiting for ADB to come back...")
         if not self.adb.wait_for_device(self.serial, timeout=90):
-            self.status.emit("Timeout aguardando ADB")
+            self.status.emit("Timeout waiting for ADB")
             self.done.emit(False)
             return
 
-        self.status.emit("Aguardando servidor ANK...")
+        self.status.emit("Waiting for the ANK server...")
 
         for i in range(60):
             time.sleep(2)
@@ -70,7 +72,7 @@ class StepReboot(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(12)
 
-        title = QLabel("Reiniciando")
+        title = QLabel("Rebooting")
         title.setObjectName("title")
         layout.addWidget(title)
 
@@ -79,7 +81,7 @@ class StepReboot(QWidget):
         card_layout = QVBoxLayout(card)
         card_layout.setContentsMargins(16, 16, 16, 16)
 
-        self.status_label = QLabel("Preparando reinicializacao...")
+        self.status_label = QLabel("Preparing to reboot...")
         self.status_label.setObjectName("subtitle")
         card_layout.addWidget(self.status_label)
 
@@ -92,8 +94,8 @@ class StepReboot(QWidget):
         layout.addWidget(card)
 
         desc = QLabel(
-            "Nao remova o cabo USB.\n"
-            "O dispositivo vai reiniciar e o ANK vai iniciar automaticamente."
+            "Do not unplug the USB cable.\n"
+            "The device will reboot and ANK will start automatically."
         )
         desc.setObjectName("subtitle")
         desc.setWordWrap(True)
@@ -117,10 +119,10 @@ class StepReboot(QWidget):
     def _do_reboot(self):
         device = self.app.device_data
         if not device:
-            self.status_label.setText("Erro: nenhum device")
+            self.status_label.setText("Error: no device")
             return
 
-        self.status_label.setText("Reiniciando...")
+        self.status_label.setText("Rebooting...")
         try:
             from core.adb import ADB
             adb = ADB()
@@ -129,7 +131,7 @@ class StepReboot(QWidget):
                 self._device_ip = adb.get_device_ip(device.serial)
 
             if not self._device_ip:
-                self.status_label.setText("Erro: nao foi possivel obter IP do device")
+                self.status_label.setText("Error: could not get the device's IP")
                 return
 
             self.app.device_ip = self._device_ip
@@ -139,13 +141,14 @@ class StepReboot(QWidget):
             self._thread.done.connect(self._on_done)
             self._thread.start()
         except Exception as e:
-            self.status_label.setText(f"Erro: {e}")
+            self.status_label.setText(f"Error: {e}")
 
     def _on_status(self, msg):
         self.status_label.setText(msg)
 
     def on_show(self):
         self._device_ip = None
+        self.app.reboot_complete = False
         device = self.app.device_data
         if device:
             try:
@@ -160,22 +163,22 @@ class StepReboot(QWidget):
         self.countdown_label.setStyleSheet(
             f"color: {COLORS['accent']}; font-size: 24px; font-weight: bold;"
         )
-        self.status_label.setText("Reiniciando em...")
+        self.status_label.setText("Rebooting in...")
         self._countdown_timer.start(1000)
 
     def _on_done(self, success):
         if success:
-            self.status_label.setText("ANK online!")
+            self.status_label.setText("ANK is online!")
             self.countdown_label.setText("\u2713")
             self.countdown_label.setStyleSheet(
                 f"color: {COLORS['success']}; font-size: 24px; font-weight: bold;"
             )
             self.app.reboot_complete = True
             self.app._update_buttons()
-            QTimer.singleShot(1000, lambda: self.app.show_step(5))
+            QTimer.singleShot(1000, lambda: self.app.show_step(self.app.current_step + 1))
         else:
-            self.status_label.setText("Falha ao aguardar device")
+            self.status_label.setText("Failed waiting for the device")
             self.countdown_label.setText("\u2717")
             self.countdown_label.setStyleSheet(
-                f"color: {COLORS['error']}; font-size: 24px; font-weight: bold;"
+                f"color: {COLORS['danger']}; font-size: 24px; font-weight: bold;"
             )

@@ -319,6 +319,7 @@
         <div class="split-left" id="settings-sidebar">
           <div class="split-list-card selected" data-section="account" onclick="showSettingsSection('account')"><span class="slc-name"><i class="bi bi-person-gear" style="color:var(--accent)"></i> Account</span></div>
           <div class="split-list-card" data-section="server" onclick="showSettingsSection('server')"><span class="slc-name"><i class="bi bi-server" style="color:var(--primary)"></i> Server</span></div>
+          <div class="split-list-card" data-section="ank-manager" onclick="showSettingsSection('ank-manager')"><span class="slc-name"><i class="bi bi-speedometer2" style="color:var(--success)"></i> ANK Manager</span></div>
           <div class="split-list-card" data-section="remote" onclick="showSettingsSection('remote')"><span class="slc-name"><i class="bi bi-diagram-3" style="color:var(--success)"></i> Remote & SSH</span></div>
           <div class="split-list-card" data-section="cache" onclick="showSettingsSection('cache')"><span class="slc-name"><i class="bi bi-database" style="color:var(--warning)"></i> Cache</span></div>
           <div class="split-list-card" data-section="about" onclick="showSettingsSection('about')"><span class="slc-name"><i class="bi bi-info-circle" style="color:var(--text-muted)"></i> About</span></div>
@@ -337,6 +338,7 @@
           <select class="form-select" id="shell-container-select" style="width:auto"></select>
           <button class="btn btn-primary btn-sm" id="btn-shell-connect"><i class="bi bi-play"></i> Connect</button>
           <button class="btn btn-danger btn-sm" id="btn-shell-disconnect" style="display:none"><i class="bi bi-stop"></i> Disconnect</button>
+          <button class="btn btn-ghost btn-sm" id="btn-shell-pip" title="Picture-in-Picture"><i class="bi bi-window-stack"></i> PiP</button>
           <button class="btn-logout" onclick="logout()"><i class="bi bi-box-arrow-right"></i> Logout</button>
         </div>
       </div>

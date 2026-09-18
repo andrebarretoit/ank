@@ -122,7 +122,7 @@ class DeviceDetector:
                 return False
 
         # Device info
-        _check("Dispositivo encontrado", lambda: (True, self.adb.get_model(serial)))
+        _check("Device found", lambda: (True, self.adb.get_model(serial)))
         result.device.model = self.adb.get_model(serial)
         result.device.android_version = self.adb.get_android_version(serial)
         result.device.kernel = self.adb.get_kernel(serial)
@@ -130,30 +130,30 @@ class DeviceDetector:
 
         # Architecture detection
         result.arch = self._detect_arch(serial)
-        _check("Arquitetura detectada", lambda: (True, result.arch))
+        _check("Architecture detected", lambda: (True, result.arch))
 
-        _check("ADB autorizado", lambda: (True, "Comunicacao OK"))
+        _check("ADB authorized", lambda: (True, "Communication OK"))
 
         # Root check
         result.is_rooted = _check(
-            "Root encontrado",
-            lambda: (self.adb.check_root(serial), "Magisk" if self.adb.check_root(serial) else "Sem root")
+            "Root found",
+            lambda: (self.adb.check_root(serial), "Magisk" if self.adb.check_root(serial) else "No root")
         )
         result.device.is_rooted = result.is_rooted
 
         if result.is_rooted:
             # Root manager check (Magisk or KernelSU)
             result.has_magisk = _check(
-                "Magisk instalado",
-                lambda: (self.adb.check_magisk(serial), self.adb.get_magisk_version(serial) if self.adb.check_magisk(serial) else "Nao encontrado")
+                "Magisk installed",
+                lambda: (self.adb.check_magisk(serial), self.adb.get_magisk_version(serial) if self.adb.check_magisk(serial) else "Not found")
             )
             if result.has_magisk:
                 result.magisk_version = self.adb.get_magisk_version(serial)
                 result.root_manager = "magisk"
             else:
                 result.has_kernelsu = _check(
-                    "KernelSU instalado",
-                    lambda: (self.adb.check_kernelsu(serial), self.adb.get_kernel_su_version(serial) if self.adb.check_kernelsu(serial) else "Nao encontrado")
+                    "KernelSU installed",
+                    lambda: (self.adb.check_kernelsu(serial), self.adb.get_kernel_su_version(serial) if self.adb.check_kernelsu(serial) else "Not found")
                 )
                 if result.has_kernelsu:
                     result.kernelsu_version = self.adb.get_kernel_su_version(serial)
@@ -161,27 +161,27 @@ class DeviceDetector:
 
             # Kernel capabilities
             result.has_chroot = _check(
-                "Chroot disponivel",
+                "Chroot available",
                 lambda: self._check_chroot(serial)
             )
 
             result.has_netns = _check(
-                "NET Namespace disponivel",
+                "NET Namespace available",
                 lambda: self._check_netns(serial)
             )
 
             result.has_pidns = _check(
-                "PID Namespace disponivel",
+                "PID Namespace available",
                 lambda: self._check_pidns(serial)
             )
 
             result.has_overlay = _check(
-                "OverlayFS disponivel",
+                "OverlayFS available",
                 lambda: self._check_overlay(serial)
             )
 
             result.has_cgroups = _check(
-                "Cgroups disponivel",
+                "Cgroups available",
                 lambda: self._check_cgroups(serial)
             )
 
@@ -190,14 +190,14 @@ class DeviceDetector:
         else:
             # Non-root: check PRoot availability
             result.has_proot = _check(
-                "PRoot disponivel",
-                lambda: (self.adb.check_proot(serial), "PRoot encontrado" if self.adb.check_proot(serial) else "PRoot sera instalado")
+                "PRoot available",
+                lambda: (self.adb.check_proot(serial), "PRoot found" if self.adb.check_proot(serial) else "PRoot will be installed")
             )
 
             # Check Termux
             result.has_termux = _check(
-                "Termux instalado",
-                lambda: (self.adb.check_termux(serial), "Termux encontrado" if self.adb.check_termux(serial) else "Nao encontrado")
+                "Termux installed",
+                lambda: (self.adb.check_termux(serial), "Termux found" if self.adb.check_termux(serial) else "Not found")
             )
 
             result.recommended_tier = "lite"
@@ -208,30 +208,30 @@ class DeviceDetector:
         """Check if chroot is available."""
         output, code = self.adb.shell(serial, "which chroot 2>/dev/null || echo ''")
         if output:
-            return True, f"Encontrado: {output}"
+            return True, f"Found: {output}"
         # Try to run chroot
         output, code = self.adb.shell_su(serial, "chroot / /bin/true 2>/dev/null && echo ok")
-        return "ok" in output, "Chroot funcional" if "ok" in output else "Chroot nao funcional"
+        return "ok" in output, "Chroot functional" if "ok" in output else "Chroot not functional"
 
     def _check_netns(self, serial: str) -> tuple:
         """Check if network namespaces are available."""
         output, code = self.adb.shell_su(serial, "ip netns add _ank_test 2>/dev/null && ip netns del _ank_test 2>/dev/null && echo ok")
-        return "ok" in output, "NETNS disponivel" if "ok" in output else "NETNS indisponivel"
+        return "ok" in output, "NETNS available" if "ok" in output else "NETNS unavailable"
 
     def _check_pidns(self, serial: str) -> tuple:
         """Check if PID namespaces are available."""
         output, code = self.adb.shell_su(serial, "unshare --pid --fork /bin/true 2>/dev/null && echo ok")
-        return "ok" in output, "PIDNS disponivel" if "ok" in output else "PIDNS indisponivel"
+        return "ok" in output, "PIDNS available" if "ok" in output else "PIDNS unavailable"
 
     def _check_overlay(self, serial: str) -> tuple:
         """Check if OverlayFS is available."""
         output, code = self.adb.shell(serial, "cat /proc/filesystems 2>/dev/null | grep overlay")
-        return "overlay" in output, "OverlayFS disponivel" if "overlay" in output else "OverlayFS indisponivel"
+        return "overlay" in output, "OverlayFS available" if "overlay" in output else "OverlayFS unavailable"
 
     def _check_cgroups(self, serial: str) -> tuple:
         """Check if cgroups are available."""
         output, code = self.adb.shell(serial, "ls /sys/fs/cgroup/ 2>/dev/null | head -5")
-        return bool(output), f"Cgroups: {output[:50]}..." if output else "Cgroups indisponiveis"
+        return bool(output), f"Cgroups: {output[:50]}..." if output else "Cgroups unavailable"
 
     def _detect_arch(self, serial: str) -> str:
         """Detect device architecture."""
@@ -253,15 +253,15 @@ class DeviceDetector:
             # Get details
             output, _ = self.adb.shell(serial, "which proot 2>/dev/null || echo ''")
             if output:
-                return True, f"PRoot sistematico: {output}"
+                return True, f"System-wide: {output}"
             output, _ = self.adb.shell(serial, "ls /data/local/ank/proot 2>/dev/null")
             if output and "proot" in output:
-                return True, "PRoot encontrado no ANK dir"
+                return True, "PRoot found in the ANK dir"
             output, _ = self.adb.shell(serial, "ls /data/data/com.termux/files/usr/bin/proot 2>/dev/null")
             if output and "proot" in output:
                 return True, "PRoot via Termux"
-            return True, "PRoot encontrado"
-        return False, "PRoot sera instalado durante a configuracao"
+            return True, "PRoot found"
+        return False, "PRoot will be installed during setup"
 
     def _determine_tier(self, result: DetectionResult) -> str:
         """Determine the best tier based on capabilities.

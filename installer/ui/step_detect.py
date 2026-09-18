@@ -1,12 +1,12 @@
 """
-ANK Installer - Step 2: Detect Compatibility (PySide6)
+ANK Installer - Step: Detect Compatibility (PySide6)
 """
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QFrame, QTextEdit, QProgressBar, QComboBox
 )
 from PySide6.QtCore import Qt, QThread, Signal
-from ui.theme import COLORS, FONTS, TIER_COLORS
+from ui.theme import COLORS, TIER_COLORS, TIER_NAMES
 
 
 class DetectThread(QThread):
@@ -30,11 +30,11 @@ class DetectThread(QThread):
             result = detector.detect(self.serial, callback=callback)
             self.finished_ok.emit(result.recommended_tier, result.to_dict())
         except Exception as e:
-            self.check_done.emit("Erro", False, str(e))
+            self.check_done.emit("Error", False, str(e))
 
 
 class StepDetect(QWidget):
-    """Step 2: Detect Compatibility."""
+    """Step: Detect Compatibility."""
 
     def __init__(self, parent, app):
         super().__init__(parent)
@@ -48,7 +48,7 @@ class StepDetect(QWidget):
         layout.setSpacing(12)
 
         # Title
-        title = QLabel("Detectar Compatibilidade")
+        title = QLabel("Detect Compatibility")
         title.setObjectName("title")
         layout.addWidget(title)
 
@@ -71,7 +71,7 @@ class StepDetect(QWidget):
         tier_layout = QVBoxLayout(self.tier_frame)
         tier_layout.setContentsMargins(16, 16, 16, 16)
 
-        self.tier_label = QLabel("Modo recomendado")
+        self.tier_label = QLabel("Recommended mode")
         self.tier_label.setObjectName("subtitle")
         tier_layout.addWidget(self.tier_label)
 
@@ -92,13 +92,13 @@ class StepDetect(QWidget):
         mode_layout = QVBoxLayout(self.mode_frame)
         mode_layout.setContentsMargins(16, 16, 16, 16)
 
-        self.mode_label = QLabel("Modo de Instalacao")
+        self.mode_label = QLabel("Installation Mode")
         self.mode_label.setObjectName("subtitle")
         mode_layout.addWidget(self.mode_label)
 
         self.mode_combo = QComboBox()
-        self.mode_combo.addItem("Nativo - Engine ANK (acesso via web)")
-        self.mode_combo.addItem("ANK UI - Launcher (interface Android)")
+        self.mode_combo.addItem("Native - ANK Engine (web access)")
+        self.mode_combo.addItem("ANK UI - Launcher (Android interface)")
         self.mode_combo.currentIndexChanged.connect(self._on_mode_changed)
         mode_layout.addWidget(self.mode_combo)
 
@@ -114,7 +114,7 @@ class StepDetect(QWidget):
 
     def _add_log(self, label, passed, detail):
         icon = "\u2713" if passed else "\u2717"
-        color = COLORS["success"] if passed else COLORS["error"]
+        color = COLORS["success"] if passed else COLORS["danger"]
         self.log.append(f"<span style='color:{color}'>{icon}</span> {label}: {detail}")
 
     def _on_check(self, label, passed, detail):
@@ -124,7 +124,6 @@ class StepDetect(QWidget):
         self.progress.setValue(min(lines * 15, 90))
 
     def _on_finished(self, tier, result_dict=None):
-        from ui.theme import TIER_COLORS
         self.progress.setValue(100)
         self.app.recommended_tier = tier
 
@@ -140,9 +139,9 @@ class StepDetect(QWidget):
         tier_info = {
             "isolated": ("Isolated", "NETNS + PIDNS + Overlay"),
             "shared_network": ("Shared Network", "PIDNS + Overlay (host network)"),
-            "shared_host": ("Shared Host", "Chroot apenas"),
-            "native_host": ("Native Host", "Chroot sem namespace/overlay"),
-            "lite": ("Lite", "PRoot userspace (sem root)"),
+            "shared_host": ("Shared Host", "Chroot only"),
+            "native_host": ("Native Host", "Chroot without namespace/overlay"),
+            "lite": ("Lite", "PRoot userspace (no root)"),
         }
         name, desc = tier_info.get(tier, (tier, ""))
 
@@ -174,14 +173,14 @@ class StepDetect(QWidget):
         index = self.mode_combo.currentIndex()
         if index == 0:
             self.mode_desc.setText(
-                "Instala apenas a engine ANK (server + chroot). "
-                "Acesso via web normal pelo browser. Nao interfere no Android."
+                "Installs only the ANK engine (server + chroot). "
+                "Accessed from a normal web browser. Does not interfere with Android."
             )
         else:
             self.mode_desc.setText(
-                "Instala o ANK Launcher que substitui o launcher padrao do Android. "
-                "Transforma o device em device proprio para containerizacao. "
-                "Altera a UI do Android para a interface do ANK."
+                "Installs the ANK Launcher, replacing Android's default launcher. "
+                "Turns the device into a dedicated containerization device. "
+                "Changes the Android UI to the ANK interface."
             )
 
     def _start_detection(self):
@@ -194,7 +193,7 @@ class StepDetect(QWidget):
 
         device = self.app.device_data
         if not device:
-            self._add_log("Erro", False, "Nenhum dispositivo selecionado")
+            self._add_log("Error", False, "No device selected")
             return
 
         try:
@@ -205,26 +204,26 @@ class StepDetect(QWidget):
             self._thread.finished_ok.connect(self._on_finished)
             self._thread.start()
         except Exception as e:
-            self._add_log("Erro", False, str(e))
+            self._add_log("Error", False, str(e))
 
     def on_show(self):
-        """Auto-run detection. Cache only when going back from Step 3."""
+        """Auto-run detection. Cache only when going back from Confirm."""
         self.log.clear()
         self.progress.setValue(0)
         self.tier_frame.hide()
 
         device = self.app.device_data
         if not device:
-            self._add_log("Erro", False, "Nenhum dispositivo selecionado")
+            self._add_log("Error", False, "No device selected")
             return
 
-        # Use cache ONLY when going back from Step 3
+        # Use cache ONLY when going back from Confirm
         if self.app._came_from_step3:
             self.app._came_from_step3 = False
             from core.cache import load_detection
             cached = load_detection(device.serial)
             if cached:
-                self._add_log("Cache", True, "Resultados da sessao anterior")
+                self._add_log("Cache", True, "Results from previous session")
                 for check in cached.get("checks", []):
                     if len(check) >= 3:
                         self._add_log(check[0], check[1], check[2])

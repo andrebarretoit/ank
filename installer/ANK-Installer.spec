@@ -1,4 +1,8 @@
 # -*- mode: python ; coding: utf-8 -*-
+# NOTE: ui/step_mode_select.py, ui/step_restore.py, ui/step_clone.py and
+# ui/step_migrate.py do not need their own `datas` entries here - PyInstaller's
+# static analysis follows the `from ui.step_xxx import ...` statements in
+# ui/app.py and bundles them as regular Python modules automatically.
 a = Analysis(
     ['main.py'],
     pathex=[],
@@ -7,8 +11,9 @@ a = Analysis(
         ('E:/Ank/dist/ank-magisk.zip', '.'),
         ('E:/Ank/ANK.ico', '.'),
         ('E:/Ank/ank-launcher.apk', '.'),
+        ('E:/Ank/dist/proot', '.'),
     ],
-    hiddenimports=['adbutils'],
+    hiddenimports=['adbutils', 'PySide6'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

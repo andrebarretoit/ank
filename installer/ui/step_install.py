@@ -1,5 +1,5 @@
 """
-ANK Installer - Step 4: Installing (PySide6)
+ANK Installer - Step: Installing (PySide6)
 """
 
 import datetime
@@ -28,24 +28,190 @@ class InstallThread(QThread):
 
     def run(self):
         try:
-            install_mode = getattr(self.app, 'install_mode', 'native')
-            device = self.app.device_data
-            has_magisk = self.app._detection_result.get("has_magisk", False) if isinstance(self.app._detection_result, dict) else getattr(self.app._detection_result, "has_magisk", False) if self.app._detection_result else False
+            mode = getattr(self.app, 'mode', 'install')
 
-            if install_mode == "ank_ui":
-                self._install_ank_ui_mode()
-            elif device and not getattr(device, 'is_rooted', False):
-                self._install_lite()
-            elif has_magisk:
-                self._install_rooted()
-            else:
-                self._install_manual()
-            self.done.emit(True, "Instalacao concluida!")
+            # Handle uninstall mode
+            if mode == "uninstall":
+                self._uninstall()
+                return
+
+            # Handle reinstall mode (uninstall first, then install)
+            if mode == "reinstall":
+                self.progress.emit(0.05, "Removing current installation...")
+                self.log.emit("Removing current ANK installation...")
+                rooted = getattr(self.app.device_data, 'is_rooted', False)
+                self.adb.uninstall_ank_full(self.serial, rooted,
+                    lambda msg: self.log.emit(msg))
+                self.progress.emit(0.3, "Installing fresh...")
+                self.log.emit("Installing fresh ANK...")
+                self._do_install()
+                return
+
+            # Handle export mode
+            if mode == "export":
+                self._export_ankengine()
+                return
+
+            # Normal install or restore_engine
+            self._do_install()
         except Exception as e:
             self.done.emit(False, str(e))
 
+    def _do_install(self):
+        """Core install logic shared by install/reinstall."""
+        install_mode = getattr(self.app, 'install_mode', 'native')
+        device = self.app.device_data
+        has_magisk = self.app._detection_result.get("has_magisk", False) if isinstance(self.app._detection_result, dict) else getattr(self.app._detection_result, "has_magisk", False) if self.app._detection_result else False
+
+        if install_mode == "ank_ui":
+            self._install_ank_ui_mode()
+        elif device and not getattr(device, 'is_rooted', False):
+            self._install_lite()
+        elif has_magisk:
+            self._install_rooted()
+        else:
+            self._install_manual()
+        self.done.emit(True, "Installation complete!")
+
+    def _uninstall(self):
+        """Full ANK uninstall — removes everything, reboots, cleans again."""
+        self.progress.emit(0.05, "Removing ANK...")
+        self.log.emit("Starting full ANK uninstall...")
+
+        rooted = getattr(self.app.device_data, 'is_rooted', False)
+        success = self.adb.uninstall_ank_full(self.serial, rooted,
+            lambda msg: self.log.emit(msg))
+
+        if not success:
+            self.done.emit(False, "Uninstall failed")
+            return
+
+        # Reboot to clear all bind mounts and running processes
+        self.progress.emit(0.5, "Rebooting device...")
+        self.log.emit("Rebooting device to clear all ANK traces...")
+        self.adb.shell(self.serial, "reboot")
+
+        # Wait for device to come back
+        self.log.emit("Waiting for device to restart...")
+        import time
+        time.sleep(15)
+
+        for _ in range(30):
+            try:
+                devices = self.adb.devices()
+                if devices:
+                    self.serial = devices[0].serial
+                    self.log.emit("Device is back online.")
+                    break
+            except Exception:
+                pass
+            time.sleep(3)
+        else:
+            self.done.emit(False, "Device did not come back after reboot")
+            return
+
+        # Second cleanup pass — remove anything left behind
+        self.progress.emit(0.8, "Final cleanup pass...")
+        self.log.emit("Running final cleanup to remove any leftovers...")
+        self.adb.shell(self.serial, "rm -rf /data/local/ank")
+        self.adb.shell(self.serial, "rm -rf /data/adb/modules/ank*")
+        self.adb.shell(self.serial, "rm -rf /data/adb/service.d/ank*")
+
+        self.progress.emit(1.0, "Uninstall complete!")
+        self.log.emit("ANK has been completely removed from the device.")
+        self.done.emit(True, "Uninstall complete!")
+
+    def _export_ankengine(self):
+        """Export ANK setup to .ankengine file."""
+        self.progress.emit(0.1, "Preparing export...")
+        self.log.emit("Exporting ANK configuration...")
+
+        import zipfile
+        import tempfile
+        import os
+
+        try:
+            # Create temp .ankengine file
+            tmp_file = os.path.join(tempfile.gettempdir(), "ank-export.ankengine")
+
+            with zipfile.ZipFile(tmp_file, 'w', zipfile.ZIP_DEFLATED) as zf:
+                # Export config
+                self.progress.emit(0.2, "Exporting configuration...")
+                config_out, _ = self.adb.shell(self.serial,
+                    "cat /data/local/ank/config.json 2>/dev/null")
+                if config_out:
+                    zf.writestr("config.json", config_out)
+                    self.log.emit("Configuration exported")
+
+                # Export mode
+                mode_out, _ = self.adb.shell(self.serial,
+                    "cat /data/local/ank/mode 2>/dev/null")
+                if mode_out:
+                    zf.writestr("mode", mode_out)
+
+                # Export containers
+                containers_out, _ = self.adb.shell(self.serial,
+                    "ls /data/local/ank/containers/ 2>/dev/null")
+                if containers_out:
+                    for name in containers_out.strip().split("\n"):
+                        name = name.strip()
+                        if not name:
+                            continue
+                        self.log.emit(f"Exporting container: {name}")
+                        # Pull container config
+                        cfg_out, _ = self.adb.shell(self.serial,
+                            f"cat /data/local/ank/containers/{name}/config.json 2>/dev/null")
+                        if cfg_out:
+                            zf.writestr(f"containers/{name}/config.json", cfg_out)
+
+                # Export server files
+                self.progress.emit(0.5, "Exporting server files...")
+                for f in ["server.py", "ank_lite.py"]:
+                    file_out, _ = self.adb.shell(self.serial,
+                        f"cat /data/local/ank/ankfs/opt/ank/{f} 2>/dev/null")
+                    if file_out:
+                        zf.writestr(f"server/{f}", file_out)
+
+                # Export static files
+                static_out, _ = self.adb.shell(self.serial,
+                    "ls /data/local/ank/ankfs/opt/ank/static/ 2>/dev/null")
+                if static_out:
+                    for f in static_out.strip().split("\n"):
+                        f = f.strip()
+                        if not f:
+                            continue
+                        content, _ = self.adb.shell(self.serial,
+                            f"cat /data/local/ank/ankfs/opt/ank/{f} 2>/dev/null")
+                        if content:
+                            zf.writestr(f"static/{f}", content)
+
+            # Pull the file to the user's Downloads
+            user_downloads = os.path.expanduser("~/Downloads")
+            os.makedirs(user_downloads, exist_ok=True)
+            dest = os.path.join(user_downloads, "ank-export.ankengine")
+
+            self.progress.emit(0.8, "Saving export file...")
+            result = self.adb._run_device(self.serial,
+                ["pull", tmp_file, dest], timeout=60)
+
+            if result.returncode == 0:
+                self.progress.emit(1.0, "Export complete!")
+                self.log.emit(f"Exported to: {dest}")
+                self.done.emit(True, f"Exported to {dest}")
+            else:
+                self.done.emit(False, f"Failed to save: {result.stderr}")
+
+            # Cleanup
+            try:
+                os.remove(tmp_file)
+            except Exception:
+                pass
+
+        except Exception as e:
+            self.done.emit(False, f"Export failed: {e}")
+
     def _install_ank_ui_mode(self):
-        """Install ANK engine + ANK UI launcher."""
+        """Install ANK UI launcher + ANK engine."""
         import sys
         import os
 
@@ -56,32 +222,8 @@ class InstallThread(QThread):
             base_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
             exe_dir = os.path.join(base_path, "..")
 
-        # 1. Install ANK engine
-        tier = self.app.recommended_tier
-        device = self.app.device_data
-        has_magisk = self.app._detection_result.get("has_magisk", False) if isinstance(self.app._detection_result, dict) else getattr(self.app._detection_result, "has_magisk", False) if self.app._detection_result else False
-
-        def callback(step, message, progress_val):
-            self.progress.emit(progress_val * 0.7, message)
-            self.log.emit(message)
-
-        if device and not getattr(device, 'is_rooted', False):
-            from core.installer_lite import LiteInstaller
-            installer = LiteInstaller(self.adb, self.serial, callback=callback)
-            if not installer.install():
-                raise Exception("Instalacao Lite falhou")
-        elif has_magisk:
-            self._install_rooted()
-            return
-        else:
-            from core.installer_manual import ManualInstaller
-            installer = ManualInstaller(self.adb, self.serial, callback=callback)
-            if not installer.install():
-                raise Exception("Instalacao manual falhou")
-
-        # 2. Install ANK UI APK
-        self.progress.emit(0.75, "Instalando ANK UI...")
-        self.log.emit("Buscando ank-launcher.apk...")
+        # 1. Install ANK UI APK first (before engine, no reboot needed yet)
+        self.progress.emit(0.05, "Installing ANK UI...")
 
         apk_candidates = [
             os.path.join(exe_dir, "ank-launcher.apk"),
@@ -93,43 +235,63 @@ class InstallThread(QThread):
                 apk_path = c
                 break
 
-        if not apk_path:
-            self.log.emit("WARN: ank-launcher.apk nao encontrado - ANK UI nao instalado")
+        if apk_path:
+            self.progress.emit(0.1, "Installing ANK Launcher...")
+            result = self.adb._run_device(self.serial, ["install", "-r", apk_path], timeout=60)
+            if result.returncode != 0:
+                self.log.emit(f"WARN: Failed to install ANK UI: {result.stderr}")
+            else:
+        else:
+            self.log.emit("WARN: skipping ANK UI")
+
+        # 2. Install ANK engine
+        tier = self.app.recommended_tier
+        device = self.app.device_data
+        has_magisk = self.app._detection_result.get("has_magisk", False) if isinstance(self.app._detection_result, dict) else getattr(self.app._detection_result, "has_magisk", False) if self.app._detection_result else False
+
+        def callback(step, message, progress_val):
+            self.progress.emit(0.1 + progress_val * 0.6, message)
+            self.log.emit(message)
+
+        if device and not getattr(device, 'is_rooted', False):
+            from core.installer_lite import LiteInstaller
+            installer = LiteInstaller(self.adb, self.serial, callback=callback)
+            if not installer.install():
+                raise Exception("Lite installation failed")
+        elif has_magisk:
+            self._install_rooted()
             return
+        else:
+            from core.installer_manual import ManualInstaller
+            installer = ManualInstaller(self.adb, self.serial, callback=callback)
+            if not installer.install():
+                raise Exception("Manual installation failed")
 
-        self.progress.emit(0.8, "Instalando ANK Launcher...")
-        self.log.emit(f"Instalando: {apk_path}")
-        result = self.adb._run_device(self.serial, ["install", "-r", apk_path], timeout=60)
-        if result.returncode != 0:
-            self.log.emit(f"WARN: Falha ao instalar ANK UI: {result.stderr}")
-            return
+        # 3. Set ANK UI as default launcher (after engine is ready)
+        if apk_path:
+            self.progress.emit(0.8, "Setting ANK UI as default launcher...")
 
-        self.log.emit("OK: ANK Launcher instalado")
+            output, _ = self.adb.shell(self.serial, "pm list packages 2>/dev/null | grep ank")
+            if output:
+                for line in output.strip().split("\n"):
+                    pkg = line.replace("package:", "").strip()
+                    if pkg and ("launcher" in pkg.lower() or "ank" in pkg.lower()):
+                        self.adb.shell(self.serial,
+                            f"cmd role add-role-holder android.app.role.HOME {pkg}/.MainActivity 2>/dev/null")
+                        self.adb.shell(self.serial,
+                            f"cmd package set-home-activity {pkg}/.MainActivity 2>/dev/null")
+                        self.adb.shell(self.serial,
+                            f"pm set-home-activity {pkg}/.MainActivity 2>/dev/null")
+                        self.adb.shell(self.serial,
+                            f"am start -a android.intent.action.MAIN -c android.intent.category.HOME 2>/dev/null")
+                        self.log.emit(f"OK: {pkg} set as default launcher")
+                        break
 
-        # 3. Set ANK UI as default launcher
-        self.progress.emit(0.9, "Configurando ANK UI como launcher padrao...")
-        self.log.emit("Definindo ANK UI como app de inicio padrao...")
-
-        # Find ANK UI package name
-        output, _ = self.adb.shell(self.serial, "pm list packages 2>/dev/null | grep ank")
-        if output:
-            for line in output.strip().split("\n"):
-                pkg = line.replace("package:", "").strip()
-                if pkg and "launcher" in pkg.lower() or "ank" in pkg.lower():
-                    # Set as default home activity
-                    self.adb.shell(self.serial,
-                        f"cmd package set-home-activity {pkg}/.MainActivity 2>/dev/null")
-                    self.adb.shell(self.serial,
-                        f"input keyevent KEYCODE_HOME 2>/dev/null")
-                    self.log.emit(f"OK: {pkg} definido como launcher padrao")
-                    break
-
-        self.progress.emit(1.0, "Instalacao ANK UI concluida!")
-        self.log.emit("ANK UI instalado com sucesso!")
+        self.progress.emit(1.0, "ANK UI installation complete!")
 
     def _install_rooted(self):
         # 1. Find zip and ankcore from PyInstaller bundle or disk
-        self.progress.emit(0.05, "Extraindo arquivos...")
+        self.progress.emit(0.05, "Extracting files...")
         import sys
         if getattr(sys, 'frozen', False):
             base_path = sys._MEIPASS
@@ -149,7 +311,7 @@ class InstallThread(QThread):
                 zip_path = c
                 break
         if not zip_path:
-            raise Exception(f"ank-magisk.zip nao encontrado. Coloque ao lado do exe.")
+            raise Exception("ank-magisk.zip not found. Place it next to the exe.")
         with open(zip_path, "rb") as f:
             zip_data = f.read()
 
@@ -158,13 +320,13 @@ class InstallThread(QThread):
             f.write(zip_data)
 
         # 2. Push zip to device (ankcore tar.gz is bundled inside the zip)
-        self.progress.emit(0.25, "[ANK-INSTALLER] Verificando atualizações, aguarde...")
+        self.progress.emit(0.25, "[ANK-INSTALLER] Checking for updates, please wait...")
         self.adb.push(self.serial, tmp_zip, "/sdcard/Download/ank-magisk.zip")
-        self.log.emit("[ANK-INSTALLER] Verificando atualizações, aguarde...")
+        self.log.emit("[ANK-INSTALLER] Checking for updates, please wait...")
 
         # 3. Install Magisk module (streaming output)
-        self.progress.emit(0.5, "[ANK-INSTALLER] Instalação iniciada, isso pode levar alguns minutos.")
-        self.log.emit("[ANK-INSTALLER] Iniciando instalação, aguarde...")
+        self.progress.emit(0.5, "[ANK-INSTALLER] Installation started, this may take a few minutes.")
+        self.log.emit("[ANK-INSTALLER] Starting installation, please wait...")
 
         def on_install_line(line):
             if line.strip():
@@ -180,35 +342,35 @@ class InstallThread(QThread):
         # Check for failure
         if code != 0:
             # Fetch install log from device
-            self.log.emit("\n--- Log de instalacao do device ---")
+            self.log.emit("\n--- Device install log ---")
             log_out, _ = self.adb.shell(self.serial, "cat /data/local/ank/logs/install.log 2>/dev/null || cat /sdcard/AndroidKonteiner/logs/install.log 2>/dev/null")
             if log_out:
                 self.log.emit(log_out)
-            self.log.emit("--- Fim do log ---\n")
-            raise Exception("Instalacao do ANK falhou")
+            self.log.emit("--- End of log ---\n")
+            raise Exception("ANK installation failed")
 
-        self.log.emit("OK: ANK instalado")
+        self.log.emit("OK: ANK installed")
 
         # 4. Verify installation
-        self.progress.emit(0.8, "Verificando instalacao...")
+        self.progress.emit(0.8, "Verifying installation...")
         check, _ = self.adb.shell(self.serial, "ls /data/local/ank/ankfs/usr/bin/python3 2>/dev/null")
         if not check or "python3" not in check:
-            self.log.emit("\n--- Log de instalacao do device ---")
+            self.log.emit("\n--- Device install log ---")
             log_out, _ = self.adb.shell(self.serial, "cat /data/local/ank/logs/install.log 2>/dev/null || cat /sdcard/AndroidKonteiner/logs/install.log 2>/dev/null")
             if log_out:
                 self.log.emit(log_out)
-            self.log.emit("--- Fim do log ---\n")
-            raise Exception("Erro. Verifique o log acima.")
+            self.log.emit("--- End of log ---\n")
+            raise Exception("Error. Check the log above.")
 
-        self.log.emit("OK: Servicos configurados")
+        self.log.emit("OK: Services configured")
 
-        self.progress.emit(0.95, "Limpando arquivos temporarios...")
-        self.log.emit("Limpando arquivos temporarios do device...")
+        self.progress.emit(0.95, "Cleaning up temporary files...")
+        self.log.emit("Cleaning up temporary files on the device...")
         self.adb.shell(self.serial, "rm -f /sdcard/Download/ank-magisk.zip 2>/dev/null")
-        self.log.emit("OK: Limpeza concluida")
+        self.log.emit("OK: Cleanup complete")
 
-        self.progress.emit(1.0, "Finalizado!")
-        self.log.emit("Instalacao concluida com sucesso!")
+        self.progress.emit(1.0, "Done!")
+        self.log.emit("Installation completed successfully!")
 
     def _install_lite(self):
         import threading
@@ -231,11 +393,23 @@ class InstallThread(QThread):
         installer = LiteInstaller(self.adb, self.serial, callback=callback, retry_callback=retry_callback)
         success = installer.install()
         if not success:
-            raise Exception("Instalacao Lite falhou")
+            raise Exception("Lite installation failed")
+
+    def _install_manual(self):
+        from core.installer_manual import ManualInstaller
+
+        def callback(step, message, progress_val):
+            self.progress.emit(progress_val, message)
+            self.log.emit(message)
+
+        installer = ManualInstaller(self.adb, self.serial, callback=callback)
+        success = installer.install()
+        if not success:
+            raise Exception("Manual installation failed")
 
 
 class StepInstall(QWidget):
-    """Step 4: Installing."""
+    """Step: Installing."""
 
     def __init__(self, parent, app):
         super().__init__(parent)
@@ -251,7 +425,7 @@ class StepInstall(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(12)
 
-        title = QLabel("Instalacao")
+        title = QLabel("Installing")
         title.setObjectName("title")
         layout.addWidget(title)
 
@@ -265,7 +439,7 @@ class StepInstall(QWidget):
         self.progress_label.setObjectName("text-muted")
         layout.addWidget(self.progress_label)
 
-        self.status = QLabel("Executando...")
+        self.status = QLabel("Running...")
         self.status.setObjectName("subtitle")
         layout.addWidget(self.status)
 
@@ -290,16 +464,23 @@ class StepInstall(QWidget):
         self.progress.setValue(0)
         self.progress_label.setText("0%")
         self.log.clear()
+        self.app.install_complete = False
+        self.app.install_failed = False
 
         device = self.app.device_data
         if not device:
-            self._add_log("Erro: nenhum dispositivo selecionado")
+            self._add_log("Error: no device selected")
             return
+
+        mode = self.app.mode or "install"
 
         try:
             from core.adb import ADB
-            adb = ADB()
+            adb = self.app._adb
             tier = self.app.recommended_tier
+
+            if self._thread is not None and self._thread.isRunning():
+                self._thread.wait(3000)
 
             self._thread = InstallThread(adb, device.serial, tier, self.app)
             self._thread.progress.connect(self._on_progress)
@@ -308,7 +489,7 @@ class StepInstall(QWidget):
             self._thread.retry_needed.connect(self._on_retry_needed)
             self._thread.start()
         except Exception as e:
-            self._add_log(f"Erro: {e}")
+            self._add_log(f"Error: {e}")
 
     def _on_progress(self, value, msg):
         self.progress.setValue(int(value * 100))
@@ -316,21 +497,28 @@ class StepInstall(QWidget):
         self.status.setText(msg)
 
     def _on_done(self, success, msg):
+        mode = self.app.mode or "install"
         if success:
             self.progress.setValue(100)
             self.progress_label.setText("100%")
-            self.status.setText("Instalacao concluida!")
+            titles = {
+                "install": "Installation complete!",
+                "uninstall": "Uninstall complete!",
+                "reinstall": "Reinstall complete!",
+                "export": "Export complete!",
+            }
+            self.status.setText(titles.get(mode, "Complete!"))
             self.status.setStyleSheet(f"color: {COLORS['success']}; font-size: 13px; font-weight: bold;")
             self.app.install_complete = True
             self._countdown = 5
-            self.countdown_label.setText(f"Prosseguindo em {self._countdown}s...")
+            self.countdown_label.setText(f"Continuing in {self._countdown}s...")
             self._countdown_timer.start(1000)
         else:
             self.progress.setValue(0)
-            self.status.setText(f"Falha: {msg}")
-            self.status.setStyleSheet(f"color: {COLORS['error']}; font-size: 13px; font-weight: bold;")
+            self.status.setText(f"Failed: {msg}")
+            self.status.setStyleSheet(f"color: {COLORS['danger']}; font-size: 13px; font-weight: bold;")
             self.app.install_failed = True
-        # Refresh bottom bar buttons (Sair on failure, etc.)
+        # Refresh bottom bar buttons (Exit on failure, etc.)
         self.app._update_buttons()
 
     def _countdown_tick(self):
@@ -338,21 +526,17 @@ class StepInstall(QWidget):
         if self._countdown <= 0:
             self._countdown_timer.stop()
             self.countdown_label.setText("")
-            self.app.show_step(self.current_step + 1)
+            self.app.show_step(self.app.current_step + 1)
         else:
-            self.countdown_label.setText(f"Prosseguindo em {self._countdown}s...")
-
-    @property
-    def current_step(self):
-        return self.app.current_step
+            self.countdown_label.setText(f"Continuing in {self._countdown}s...")
 
     def _on_retry_needed(self, url, error):
         """Show retry dialog when all mirrors fail."""
         from PySide6.QtWidgets import QMessageBox
         reply = QMessageBox.question(
             self,
-            "Download Falhou",
-            f"Falha ao baixar de todos os mirrors:\n\n{error}\n\nDeseja tentar novamente?",
+            "Download Failed",
+            f"Failed to download from all mirrors:\n\n{error}\n\nTry again?",
             QMessageBox.Retry | QMessageBox.Cancel,
             QMessageBox.Retry
         )

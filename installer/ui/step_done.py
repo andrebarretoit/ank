@@ -1,14 +1,14 @@
 """
-ANK Installer - Step 6: Done (PySide6)
+ANK Installer - Step: Finished (PySide6)
 """
 
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QLabel, QFrame
 from PySide6.QtCore import Qt, QTimer
-from ui.theme import COLORS, TIER_COLORS
+from ui.theme import COLORS, TIER_COLORS, TIER_NAMES
 
 
 class StepDone(QWidget):
-    """Step 6: Done."""
+    """Step: Finished."""
 
     def __init__(self, parent, app):
         super().__init__(parent)
@@ -29,9 +29,9 @@ class StepDone(QWidget):
         banner_layout = QVBoxLayout(banner)
         banner_layout.setContentsMargins(16, 16, 16, 16)
 
-        ok_label = QLabel("\u2713 Instalacao concluida")
-        ok_label.setStyleSheet(f"color: {COLORS['success']}; font-size: 18px; font-weight: bold;")
-        banner_layout.addWidget(ok_label)
+        self.ok_label = QLabel("\u2713 Done")
+        self.ok_label.setStyleSheet(f"color: {COLORS['success']}; font-size: 18px; font-weight: bold;")
+        banner_layout.addWidget(self.ok_label)
 
         layout.addWidget(banner)
 
@@ -46,7 +46,7 @@ class StepDone(QWidget):
         self.device_info.setObjectName("subtitle")
         card_layout.addWidget(self.device_info)
 
-        self.mode_info = QLabel("Modo: --")
+        self.mode_info = QLabel("Mode: --")
         self.mode_info.setObjectName("subtitle")
         card_layout.addWidget(self.mode_info)
 
@@ -54,23 +54,17 @@ class StepDone(QWidget):
         self.url_info.setObjectName("subtitle")
         card_layout.addWidget(self.url_info)
 
-        self.creds_info = QLabel("Credenciais: admin / admin123")
+        self.creds_info = QLabel("Credentials: admin / admin123")
         self.creds_info.setObjectName("subtitle")
         card_layout.addWidget(self.creds_info)
 
         layout.addWidget(card)
 
         # Instructions
-        desc = QLabel(
-            "Para acessar o painel:\n"
-            "  1. Abra o navegador\n"
-            "  2. Acesse a URL acima\n"
-            "  3. Faca login com admin / admin123\n"
-            "  4. Troque a senha imediatamente!"
-        )
-        desc.setObjectName("subtitle")
-        desc.setWordWrap(True)
-        layout.addWidget(desc)
+        self.desc = QLabel("")
+        self.desc.setObjectName("subtitle")
+        self.desc.setWordWrap(True)
+        layout.addWidget(self.desc)
 
         self.countdown_label = QLabel("")
         self.countdown_label.setObjectName("subtitle")
@@ -81,29 +75,72 @@ class StepDone(QWidget):
 
     def on_show(self):
         """Update display and auto-open browser."""
+        mode = getattr(self.app, "mode", "install")
+
+        headings = {
+            "install": "\u2713 Installation complete",
+            "restore": "\u2713 Restore complete",
+            "clone": "\u2713 Clone complete",
+            "migrate": "\u2713 Migration complete",
+            "uninstall": "\u2713 Uninstall complete",
+            "reinstall": "\u2713 Reinstall complete",
+            "export": "\u2713 Export complete",
+            "restore_engine": "\u2713 Restore complete",
+        }
+        self.ok_label.setText(headings.get(mode, "\u2713 Done"))
+
+        # Uninstall/reinstall/export: no browser, no URL, no countdown
+        if mode in ("uninstall", "reinstall", "export"):
+            self.desc.setText(
+                "ANK has been completely removed from the device.\n\n"
+                "To install again, reconnect the device and run the installer."
+                if mode == "uninstall" else
+                "ANK has been reinstalled. You can now access the panel."
+                if mode == "reinstall" else
+                "ANK configuration has been exported to a file."
+            )
+            self.url_info.hide()
+            self.creds_info.hide()
+            self.device_info.hide()
+            self.mode_info.hide()
+            self.countdown_label.hide()
+            return
+
+        self.url_info.show()
+        self.creds_info.show()
+        self.device_info.show()
+        self.mode_info.show()
+        self.countdown_label.show()
+
+        self.desc.setText(
+            "To access the panel:\n"
+            "  1. Open your browser\n"
+            "  2. Go to the URL above\n"
+            "  3. Log in with admin / admin123\n"
+            "  4. Change the password immediately!"
+        )
+
         device = self.app.device_data
-        tier = self.app.recommended_tier
+        if mode in ("clone", "migrate") and self.app.target_device:
+            device = self.app.target_device
 
         if device:
             model = getattr(device, 'model', 'Unknown') or 'Unknown'
             serial = device.serial
             self.device_info.setText(f"Device: {model} ({serial})")
 
-        tier_names = {
-            "isolated": "Isolated",
-            "shared_network": "Shared Network",
-            "shared_host": "Shared Host",
-            "native_host": "Native Host",
-            "lite": "Lite",
-        }
-        tier_name = tier_names.get(tier, tier)
-        color = TIER_COLORS.get(tier, "#fff")
-        self.mode_info.setText(f"Modo: {tier_name}")
-        self.mode_info.setStyleSheet(f"color: {color}; font-size: 13px; font-weight: bold;")
+        tier = self.app.recommended_tier
+        if tier:
+            tier_name = TIER_NAMES.get(tier, tier)
+            color = TIER_COLORS.get(tier, "#fff")
+            self.mode_info.setText(f"Mode: {tier_name}")
+            self.mode_info.setStyleSheet(f"color: {color}; font-size: 13px; font-weight: bold;")
+        else:
+            self.mode_info.setText(f"Mode: {mode.capitalize()}")
+            self.mode_info.setStyleSheet(f"color: {COLORS['accent']}; font-size: 13px; font-weight: bold;")
 
         if device:
             ip = self.app.device_ip or getattr(device, 'ip_address', None) or "localhost"
-            # Detect actual protocol by trying HTTP then HTTPS
             detected_protocol = self._detect_protocol(ip)
             self.url_info.setText(f"URL: {detected_protocol}://{ip}:8001")
             self.app.detected_protocol = detected_protocol
@@ -112,7 +149,7 @@ class StepDone(QWidget):
             QTimer.singleShot(2000, lambda: self._open_browser(ip, detected_protocol))
 
         self._countdown = 5
-        self.countdown_label.setText(f"Fechando em {self._countdown}s...")
+        self.countdown_label.setText(f"Closing in {self._countdown}s...")
         self._countdown_timer.start(1000)
 
     def _countdown_tick(self):
@@ -122,7 +159,7 @@ class StepDone(QWidget):
             self.countdown_label.setText("")
             self.app.close()
         else:
-            self.countdown_label.setText(f"Fechando em {self._countdown}s...")
+            self.countdown_label.setText(f"Closing in {self._countdown}s...")
 
     def _detect_protocol(self, ip):
         import urllib.request

@@ -23,32 +23,32 @@ class NativeInstaller:
 
     def install(self) -> bool:
         """Run the full Native installation."""
-        self._notify("setup", "Preparando instalacao nativa...", 0.05)
+        self._notify("setup", "Preparing native installation...", 0.05)
 
         # 1. Create ANK directory
-        self._notify("dirs", "Criando diretorios...", 0.1)
+        self._notify("dirs", "Creating directories...", 0.1)
         self.adb.shell(self.serial, "mkdir -p /data/local/ank")
         self.adb.shell(self.serial, "mkdir -p /data/local/ank/ankfs")
         self.adb.shell(self.serial, "mkdir -p /data/local/ank/core")
 
         # 2. Copy server files
-        self._notify("server", "Copiando servidor ANK...", 0.3)
+        self._notify("server", "Copying the ANK server...", 0.3)
         self._copy_server_files()
 
         # 3. Install Python if needed
-        self._notify("python", "Verificando Python3...", 0.5)
+        self._notify("python", "Checking Python3...", 0.5)
         self._check_python()
 
         # 4. Create config
-        self._notify("config", "Criando configuracao...", 0.7)
+        self._notify("config", "Creating configuration...", 0.7)
         self._create_config()
 
         # 5. Write mode file
-        self._notify("mode", "Salvando modo de operacao...", 0.9)
+        self._notify("mode", "Saving operation mode...", 0.9)
         self.adb.shell(self.serial,
             f'echo \'{{"mode":"native","tier":"native_host"}}\' > /data/local/ank/mode')
 
-        self._notify("done", "Instalacao nativa concluida!", 1.0)
+        self._notify("done", "Native installation complete!", 1.0)
         return True
 
     def _copy_server_files(self):
@@ -80,9 +80,9 @@ class NativeInstaller:
         """Check if Python3 is available on the device."""
         output, code = self.adb.shell(self.serial, "which python3 2>/dev/null || echo ''")
         if output and "python3" in output:
-            self._notify("python", f"Python3 encontrado: {output.strip()}", 0.6)
+            self._notify("python", f"Python3 found: {output.strip()}", 0.6)
         else:
-            self._notify("python", "Python3 nao encontrado - sera necessario instalar manualmente", 0.6)
+            self._notify("python", "Python3 not found - manual installation will be required", 0.6)
 
     def _create_config(self):
         """Create default config.json."""
@@ -109,11 +109,11 @@ class NativeInstaller:
 
     def install_ank_ui(self, apk_path: str) -> bool:
         """Install the ANK Launcher APK on the device."""
-        self._notify("ank_ui", "Instalando ANK UI...", 0.95)
+        self._notify("ank_ui", "Installing ANK UI...", 0.95)
         result = self.adb._run_device(self.serial, ["install", "-r", apk_path], timeout=60)
         if result.returncode == 0:
-            self._notify("ank_ui", "ANK UI instalado com sucesso!", 1.0)
+            self._notify("ank_ui", "ANK UI installed successfully!", 1.0)
             return True
         else:
-            self._notify("ank_ui", f"Falha ao instalar ANK UI: {result.stderr}", 0)
+            self._notify("ank_ui", f"Failed to install ANK UI: {result.stderr}", 0)
             return False

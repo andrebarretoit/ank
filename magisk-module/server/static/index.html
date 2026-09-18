@@ -319,6 +319,7 @@
         <div class="split-left" id="settings-sidebar">
           <div class="split-list-card selected" data-section="account" onclick="showSettingsSection('account')"><span class="slc-name"><i class="bi bi-person-gear" style="color:var(--accent)"></i> Account</span></div>
           <div class="split-list-card" data-section="server" onclick="showSettingsSection('server')"><span class="slc-name"><i class="bi bi-server" style="color:var(--primary)"></i> Server</span></div>
+          <div class="split-list-card" data-section="ank-manager" onclick="showSettingsSection('ank-manager')"><span class="slc-name"><i class="bi bi-speedometer2" style="color:var(--success)"></i> ANK Manager</span></div>
           <div class="split-list-card" data-section="remote" onclick="showSettingsSection('remote')"><span class="slc-name"><i class="bi bi-diagram-3" style="color:var(--success)"></i> Remote & SSH</span></div>
           <div class="split-list-card" data-section="cache" onclick="showSettingsSection('cache')"><span class="slc-name"><i class="bi bi-database" style="color:var(--warning)"></i> Cache</span></div>
           <div class="split-list-card" data-section="about" onclick="showSettingsSection('about')"><span class="slc-name"><i class="bi bi-info-circle" style="color:var(--text-muted)"></i> About</span></div>
@@ -437,10 +438,17 @@
         <div class="form-group"><label class="form-label">Stack Name</label><input type="text" class="form-input" id="stack-name" placeholder="my-stack" required></div>
         <div class="form-group"><label class="form-label">Image</label><select class="form-select" id="stack-image" onchange="toggleStackAnkfile()"><option value="nginx">nginx</option><option value="apache">apache</option><option value="php">php</option><option value="node">node</option><option value="python">python</option><option value="ankfile">Custom (Ankfile)</option></select></div>
         <div id="stack-ankfile-section" style="display:none"><div class="form-group"><label class="form-label">Ankfile</label><textarea class="ankfile-editor" id="stack-ankfile" rows="8" placeholder="FROM alpine-3.20&#10;PASSWD ank123&#10;RUN apk add --allow-untrusted nginx&#10;EXPOSE 8080"></textarea></div></div>
-        <div class="form-group"><label class="form-label">Instances</label><input type="number" class="form-input" id="stack-instances" value="1" min="1" max="10"></div>
-        <div class="form-group"><label class="form-label">LB Port (30000-39999)</label><input type="number" class="form-input" id="stack-lb-port" value="30000" min="30000" max="39999"></div>
+        <div class="form-row">
+          <div class="form-group"><label class="form-label">Min Instances</label><input type="number" class="form-input" id="stack-min" value="1" min="1" max="10"></div>
+          <div class="form-group"><label class="form-label">Max Instances</label><input type="number" class="form-input" id="stack-max" value="5" min="1" max="20"></div>
+        </div>
+        <div class="form-row">
+          <div class="form-group"><label class="form-label">LB Port (30000-39999)</label><input type="number" class="form-input" id="stack-lb-port" value="30000" min="30000" max="39999"></div>
+          <div class="form-group"><label class="form-label">Load Balance</label><select class="form-select" id="stack-lb-algo"><option value="least_conn">Least Connections</option><option value="round_robin">Round Robin</option><option value="ip_hash">IP Hash</option></select></div>
+        </div>
+        <div class="form-group"><label class="form-label">Root Password</label><input type="password" class="form-input" id="stack-root-pass" value="ankstack" placeholder="ankstack"></div>
         <div class="form-group"><label class="checkbox-label" style="display:flex;align-items:center;gap:8px;cursor:pointer"><input type="checkbox" id="stack-volume" checked style="width:18px;height:18px;accent-color:var(--accent)"><i class="bi bi-hdd" style="color:var(--accent)"></i> Mount shared data/ volume</label></div>
-        <div class="form-group"><label class="form-label">Trigger (auto-scale)</label><select class="form-select" id="stack-trigger"><option value="none">Disabled</option><option value="requests">Requests/sec</option><option value="cpu">CPU</option><option value="mem">Memory</option></select></div>
+        <div class="form-group"><label class="form-label">Trigger (auto-scale)</label><select class="form-select" id="stack-trigger"><option value="none">Disabled</option><option value="requests">Requests/sec</option><option value="cpu">CPU</option><option value="mem">Memory</option><option value="combined">Combined</option></select></div>
         <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
           <button type="button" class="btn btn-secondary" onclick="closeModalById('stack-modal-overlay')">Cancel</button>
           <button type="button" class="btn btn-primary" onclick="createStack()"><i class="bi bi-check-lg"></i> Create</button>
@@ -457,17 +465,47 @@
         <button class="btn-icon btn-ghost" onclick="closeModalById('backup-modal-overlay')"><i class="bi bi-x-lg"></i></button>
       </div>
       <div class="modal-body">
-        <div class="form-group"><label class="form-label">Routine Name</label><input type="text" class="form-input" id="backup-name" placeholder="routine-1" required></div>
-        <div class="form-group"><label class="form-label">Source Path</label><input type="text" class="form-input" id="backup-source" placeholder="/data/local/ank/stacks"></div>
+        <div class="form-group"><label class="form-label">Routine Name</label><input type="text" class="form-input" id="backup-name" placeholder="web-containers" required></div>
+        <div class="form-group"><label class="form-label">Source Type</label>
+          <select class="form-input" id="backup-source-type">
+            <option value="container_full">Container Full Backup</option>
+            <option value="engine_config">Engine Configuration Backup</option>
+            <option value="system_complete">System Complete Backup</option>
+            <option value="container_selective">Container Selective Backup</option>
+            <option value="node_full">Node Full Backup</option>
+            <option value="container_file">Container File Backup</option>
+          </select>
+        </div>
         <div class="form-group"><label class="form-label">Remote Host</label><input type="text" class="form-input" id="backup-remote-host" placeholder="192.168.1.100"></div>
-        <div class="form-group"><label class="form-label">Remote Path</label><input type="text" class="form-input" id="backup-remote-path" placeholder="/backups/ank"></div>
+        <div class="form-row">
+          <div class="form-group"><label class="form-label">SSH Port</label><input type="number" class="form-input" id="backup-remote-port" value="22"></div>
+          <div class="form-group"><label class="form-label">Remote Path</label><input type="text" class="form-input" id="backup-remote-path" placeholder="/backups/ank" value="/backups/ank"></div>
+        </div>
         <div class="form-row">
           <div class="form-group"><label class="form-label">SSH User</label><input type="text" class="form-input" id="backup-ssh-user" value="root"></div>
           <div class="form-group"><label class="form-label">SSH Password</label><input type="password" class="form-input" id="backup-ssh-pass"></div>
         </div>
         <div class="form-row">
-          <div class="form-group"><label class="form-label">Schedule (cron)</label><input type="text" class="form-input" id="backup-schedule" placeholder="0 2 * * *"></div>
+          <div class="form-group"><label class="form-label">Backup Mode</label>
+            <select class="form-input" id="backup-mode">
+              <option value="full">Full</option>
+              <option value="incremental">Incremental</option>
+            </select>
+          </div>
+          <div class="form-group"><label class="form-label">Encryption</label>
+            <select class="form-input" id="backup-encryption">
+              <option value="none">None</option>
+              <option value="aes256">AES-256</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group"><label class="form-label">Schedule</label><input type="text" class="form-input" id="backup-schedule" placeholder="daily, every 6h, or cron"></div>
           <div class="form-group"><label class="form-label">Retention (days)</label><input type="number" class="form-input" id="backup-retention" value="30" min="1"></div>
+        </div>
+        <div class="form-group" style="display:flex;align-items:center;gap:8px">
+          <input type="checkbox" id="backup-immutable" style="width:16px;height:16px">
+          <label for="backup-immutable" class="form-label" style="margin:0">Immutable (prevent modification/deletion)</label>
         </div>
         <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
           <button type="button" class="btn btn-secondary" onclick="closeModalById('backup-modal-overlay')">Cancel</button>

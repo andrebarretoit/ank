@@ -584,6 +584,9 @@ tr:hover td { background: var(--bg-hover); }
 .terminal-title { margin-left: 8px; font-size: 12px; color: var(--text-muted); font-family: monospace; }
 .terminal-body { padding: 12px; min-height: 400px; flex: 1; display: flex; flex-direction: column; overflow: hidden; }
 #page-shell.active { display: flex; flex-direction: column; height: calc(100vh - 160px); }
+.detail-tab-content:has(#container-terminal) { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.detail-tab-content #container-terminal { flex: 1; min-height: 400px; display: flex; flex-direction: column; }
+.detail-tab-content #container-terminal .xterm { flex: 1; }
 .xterm .xterm-viewport { background-color: transparent !important; }
 
 /* ═══════ EMPTY STATE ═══════ */
@@ -1161,4 +1164,72 @@ tr:hover td { background: var(--bg-hover); }
   .templates-grid { grid-template-columns: 1fr; }
   .detail-tabs { gap: 0; }
   .detail-tab { padding: 8px 10px; font-size: 11px; }
+}
+
+/* ═══════ LITE MODE OVERLAY ═══════ */
+.lite-overlay {
+  position: relative;
+  pointer-events: none;
+  user-select: none;
+}
+.lite-overlay::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 2, 8, 0.7);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  border-radius: inherit;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.lite-overlay .lite-badge {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 6;
+  background: rgba(30, 41, 59, 0.95);
+  border: 1px solid var(--warning);
+  border-radius: 12px;
+  padding: 16px 24px;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+}
+.lite-badge i {
+  font-size: 24px;
+  color: var(--warning);
+}
+.lite-badge span {
+  font-size: 13px;
+  color: var(--text-secondary);
+  max-width: 220px;
+}
+.lite-badge small {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.lite-badge strong {
+  color: var(--warning);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+/* Lite mode nav badge */
+.nav-lite-indicator {
+  display: inline-block;
+  background: var(--warning-dim);
+  color: var(--warning);
+  font-size: 9px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-weight: 600;
+  margin-left: 6px;
+  vertical-align: middle;
 }

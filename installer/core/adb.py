@@ -1,15 +1,146 @@
 """
 ANK Installer - ADB Wrapper
 Uses adbutils for device detection and communication.
+
+ADB resolution order (so the installer works even without a system-wide
+"adb" on PATH, mirroring how ank-magisk.zip / ank-launcher.apk are looked
+up next to the executable):
+  1. platform-tools/adb(.exe) bundled next to the installer executable.
+  2. A copy previously downloaded into the local cache dir (~/.ank-installer/platform-tools).
+  3. "adb" on the system PATH.
+  4. As a last resort, download Google's official platform-tools zip into
+     the local cache dir and use that.
+Resolution happens lazily on the first real ADB command (not at ADB()
+construction time), and only once per process - all further ADB() objects
+reuse the same resolved path.
 """
 
+import os
+import shutil
 import subprocess
-import time
 import sys
+import tempfile
+import time
+import zipfile
 from typing import Optional, List, Dict
 
 # Windows: prevent console window flicker from subprocess calls
 CREATE_NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
+
+_PLATFORM_TOOLS_URLS = {
+    "win32": "https://dl.google.com/android/repo/platform-tools-latest-windows.zip",
+    "darwin": "https://dl.google.com/android/repo/platform-tools-latest-darwin.zip",
+    "linux": "https://dl.google.com/android/repo/platform-tools-latest-linux.zip",
+}
+
+_ADB_CACHE_DIR = os.path.join(os.path.expanduser("~"), ".ank-installer", "platform-tools")
+
+# Module-level memo: resolved once per process so repeated `ADB()` objects
+# (the codebase creates a fresh one per call site) don't re-probe the disk
+# or re-download on every single call.
+_resolved_adb_path: Optional[str] = None
+
+
+def _adb_exe_name() -> str:
+    return "adb.exe" if sys.platform == "win32" else "adb"
+
+
+def _app_base_dir() -> str:
+    """Directory the running exe/script lives in - the same directory
+    ank-magisk.zip and ank-launcher.apk are looked up in."""
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(sys.executable)
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _find_bundled_adb() -> Optional[str]:
+    """adb shipped by the packager next to the installer, e.g.
+    ANK-Installer.exe + platform-tools/adb.exe + platform-tools/*.dll"""
+    exe_name = _adb_exe_name()
+    base = _app_base_dir()
+    for candidate in (
+        os.path.join(base, "platform-tools", exe_name),
+        os.path.join(base, exe_name),
+    ):
+        if os.path.isfile(candidate):
+            return candidate
+    return None
+
+
+def _find_cached_adb() -> Optional[str]:
+    path = os.path.join(_ADB_CACHE_DIR, _adb_exe_name())
+    return path if os.path.isfile(path) else None
+
+
+def _find_system_adb() -> Optional[str]:
+    return shutil.which("adb")
+
+
+def _download_platform_tools(on_progress=None) -> Optional[str]:
+    """Download Google's official platform-tools zip and extract adb (plus
+    the Windows companion DLLs) into the local cache dir. Returns the
+    resolved adb path on success, or None."""
+    url = _PLATFORM_TOOLS_URLS.get(sys.platform, _PLATFORM_TOOLS_URLS["linux"])
+    try:
+        import urllib.request
+
+        os.makedirs(_ADB_CACHE_DIR, exist_ok=True)
+        tmp_zip = os.path.join(tempfile.gettempdir(), "ank-platform-tools.zip")
+
+        if on_progress:
+            on_progress("Downloading ADB (platform-tools)...")
+        urllib.request.urlretrieve(url, tmp_zip)
+
+        if on_progress:
+            on_progress("Extracting ADB...")
+        wanted = {"adb.exe", "adb", "adbwinapi.dll", "adbwinusbapi.dll"}
+        with zipfile.ZipFile(tmp_zip, "r") as zf:
+            for member in zf.namelist():
+                name = os.path.basename(member)
+                if name.lower() in wanted:
+                    with zf.open(member) as src:
+                        with open(os.path.join(_ADB_CACHE_DIR, name), "wb") as dst:
+                            shutil.copyfileobj(src, dst)
+
+        try:
+            os.remove(tmp_zip)
+        except OSError:
+            pass
+
+        adb_path = os.path.join(_ADB_CACHE_DIR, _adb_exe_name())
+        if os.path.isfile(adb_path):
+            if sys.platform != "win32":
+                os.chmod(adb_path, 0o755)
+            return adb_path
+    except Exception:
+        pass
+    return None
+
+
+def resolve_adb_path(on_progress=None) -> str:
+    """Find a usable adb binary, downloading it once (and caching it) if
+    nothing else is available. Safe to call from a background thread - it
+    only touches disk / network the first time it's needed."""
+    global _resolved_adb_path
+    if _resolved_adb_path and (os.path.isfile(_resolved_adb_path) or shutil.which(_resolved_adb_path)):
+        return _resolved_adb_path
+
+    for finder in (_find_bundled_adb, _find_cached_adb, _find_system_adb):
+        found = finder()
+        if found:
+            _resolved_adb_path = found
+            return found
+
+    downloaded = _download_platform_tools(on_progress)
+    if downloaded:
+        _resolved_adb_path = downloaded
+        return downloaded
+
+    # Nothing worked (offline first run, etc.) - fall back to the bare
+    # command name so the caller gets a clear "not found" error instead of
+    # a crash, exactly like the original behaviour.
+    _resolved_adb_path = _adb_exe_name()
+    return _resolved_adb_path
 
 
 class ADBDevice:
@@ -34,11 +165,17 @@ class ADB:
     """ADB wrapper using subprocess (adbutils fallback)."""
 
     def __init__(self):
-        self._adb_path = "adb"
+        # Resolved lazily on first real command - see resolve_adb_path().
+        self._adb_path: Optional[str] = None
+
+    def _ensure_adb_path(self) -> str:
+        if self._adb_path is None:
+            self._adb_path = resolve_adb_path()
+        return self._adb_path
 
     def _run(self, args: List[str], timeout: int = 10) -> subprocess.CompletedProcess:
         """Run an adb command."""
-        cmd = [self._adb_path] + args
+        cmd = [self._ensure_adb_path()] + args
         return subprocess.run(
             cmd, capture_output=True, text=True, timeout=timeout,
             creationflags=CREATE_NO_WINDOW
@@ -162,6 +299,11 @@ class ADB:
         result = self._run_device(serial, ["push", local_path, remote_path], timeout=120)
         return result.returncode == 0
 
+    def pull(self, serial: str, remote_path: str, local_path: str, timeout: int = 180) -> bool:
+        """Pull a file from the device."""
+        result = self._run_device(serial, ["pull", remote_path, local_path], timeout=timeout)
+        return result.returncode == 0
+
     def shell(self, serial: str, command: str, timeout: int = 30) -> tuple:
         """Run a shell command on the device."""
         result = self._run_device(serial, ["shell", command], timeout=timeout)
@@ -245,24 +387,59 @@ class ADB:
     def uninstall_ank_ui(self, serial: str, callback=None) -> bool:
         """Uninstall ANK UI (launcher) from the device."""
         if callback:
-            callback("Removendo ANK UI...")
+            callback("Removing ANK UI...")
         output, _ = self.shell(serial, "pm list packages 2>/dev/null | grep ank")
         if output:
             for line in output.strip().split("\n"):
                 pkg = line.replace("package:", "").strip()
                 if pkg:
                     if callback:
-                        callback(f"Desinstalando {pkg}...")
+                        callback(f"Uninstalling {pkg}...")
                     self.shell(serial, f"pm uninstall {pkg}")
         return True
 
     def uninstall_ank_full(self, serial: str, rooted: bool = True, callback=None) -> bool:
         """Full uninstall of ANK from the device."""
+        _sh = lambda cmd: self.shell_su(serial, cmd) if rooted else self.shell(serial, cmd)
+
         steps = [
-            ("Removendo /data/local/ank...", lambda: self.shell_su(serial, "rm -rf /data/local/ank") if rooted else self.shell(serial, "rm -rf /data/local/ank")),
-            ("Removendo /sdcard/AndroidKonteiner...", lambda: self.shell_su(serial, "rm -rf /sdcard/AndroidKonteiner") if rooted else self.shell(serial, "rm -rf /sdcard/AndroidKonteiner")),
-            ("Removendo ANK UI...", lambda: self.uninstall_ank_ui(serial, callback)),
-            ("Limpando caches...", lambda: self.shell(serial, "rm -rf /data/local/tmp/ank* 2>/dev/null")),
+            ("Killing ANK processes...", lambda: _sh(
+                "pkill -9 -f 'ld-musl.*python3.*server.py' 2>/dev/null; "
+                "pkill -9 -f 'ld-musl.*server.py' 2>/dev/null; "
+                "pkill -9 -f 'sshd.*PidFile' 2>/dev/null; "
+                "pkill -9 -f 'sshd.*-p.*22[0-9][0-9]' 2>/dev/null"
+            )),
+            ("Unmounting bind mounts...", lambda: _sh(
+                "for m in /data/local/ank/ankfs/dev/null /data/local/ank/ankfs/dev/urandom "
+                "/data/local/ank/ankfs/dev/random /data/local/ank/ankfs/dev/tty "
+                "/data/local/ank/ankfs/dev/ptmx /data/local/ank/ankfs/proc "
+                "/data/local/ank/ankfs/dev/pts /data/local/ank/ankfs/dev/shm "
+                "/data/local/ank/ankfs/sys /data/local/ank/ankfs/run /data/local/ank/ankfs/tmp; do "
+                "umount \"$m\" 2>/dev/null; umount -l \"$m\" 2>/dev/null; done"
+            )),
+            ("Unmounting container mounts...", lambda: _sh(
+                "for c in /data/local/ank/containers/*/merged; do "
+                "[ -d \"$c\" ] || continue; "
+                "for m in dev/pts dev/shm dev proc sys run tmp; do "
+                "umount \"$c/$m\" 2>/dev/null; umount -l \"$c/$m\" 2>/dev/null; done; "
+                "umount \"$c\" 2>/dev/null; umount -l \"$c\" 2>/dev/null; done"
+            )),
+            ("Cleaning iptables...", lambda: _sh(
+                "iptables -t nat -S 2>/dev/null | grep -i ank | sed 's/-A/-D/g' | while read rule; do "
+                "iptables -t nat $rule 2>/dev/null; done; "
+                "iptables -S 2>/dev/null | grep -i ank | sed 's/-A/-D/g' | while read rule; do "
+                "iptables $rule 2>/dev/null; done"
+            )),
+            ("Removing bridge...", lambda: _sh(
+                "ip link set ank0 down 2>/dev/null; ip link delete ank0 2>/dev/null; "
+                "ip netns list 2>/dev/null | grep -i 'netns_\\|ank' | cut -d' ' -f1 | while read ns; do "
+                "ip netns delete \"$ns\" 2>/dev/null; done"
+            )),
+            ("Removing /data/local/ank...", lambda: _sh("rm -rf /data/local/ank")),
+            ("Removing /sdcard/AndroidKonteiner...", lambda: _sh("rm -rf /sdcard/AndroidKonteiner")),
+            ("Removing Magisk module...", lambda: _sh("rm -rf /data/adb/modules/ank* /data/adb/service.d/ank*")),
+            ("Removing ANK UI...", lambda: self.uninstall_ank_ui(serial, callback)),
+            ("Cleaning caches...", lambda: _sh("rm -rf /data/local/tmp/ank* 2>/dev/null")),
         ]
         for msg, func in steps:
             if callback:

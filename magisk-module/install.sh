@@ -68,6 +68,11 @@ cleanup() {
         umount "$ANKFS/$m" 2>/dev/null
         umount -l "$ANKFS/$m" 2>/dev/null
     done
+    # Also unmount ANKFS dev bind mounts
+    for m in dev/null dev/urandom dev/random dev/tty dev/ptmx; do
+        umount "$ANKFS/$m" 2>/dev/null
+        umount -l "$ANKFS/$m" 2>/dev/null
+    done
 
     # Clean iptables
     iptables -t nat -S 2>/dev/null | grep -i "ank" | sed 's/-A/-D/g' | while read rule; do
@@ -387,6 +392,12 @@ fi
 
 # --- STEP 2.5: Build ANKFS (tarball + engine) + ANK-ALPINEBASE (tarball limpo) ---
 log STEP "2.5/4 > Building ANKFS + ANK-ALPINEBASE..."
+
+# Unmount any leftover bind mounts from previous installs
+for _um in dev/null dev/urandom dev/random dev/tty dev/ptmx proc; do
+    umount "$ANKFS/$_um" 2>/dev/null
+    umount -l "$ANKFS/$_um" 2>/dev/null
+done
 
 # --- ANKFS = tarball + engine files ---
 rm -rf "$ANKFS"

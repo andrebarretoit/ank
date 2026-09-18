@@ -1,3 +1,2 @@
-customtkinter
-adbutils
 PySide6
+adbutils

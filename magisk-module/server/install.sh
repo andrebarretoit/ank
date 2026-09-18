@@ -68,6 +68,11 @@ cleanup() {
         umount "$ANKFS/$m" 2>/dev/null
         umount -l "$ANKFS/$m" 2>/dev/null
     done
+    # Also unmount ANKFS dev bind mounts
+    for m in dev/null dev/urandom dev/random dev/tty dev/ptmx; do
+        umount "$ANKFS/$m" 2>/dev/null
+        umount -l "$ANKFS/$m" 2>/dev/null
+    done
 
     # Clean iptables
     iptables -t nat -S 2>/dev/null | grep -i "ank" | sed 's/-A/-D/g' | while read rule; do
@@ -128,40 +133,63 @@ _chroot_rootfs() {
         [ -x "$c" ] && HOST_CHROOT="$c" && break
     done
 
+    # Ensure essential dev nodes exist and are bind-mounted
+    [ -e "$ROOTFS/dev/null" ] || mknod "$ROOTFS/dev/null" c 1 3 2>/dev/null
+    [ -e "$ROOTFS/dev/urandom" ] || mknod "$ROOTFS/dev/urandom" c 1 9 2>/dev/null
+    [ -e "$ROOTFS/dev/random" ] || mknod "$ROOTFS/dev/random" c 1 8 2>/dev/null
+    [ -e "$ROOTFS/dev/tty" ] || mknod "$ROOTFS/dev/tty" c 5 0 2>/dev/null
+    chmod 666 "$ROOTFS/dev/null" "$ROOTFS/dev/urandom" "$ROOTFS/dev/random" "$ROOTFS/dev/tty" 2>/dev/null
+    mount --bind /dev/null "$ROOTFS/dev/null" 2>/dev/null
+    mount --bind /dev/urandom "$ROOTFS/dev/urandom" 2>/dev/null
+    mount --bind /dev/random "$ROOTFS/dev/random" 2>/dev/null
+    mount --bind /dev/tty "$ROOTFS/dev/tty" 2>/dev/null
+    mount -t proc proc "$ROOTFS/proc" 2>/dev/null
+
+    local RC=1
+
     # 1. Host busybox chroot
     if [ -n "$HOST_BUSYBOX" ]; then
-        "$HOST_BUSYBOX" chroot "$ROOTFS" /bin/sh -c "$CMD" 2>>"$LOG_FILE" && return 0
+        "$HOST_BUSYBOX" chroot "$ROOTFS" /bin/sh -c "$CMD" 2>>"$LOG_FILE" && { RC=0; }
     fi
 
     # 2. Host toybox chroot
-    if [ -n "$HOST_TOYBOX" ]; then
-        "$HOST_TOYBOX" chroot "$ROOTFS" /bin/sh -c "$CMD" 2>>"$LOG_FILE" && return 0
+    if [ $RC -ne 0 ] && [ -n "$HOST_TOYBOX" ]; then
+        "$HOST_TOYBOX" chroot "$ROOTFS" /bin/sh -c "$CMD" 2>>"$LOG_FILE" && { RC=0; }
     fi
 
     # 3. Host chroot (standalone)
-    if [ -n "$HOST_CHROOT" ]; then
-        "$HOST_CHROOT" "$ROOTFS" /bin/sh -c "$CMD" 2>>"$LOG_FILE" && return 0
+    if [ $RC -ne 0 ] && [ -n "$HOST_CHROOT" ]; then
+        "$HOST_CHROOT" "$ROOTFS" /bin/sh -c "$CMD" 2>>"$LOG_FILE" && { RC=0; }
     fi
 
     # 4. Host musl direct exec (no chroot, runs rootfs binaries via host linker)
-    local MUSL=$(ls "$ROOTFS"/lib/ld-musl-*.so* 2>/dev/null | head -1)
-    if [ -n "$MUSL" ] && [ -x "$MUSL" ]; then
-        local SH=""
-        for s in "$ROOTFS/bin/sh" "$ROOTFS/bin/busybox"; do
-            [ -e "$s" ] || [ -L "$s" ] && { SH="$s"; break; }
-        done
-        [ -z "$SH" ] && SH="$ROOTFS/bin/sh"
-        env -i HOME=/root PATH=/sbin:/usr/sbin:/bin:/usr/bin \
-            LD_LIBRARY_PATH="$ROOTFS/lib" \
-            "$MUSL" "$SH" -c "$CMD" 2>>"$LOG_FILE" && return 0
+    if [ $RC -ne 0 ]; then
+        local MUSL=$(ls "$ROOTFS"/lib/ld-musl-*.so* 2>/dev/null | head -1)
+        if [ -n "$MUSL" ] && [ -x "$MUSL" ]; then
+            local SH=""
+            for s in "$ROOTFS/bin/sh" "$ROOTFS/bin/busybox"; do
+                [ -e "$s" ] || [ -L "$s" ] && { SH="$s"; break; }
+            done
+            [ -z "$SH" ] && SH="$ROOTFS/bin/sh"
+            env -i HOME=/root PATH=/sbin:/usr/sbin:/bin:/usr/bin \
+                LD_LIBRARY_PATH="$ROOTFS/lib" \
+                "$MUSL" "$SH" -c "$CMD" 2>>"$LOG_FILE" && { RC=0; }
+        fi
     fi
 
     # 5. Rootfs busybox chroot (last resort)
-    if [ -x "$ROOTFS/bin/busybox" ]; then
-        "$ROOTFS/bin/busybox" chroot "$ROOTFS" /bin/sh -c "$CMD" 2>>"$LOG_FILE" && return 0
+    if [ $RC -ne 0 ] && [ -x "$ROOTFS/bin/busybox" ]; then
+        "$ROOTFS/bin/busybox" chroot "$ROOTFS" /bin/sh -c "$CMD" 2>>"$LOG_FILE" && { RC=0; }
     fi
 
-    return 1
+    # Cleanup mounts
+    umount "$ROOTFS/dev/null" 2>/dev/null
+    umount "$ROOTFS/dev/urandom" 2>/dev/null
+    umount "$ROOTFS/dev/random" 2>/dev/null
+    umount "$ROOTFS/dev/tty" 2>/dev/null
+    umount "$ROOTFS/proc" 2>/dev/null
+
+    return $RC
 }
 
 find_dl_tool() {
@@ -388,6 +416,12 @@ fi
 # --- STEP 2.5: Build ANKFS (tarball + engine) + ANK-ALPINEBASE (tarball limpo) ---
 log STEP "2.5/4 > Building ANKFS + ANK-ALPINEBASE..."
 
+# Unmount any leftover bind mounts before removing
+for _um in dev/null dev/urandom dev/random dev/tty dev/ptmx proc; do
+    umount "$ANKFS/$_um" 2>/dev/null
+    umount -l "$ANKFS/$_um" 2>/dev/null
+done
+
 # --- ANKFS = tarball + engine files ---
 rm -rf "$ANKFS"
 mkdir -p "$ANKFS"
@@ -396,12 +430,11 @@ cd "$ANKFS" && tar xzf "$TARBALL" 2>>"$LOG_FILE"; cd /
 
 # Device nodes for ANKFS
 mkdir -p "$ANKFS/dev"
-[ -e "$ANKFS/dev/null" ] || mknod "$ANKFS/dev/null" c 1 3 2>/dev/null
-[ -e "$ANKFS/dev/urandom" ] || mknod "$ANKFS/dev/urandom" c 1 9 2>/dev/null
-[ -e "$ANKFS/dev/random" ] || mknod "$ANKFS/dev/random" c 1 8 2>/dev/null
-[ -e "$ANKFS/dev/tty" ] || mknod "$ANKFS/dev/tty" c 5 0 2>/dev/null
-[ -e "$ANKFS/dev/ptmx" ] || mknod "$ANKFS/dev/ptmx" c 5 2 2>/dev/null
-chmod 666 "$ANKFS/dev/null" "$ANKFS/dev/urandom" "$ANKFS/dev/random" "$ANKFS/dev/tty" "$ANKFS/dev/ptmx" 2>/dev/null
+for _dn in null urandom random tty ptmx; do
+    [ -e "/dev/$_dn" ] && mount --bind "/dev/$_dn" "$ANKFS/dev/$_dn" 2>/dev/null
+    [ -e "$ANKFS/dev/$_dn" ] || mknod "$ANKFS/dev/$_dn" c 1 3 2>/dev/null
+    chmod 666 "$ANKFS/dev/$_dn" 2>/dev/null
+done
 
 # DNS in ANKFS
 mkdir -p "$ANKFS/etc"
@@ -431,12 +464,12 @@ cd "$ANKBASE" && tar xzf "$TARBALL" 2>>"$LOG_FILE"; cd /
 
 # Device nodes for ANK-ALPINEBASE
 mkdir -p "$ANKBASE/dev"
-[ -e "$ANKBASE/dev/null" ] || mknod "$ANKBASE/dev/null" c 1 3 2>/dev/null
-[ -e "$ANKBASE/dev/urandom" ] || mknod "$ANKBASE/dev/urandom" c 1 9 2>/dev/null
-[ -e "$ANKBASE/dev/random" ] || mknod "$ANKBASE/dev/random" c 1 8 2>/dev/null
-[ -e "$ANKBASE/dev/tty" ] || mknod "$ANKBASE/dev/tty" c 5 0 2>/dev/null
-[ -e "$ANKBASE/dev/ptmx" ] || mknod "$ANKBASE/dev/ptmx" c 5 2 2>/dev/null
-chmod 666 "$ANKBASE/dev/null" "$ANKBASE/dev/urandom" "$ANKBASE/dev/random" "$ANKBASE/dev/tty" "$ANKBASE/dev/ptmx" 2>/dev/null
+# Bind-mount host /dev nodes — mknod on Android creates regular files (SELinux)
+for _dn in null urandom random tty ptmx; do
+    [ -e "/dev/$_dn" ] && mount --bind "/dev/$_dn" "$ANKBASE/dev/$_dn" 2>/dev/null
+    [ -e "$ANKBASE/dev/$_dn" ] || mknod "$ANKBASE/dev/$_dn" c 1 3 2>/dev/null
+    chmod 666 "$ANKBASE/dev/$_dn" 2>/dev/null
+done
 
 # DNS + repos for ANK-ALPINEBASE
 mkdir -p "$ANKBASE/etc/apk" "$ANKBASE/var/cache/apk"

@@ -1,13 +1,12 @@
 """
-ANK Installer - Step 1: Connect Device (PySide6)
+ANK Installer - Step: Connect Device (PySide6)
 """
 
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QFrame, QComboBox,
-    QMessageBox
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QFrame, QComboBox
 )
 from PySide6.QtCore import Qt, QThread, Signal
-from ui.theme import COLORS, FONTS
+from ui.theme import COLORS
 
 
 class DevicePollThread(QThread):
@@ -41,29 +40,8 @@ class DevicePollThread(QThread):
         self._running = False
 
 
-class UninstallThread(QThread):
-    """Background thread for uninstall."""
-    progress = Signal(str)
-    done = Signal(bool, str)
-
-    def __init__(self, adb, serial, rooted):
-        super().__init__()
-        self.adb = adb
-        self.serial = serial
-        self.rooted = rooted
-
-    def run(self):
-        try:
-            def callback(msg):
-                self.progress.emit(msg)
-            self.adb.uninstall_ank_full(self.serial, self.rooted, callback)
-            self.done.emit(True, "Desinstalacao concluida!")
-        except Exception as e:
-            self.done.emit(False, str(e))
-
-
 class StepConnect(QWidget):
-    """Step 1: Connect Device."""
+    """Step: Connect Device."""
 
     def __init__(self, parent, app):
         super().__init__(parent)
@@ -78,21 +56,21 @@ class StepConnect(QWidget):
         layout.setSpacing(12)
 
         # Title
-        title = QLabel("Conectar Dispositivo")
+        title = QLabel("Connect Device")
         title.setObjectName("title")
         layout.addWidget(title)
 
         # Instructions
         instructions = QLabel(
-            "Para que o dispositivo seja reconhecido:\n\n"
-            "1. Ative o modo desenvolvedor\n"
-            "   Configuracoes > Sobre o telefone\n"
-            "   Toque 7x em \"Numero da versao\"\n\n"
-            "2. Ative a Depuracao USB\n"
-            "   Configuracoes > Sistema > Opcoes do Desenvolvedor\n"
-            "   Habilite \"Depuracao USB\"\n\n"
-            "3. Conecte o cabo USB\n\n"
-            "4. No celular: marque \"Sempre permitir...\" e toque em Permitir"
+            "For your device to be recognized:\n\n"
+            "1. Enable Developer Mode\n"
+            "   Settings > About phone\n"
+            "   Tap \"Build number\" 7 times\n\n"
+            "2. Enable USB Debugging\n"
+            "   Settings > System > Developer Options\n"
+            "   Turn on \"USB debugging\"\n\n"
+            "3. Connect the USB cable\n\n"
+            "4. On the phone: check \"Always allow...\" and tap Allow"
         )
         instructions.setObjectName("subtitle")
         instructions.setWordWrap(True)
@@ -104,7 +82,7 @@ class StepConnect(QWidget):
         status_layout = QVBoxLayout(status_card)
         status_layout.setContentsMargins(16, 16, 16, 16)
 
-        self.status_label = QLabel("Aguardando dispositivo...")
+        self.status_label = QLabel("Waiting for device...")
         self.status_label.setObjectName("text-muted")
         status_layout.addWidget(self.status_label)
 
@@ -122,30 +100,9 @@ class StepConnect(QWidget):
         self.device_frame.hide()
         layout.addWidget(self.device_frame)
 
-        # ANK detection card (hidden)
-        self.ank_frame = QFrame()
-        self.ank_frame.setObjectName("card")
-        ank_layout = QVBoxLayout(self.ank_frame)
-        ank_layout.setContentsMargins(16, 16, 16, 16)
-
-        self.ank_status = QLabel("")
-        self.ank_status.setObjectName("subtitle")
-        ank_layout.addWidget(self.ank_status)
-
-        btn_layout = QHBoxLayout()
-        self.btn_uninstall = QPushButton("Desinstalar ANK")
-        self.btn_uninstall.setFixedWidth(160)
-        self.btn_uninstall.clicked.connect(self._uninstall_ank)
-        btn_layout.addWidget(self.btn_uninstall)
-
-        btn_layout.addStretch()
-        ank_layout.addLayout(btn_layout)
-
-        self.ank_frame.hide()
-        layout.addWidget(self.ank_frame)
-
         # Refresh button
-        self.refresh_btn = QPushButton("Verificar novamente")
+        self.refresh_btn = QPushButton("Check again")
+        self.refresh_btn.setObjectName("btn-secondary")
         self.refresh_btn.setFixedWidth(180)
         self.refresh_btn.clicked.connect(self._start_detection)
         layout.addWidget(self.refresh_btn, alignment=Qt.AlignLeft)
@@ -154,7 +111,7 @@ class StepConnect(QWidget):
 
     def _start_detection(self):
         """Start device detection."""
-        self.status_label.setText("Buscando dispositivos...")
+        self.status_label.setText("Searching for devices...")
         self.status_label.setStyleSheet(f"color: {COLORS['text_muted']};")
         self.refresh_btn.setEnabled(False)
         self.device_frame.hide()
@@ -163,10 +120,17 @@ class StepConnect(QWidget):
             from core.adb import ADB
             self.adb = ADB()
         except ImportError:
-            self.status_label.setText("ADB nao encontrado")
-            self.status_label.setStyleSheet(f"color: {COLORS['error']};")
+            self.status_label.setText("ADB not found")
+            self.status_label.setStyleSheet(f"color: {COLORS['danger']};")
             self.refresh_btn.setEnabled(True)
             return
+
+        # Stop any still-running poll before starting a new one; otherwise
+        # reassigning self._thread can drop the last Python reference to a
+        # QThread that's still alive, which Qt treats as fatal.
+        if self._thread is not None and self._thread.isRunning():
+            self._thread.stop()
+            self._thread.wait(3000)
 
         self._thread = DevicePollThread(self.adb)
         self._thread.device_found.connect(self._on_device_found)
@@ -178,7 +142,7 @@ class StepConnect(QWidget):
         root_status = "Rooted" if is_rooted else "No Root"
         display = f"{model} ({device.serial}) | {root_status}"
 
-        self.status_label.setText(f"Device encontrado: {display}")
+        self.status_label.setText(f"Device found: {display}")
         self.status_label.setStyleSheet(f"color: {COLORS['success']};")
 
         self.device_combo.clear()
@@ -186,91 +150,18 @@ class StepConnect(QWidget):
         self.device_frame.show()
 
         self.app.device_data = device
+        self.app.device_label.setText(f"Device: {model}")
 
-        # Check if ANK is already installed
-        self._check_ank_installed(device.serial, is_rooted)
+        # Show/hide ANK Manager button in sidebar
+        self.app.check_ank_installed()
 
         self.app._update_buttons()
-
-    def _check_ank_installed(self, serial, is_rooted):
-        """Check if ANK is installed and show uninstall option."""
-        try:
-            from core.adb import ADB
-            adb = ADB()
-
-            ank_installed = adb.check_ank_installed(serial)
-            ank_ui_installed = adb.check_ank_ui_installed(serial)
-
-            if ank_installed or ank_ui_installed:
-                mode = adb.get_ank_mode(serial) if ank_installed else "N/A"
-                status_parts = []
-                if ank_installed:
-                    status_parts.append(f"Servidor ANK: {mode}")
-                if ank_ui_installed:
-                    status_parts.append("ANK UI: Instalado")
-
-                self.ank_status.setText(f"ANK ja instalado:\n" + "\n".join(status_parts))
-                self.ank_status.setStyleSheet(f"color: {COLORS['warning']}; font-size: 12px;")
-                self.ank_frame.show()
-            else:
-                self.ank_frame.hide()
-        except Exception:
-            self.ank_frame.hide()
-
-    def _uninstall_ank(self):
-        """Uninstall ANK from the device."""
-        reply = QMessageBox.question(
-            self,
-            "Desinstalar ANK",
-            "Tem certeza que deseja desinstalar o ANK deste dispositivo?\n\n"
-            "Isso removera:\n"
-            "- Servidor ANK\n"
-            "- ANK UI (launcher)\n"
-            "- Todos os dados do ANK",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No
-        )
-
-        if reply == QMessageBox.Yes:
-            try:
-                from core.adb import ADB
-                adb = ADB()
-                device = self.app.device_data
-                if device:
-                    self.btn_uninstall.setEnabled(False)
-                    self.btn_uninstall.setText("Desinstalando...")
-                    self.ank_status.setText("Desinstalando ANK...")
-                    self.ank_status.setStyleSheet(f"color: {COLORS['warning']}; font-size: 12px;")
-
-                    self._uninstall_thread = UninstallThread(adb, device.serial, device.is_rooted)
-                    self._uninstall_thread.progress.connect(self._on_uninstall_progress)
-                    self._uninstall_thread.done.connect(self._on_uninstall_done)
-                    self._uninstall_thread.start()
-            except Exception as e:
-                self.status_label.setText(f"Erro ao desinstalar: {e}")
-                self.status_label.setStyleSheet(f"color: {COLORS['error']};")
-                self.btn_uninstall.setEnabled(True)
-                self.btn_uninstall.setText("Desinstalar ANK")
-
-    def _on_uninstall_progress(self, msg):
-        self.ank_status.setText(f"Desinstalando ANK...\n{msg}")
-        self.ank_status.setStyleSheet(f"color: {COLORS['warning']}; font-size: 12px;")
-
-    def _on_uninstall_done(self, success, msg):
-        self.btn_uninstall.setEnabled(True)
-        self.btn_uninstall.setText("Desinstalar ANK")
-        if success:
-            self.ank_frame.hide()
-            self.status_label.setText("ANK desinstalado com sucesso")
-            self.status_label.setStyleSheet(f"color: {COLORS['success']};")
-        else:
-            self.ank_status.setText(f"Erro: {msg}")
-            self.ank_status.setStyleSheet(f"color: {COLORS['error']}; font-size: 12px;")
 
     def on_show(self):
         """Auto-start device detection."""
         self._start_detection()
 
     def on_hide(self):
-        if self._thread:
+        if self._thread and self._thread.isRunning():
             self._thread.stop()
+            self._thread.wait(3000)

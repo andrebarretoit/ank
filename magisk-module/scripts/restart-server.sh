@@ -1,0 +1,87 @@
+#!/system/bin/sh
+# ANK Server Restart Script
+# Called by server.py when it receives SIGHUP
+# Stops the server gracefully, waits, then starts it again
+
+ANK_DIR="/data/local/ank"
+ANKFS="$ANK_DIR/ankfs"
+LOG_DIR="$ANK_DIR/logs"
+SERVER_LOG="$LOG_DIR/server.log"
+START_SCRIPT="$ANKFS/opt/ank/start-server.sh"
+PID_FILE="$ANK_DIR/server.pid"
+
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] [restart.sh] Restart requested" >> "$SERVER_LOG"
+
+# Find server PID
+find_pid() {
+    # Try PID file first
+    if [ -f "$PID_FILE" ]; then
+        pid=$(cat "$PID_FILE" 2>/dev/null)
+        if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+            echo "$pid"
+            return
+        fi
+    fi
+    # Fallback: pgrep
+    pid=$(pgrep -f 'python3.*server.py' 2>/dev/null | head -1)
+    if [ -n "$pid" ]; then
+        echo "$pid"
+        return
+    fi
+    echo ""
+}
+
+# ── Step 1: Stop ─────────────────────────────────────────────────────────────
+PID=$(find_pid)
+if [ -n "$PID" ]; then
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] [restart.sh] Stopping server (PID $PID)..." >> "$SERVER_LOG"
+    kill "$PID" 2>/dev/null
+    # Wait up to 10s for graceful shutdown
+    for i in 1 2 3 4 5 6 7 8 9 10; do
+        if ! kill -0 "$PID" 2>/dev/null; then
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] [restart.sh] Server stopped" >> "$SERVER_LOG"
+            break
+        fi
+        sleep 1
+    done
+    # Force kill if still alive
+    if kill -0 "$PID" 2>/dev/null; then
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] [restart.sh] Force killing..." >> "$SERVER_LOG"
+        kill -9 "$PID" 2>/dev/null
+        sleep 2
+    fi
+else
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] [restart.sh] No running server found" >> "$SERVER_LOG"
+fi
+
+# ── Step 2: Wait ─────────────────────────────────────────────────────────────
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] [restart.sh] Waiting 5s before restart..." >> "$SERVER_LOG"
+sleep 5
+
+# ── Step 3: Start ────────────────────────────────────────────────────────────
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] [restart.sh] Starting server..." >> "$SERVER_LOG"
+
+# Detect mode: rooted (chroot) or lite (proot)
+if [ -f "$ANKFS/usr/bin/python3" ] && [ -f "$ANKFS/lib/ld-musl-"* ]; then
+    # Rooted mode
+    cd "$ANKFS"
+    LD_LIBRARY_PATH="$ANKFS/lib:$ANKFS/usr/lib" \
+    nohup "$ANKFS/lib/ld-musl-"* "$ANKFS/usr/bin/python3" /opt/ank/server.py \
+        >> "$SERVER_LOG" 2>&1 &
+elif [ -f "$ANK_DIR/proot" ]; then
+    # Lite/PRoot mode
+    cd "$ANKFS"
+    nohup "$ANK_DIR/proot" -0 -r "$ANKFS" \
+        -b /dev -b /proc -w /root \
+        /usr/bin/python3 /opt/ank/server.py \
+        >> "$SERVER_LOG" 2>&1 &
+else
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] [restart.sh] ERROR: No server binary found" >> "$SERVER_LOG"
+    exit 1
+fi
+
+NEW_PID=$!
+echo "$NEW_PID" > "$PID_FILE"
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] [restart.sh] Server restarted (PID $NEW_PID)" >> "$SERVER_LOG"
+
+exit 0

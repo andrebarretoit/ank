@@ -1,6 +1,8 @@
 ﻿const API = '/api';
 let ankToken = localStorage.getItem('ank_token') || '';
 let isLoggedIn = !!ankToken;
+let ankLiteMode = false;
+let ankModeFeatures = {};
 
 async function api(method, path, body = null) {
   const headers = { 'Content-Type': 'application/json', 'X-ANK-Client': 'ank-panel' };
@@ -136,6 +138,7 @@ function refreshTab(btn, loadFn) {
 
 /* ═══════ NAVIGATION ═══════ */
 function navigateTo(page) {
+  _formDirty = false;
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
   document.querySelectorAll('.notch-item, .mobile-bar-item').forEach(i => i.classList.remove('active'));
   const pageEl = document.getElementById(`page-${page}`);
@@ -224,12 +227,16 @@ function showApp() {
 /* ═══════ LOAD ALL ═══════ */
 async function loadAll() {
   try {
-    const [containers, images, status, info] = await Promise.all([
+    const [containers, images, status, info, mode] = await Promise.all([
       api('GET', '/containers/all').catch(() => []),
       api('GET', '/images/all').catch(() => []),
       api('GET', '/status').catch(() => ({})),
-      api('GET', '/system/info').catch(() => ({}))
+      api('GET', '/system/info').catch(() => ({})),
+      api('GET', '/mode').catch(() => ({ lite: false, features: {} }))
     ]);
+    ankLiteMode = mode.lite || false;
+    ankModeFeatures = mode.features || {};
+    if (ankLiteMode) applyLiteOverlay();
     animateCounter('stat-running', status.containers_running || 0);
     animateCounter('stat-stopped', status.containers_stopped || 0);
     animateCounter('stat-total', status.containers_total || 0);
@@ -1512,6 +1519,7 @@ function showStackDetail(name) {
         <div class="sr-actions">
           <button class="btn btn-secondary btn-sm" onclick="scaleStackUp('${esc(s.name)}')" title="Scale Up"><i class="bi bi-plus-lg"></i></button>
           <button class="btn btn-secondary btn-sm" onclick="scaleStackDown('${esc(s.name)}')" title="Scale Down"><i class="bi bi-dash-lg"></i></button>
+          <button class="btn btn-secondary btn-sm" onclick="rollingUpdateStack('${esc(s.name)}')" title="Rolling Update"><i class="bi bi-arrow-clockwise"></i></button>
           <button class="btn btn-danger btn-sm" onclick="deleteStack('${esc(s.name)}')"><i class="bi bi-trash3"></i></button>
         </div>
       </div>
@@ -1519,15 +1527,25 @@ function showStackDetail(name) {
         <div class="sr-info-item"><div class="sr-label">Template</div><div class="sr-value">${esc(s.template||s.image||'-')}</div></div>
         <div class="sr-info-item"><div class="sr-label">Status</div><div class="sr-value">${running}/${total} running</div></div>
         <div class="sr-info-item"><div class="sr-label">LB Port</div><div class="sr-value">${s.port||s.lb_port||'-'}</div></div>
+        <div class="sr-info-item"><div class="sr-label">LB Algorithm</div><div class="sr-value">${esc(s.load_balance||'least_conn')}</div></div>
+        <div class="sr-info-item"><div class="sr-label">Scale Range</div><div class="sr-value">${s.min||1} — ${s.max||10}</div></div>
+        <div class="sr-info-item"><div class="sr-label">Trigger</div><div class="sr-value">${esc(s.trigger||'none')}</div></div>
       </div>
       <div style="font-size:12px;font-weight:600;color:var(--text-secondary);margin-bottom:10px">Containers</div>
       ${(s.containers||[]).map(c => {
         const sc = getStatusBadgeClass(c.status);
         return `<div style="display:flex;align-items:center;justify-content:space-between;padding:8px 12px;border:1px solid var(--border);border-radius:8px;margin-bottom:6px">
           <span style="font-size:13px">${esc(c.name)} <span class="badge ${sc}" style="font-size:9px">${getStatusLabel(c.status)}</span></span>
+          <span style="font-size:11px;color:var(--text-muted)">${esc(c.ip||'-')}</span>
         </div>`;
       }).join('') || '<div style="text-align:center;padding:16px;color:var(--text-muted);font-size:12px">No containers</div>'}`;
   }).catch(e => { el.innerHTML = `<div style="color:var(--danger);padding:20px">${esc(e.message)}</div>`; });
+}
+
+async function rollingUpdateStack(name) {
+  const ok = await confirmAction('Rolling Update', `Perform rolling update on stack "${name}"? This will replace containers one by one.`);
+  if (!ok) return;
+  try { await api('POST', `/stacks/${encodeURIComponent(name)}/rolling-update`, {}); toast('Rolling update started', 'info'); loadStacks(); } catch(e) { toast(`Failed: ${e.message}`, 'error'); }
 }
 
 document.getElementById('btn-create-stack')?.addEventListener('click', () => {
@@ -1538,8 +1556,11 @@ function toggleStackAnkfile() { const sel = document.getElementById('stack-image
 async function createStack() {
   const name = document.getElementById('stack-name')?.value?.trim();
   const image = document.getElementById('stack-image')?.value;
-  const instances = parseInt(document.getElementById('stack-instances')?.value || '1');
+  const min = parseInt(document.getElementById('stack-min')?.value || '1');
+  const max = parseInt(document.getElementById('stack-max')?.value || '5');
   const lbPort = parseInt(document.getElementById('stack-lb-port')?.value || '30000');
+  const lbAlgo = document.getElementById('stack-lb-algo')?.value || 'least_conn';
+  const rootPass = document.getElementById('stack-root-pass')?.value || 'ankstack';
   const volume = document.getElementById('stack-volume')?.checked;
   const trigger = document.getElementById('stack-trigger')?.value;
   const ankfile = image === 'ankfile' ? (document.getElementById('stack-ankfile')?.value?.trim() || '') : '';
@@ -1547,7 +1568,7 @@ async function createStack() {
   if (image === 'ankfile' && !ankfile) { toast('Ankfile content required', 'error'); return; }
   try {
     toast(`Creating stack "${name}"...`, 'info');
-    await api('POST', '/stacks', { name, template: image, instances, lb_port: lbPort, shared_volume: volume, trigger: trigger === 'none' ? null : trigger, ankfile });
+    await api('POST', '/stacks', { name, template: image, min, max, lb_port: lbPort, load_balance: lbAlgo, root_password: rootPass, shared_volume: volume, trigger: trigger === 'none' ? null : trigger, ankfile });
     closeModalById('stack-modal-overlay');
     toast(`Stack "${name}" created`, 'success');
     loadStacks();
@@ -1569,42 +1590,144 @@ async function loadBackups() {
   try {
     const data = await api('GET', '/backups');
     const routines = data.routines || [];
-    if (!routines.length) { el.innerHTML = '<div class="empty-state"><i class="bi bi-cloud-arrow-up"></i><h3>No backup routines</h3><p>Backups require an SSH host configuration</p></div>'; const btn = document.getElementById('btn-create-backup'); if (btn) btn.style.display = 'none'; return; }
+    if (!routines.length) { el.innerHTML = '<div class="empty-state"><i class="bi bi-cloud-arrow-up"></i><h3>No backup routines</h3><p>Create a backup routine to protect your containers</p><button class="btn btn-primary" onclick="document.getElementById(\'backup-modal-overlay\').classList.add(\'active\')"><i class="bi bi-plus-lg"></i> Create Routine</button></div>'; const btn = document.getElementById('btn-create-backup'); if (btn) btn.style.display = ''; return; }
     const btn = document.getElementById('btn-create-backup'); if (btn) btn.style.display = '';
     el.innerHTML = routines.map(r => {
       const lastRun = r.last_run ? new Date(r.last_run).toLocaleString() : 'Never';
       const statusColor = r.last_status === 'success' ? 'var(--success)' : r.last_status === 'failed' ? 'var(--danger)' : 'var(--text-muted)';
+      const srcLabel = r._source_type_label || r.source_type || '-';
       return `<div class="split-list-card" data-id="${esc(r.id||r.name)}" onclick="showBackupDetail('${esc(r.id||r.name)}')">
         <div class="slc-top"><span class="slc-name"><i class="bi bi-cloud-arrow-up" style="color:var(--accent)"></i>${esc(r.name)}</span><span style="width:8px;height:8px;border-radius:50%;background:${statusColor};flex-shrink:0"></span></div>
-        <div class="slc-meta"><span>${esc(r.schedule||'-')}</span><span>Retention: ${r.retention||30}d</span><span>Last: ${lastRun}</span></div>
+        <div class="slc-meta"><span>${esc(srcLabel)}</span><span>${esc(r.schedule||'Manual')}</span><span>Ret: ${r.retention_days||30}d</span></div>
       </div>`;
     }).join('');
   } catch (e) { el.innerHTML = '<div class="empty-state"><p>Failed to load</p></div>'; }
 }
 
-function showBackupDetail(id) {
+let currentBackupId = null;
+
+async function showBackupDetail(id) {
+  currentBackupId = id;
   document.querySelectorAll('#backups-list .split-list-card').forEach(c => c.classList.toggle('selected', c.dataset.id === id));
   const el = document.getElementById('backup-detail');
   if (!el) return;
-  api('GET', '/backups').then(data => {
-    const r = (data.routines||[]).find(x => (x.id||x.name) === id);
-    const lastRun = r?.last_run ? new Date(r.last_run).toLocaleString() : 'Never';
+  try {
+    const r = await api('GET', `/backups/${encodeURIComponent(id)}`);
+    const lastRun = r.last_run ? new Date(r.last_run).toLocaleString() : 'Never';
+    const srcLabel = r._source_type_label || r.source_type || '-';
+    const remote = r.remote || {};
     el.innerHTML = `
       <div class="sr-header">
-        <h2><i class="bi bi-cloud-arrow-up" style="color:var(--accent)"></i>${esc(id)}</h2>
+        <h2><i class="bi bi-cloud-arrow-up" style="color:var(--accent)"></i>${esc(r.name||id)}</h2>
         <div class="sr-actions">
           <button class="btn btn-success btn-sm" onclick="executeBackup('${esc(id)}')"><i class="bi bi-play-fill"></i> Run</button>
+          <button class="btn btn-secondary btn-sm" onclick="showBackupHistory('${esc(id)}')"><i class="bi bi-clock-history"></i> History</button>
+          <button class="btn btn-secondary btn-sm" onclick="browseBackupFiles('${esc(id)}')"><i class="bi bi-folder2-open"></i> Browse</button>
           <button class="btn btn-danger btn-sm" onclick="deleteBackup('${esc(id)}')"><i class="bi bi-trash3"></i></button>
         </div>
       </div>
       <div class="sr-info-grid">
-        <div class="sr-info-item"><div class="sr-label">Source</div><div class="sr-value">${esc(r?.source||'-')}</div></div>
-        <div class="sr-info-item"><div class="sr-label">Remote Host</div><div class="sr-value">${esc(r?.remote_host||'-')}</div></div>
-        <div class="sr-info-item"><div class="sr-label">Schedule</div><div class="sr-value">${esc(r?.schedule||'-')}</div></div>
-        <div class="sr-info-item"><div class="sr-label">Retention</div><div class="sr-value">${r?.retention||30}d</div></div>
-        <div class="sr-info-item" style="grid-column:span 2"><div class="sr-label">Last Run</div><div class="sr-value">${lastRun}</div></div>
+        <div class="sr-info-item"><div class="sr-label">Source Type</div><div class="sr-value">${esc(srcLabel)}</div></div>
+        <div class="sr-info-item"><div class="sr-label">Remote Host</div><div class="sr-value">${esc(remote.host||'-')}</div></div>
+        <div class="sr-info-item"><div class="sr-label">Schedule</div><div class="sr-value">${esc(r.schedule||'Manual')}</div></div>
+        <div class="sr-info-item"><div class="sr-label">Retention</div><div class="sr-value">${r.retention_days||30} days</div></div>
+        <div class="sr-info-item"><div class="sr-label">Mode</div><div class="sr-value">${esc(r.backup_mode||'full')}</div></div>
+        <div class="sr-info-item"><div class="sr-label">Immutable</div><div class="sr-value">${r.immutable?'Yes':'No'}</div></div>
+        <div class="sr-info-item" style="grid-column:span 2"><div class="sr-label">Last Run</div><div class="sr-value">${lastRun} ${r.last_status?`(${r.last_status})`:''}</div></div>
+      </div>
+      <div id="backup-sub-content"></div>`;
+  } catch(e) { el.innerHTML = `<div style="color:var(--danger);padding:20px">${esc(e.message)}</div>`; }
+}
+
+async function showBackupHistory(id) {
+  const sub = document.getElementById('backup-sub-content');
+  if (!sub) return;
+  sub.innerHTML = '<div style="padding:12px;color:var(--text-muted)">Loading history...</div>';
+  try {
+    const data = await api('GET', `/backups/history?routine_id=${encodeURIComponent(id)}&limit=20`);
+    const entries = data.history || [];
+    if (!entries.length) { sub.innerHTML = '<div style="padding:12px;color:var(--text-muted)">No backup history</div>'; return; }
+    sub.innerHTML = `<div style="padding:12px 0"><h4 style="margin-bottom:8px"><i class="bi bi-clock-history"></i> History</h4>${entries.map(e => {
+      const ts = e.started_at ? new Date(e.started_at).toLocaleString() : '-';
+      const statusColor = e.status==='success'?'var(--success)':e.status==='failed'?'var(--danger)':'var(--warning)';
+      const size = e.size_bytes ? (e.size_bytes > 1048576 ? (e.size_bytes/1048576).toFixed(1)+'MB' : (e.size_bytes/1024).toFixed(1)+'KB') : '-';
+      return `<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border)">
+        <span style="width:8px;height:8px;border-radius:50%;background:${statusColor};flex-shrink:0"></span>
+        <span style="flex:1;font-size:12px">${ts}</span>
+        <span style="font-size:12px;color:var(--text-muted)">${size}</span>
+        <span style="font-size:11px;color:${statusColor}">${e.status}</span>
+        <button class="btn btn-ghost btn-sm" onclick="viewBackupLog('${esc(e.id)}')" title="View Log"><i class="bi bi-journal-text"></i></button>
       </div>`;
-  }).catch(e => { el.innerHTML = `<div style="color:var(--danger);padding:20px">${esc(e.message)}</div>`; });
+    }).join('')}</div>`;
+  } catch(e) { sub.innerHTML = `<div style="color:var(--danger);padding:12px">${esc(e.message)}</div>`; }
+}
+
+async function viewBackupLog(historyId) {
+  try {
+    const data = await api('GET', `/backups/${encodeURIComponent(historyId)}/log`);
+    openModal(`Backup Log — ${historyId}`, `<pre style="max-height:400px;overflow:auto;font-size:11px;font-family:monospace;white-space:pre-wrap;margin:0">${esc(data.log||'No log')}</pre>`);
+  } catch(e) { toast(`Failed: ${e.message}`, 'error'); }
+}
+
+async function browseBackupFiles(id) {
+  const sub = document.getElementById('backup-sub-content');
+  if (!sub) return;
+  sub.innerHTML = '<div style="padding:12px;color:var(--text-muted)">Loading files...</div>';
+  try {
+    const data = await api('GET', `/backups/${encodeURIComponent(id)}/browse?path=/`);
+    const files = data.files || [];
+    renderBackupFileBrowser(sub, id, files, '/');
+  } catch(e) { sub.innerHTML = `<div style="color:var(--danger);padding:12px">${esc(e.message)}</div>`; }
+}
+
+function renderBackupFileBrowser(container, routineId, files, currentPath) {
+  const html = `<div style="padding:12px 0">
+    <h4 style="margin-bottom:8px"><i class="bi bi-folder2-open"></i> Remote Files</h4>
+    <div style="font-size:11px;color:var(--text-muted);margin-bottom:8px">${esc(currentPath)}</div>
+    ${files.length ? files.map(f => {
+      const icon = f.type==='dir' ? 'bi-folder-fill' : 'bi-file-earmark';
+      const color = f.type==='dir' ? 'var(--accent)' : 'var(--text-muted)';
+      const size = f.type==='file' ? (f.size > 1048576 ? (f.size/1048576).toFixed(1)+'MB' : f.size > 1024 ? (f.size/1024).toFixed(1)+'KB' : f.size+'B') : '';
+      const onclick = f.type==='dir' ? `browseBackupDir('${esc(routineId)}','${esc(currentPath+'/'+f.name).replace(/\/+/g,'/')}')` : '';
+      return `<div style="display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid var(--border);cursor:${f.type==='dir'?'pointer':'default'}" ${onclick?`onclick="${onclick}"`:''}>
+        <i class="bi ${icon}" style="color:${color}"></i>
+        <span style="flex:1;font-size:12px">${esc(f.name)}</span>
+        <span style="font-size:11px;color:var(--text-muted)">${size}</span>
+        ${f.type==='file'?`<button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();restoreBackupFile('${esc(routineId)}','${esc(f.name)}')" title="Restore"><i class="bi bi-arrow-counterclockwise"></i></button>
+        <button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();deleteBackupFile('${esc(routineId)}','${esc(f.name)}')" title="Delete" style="color:var(--danger)"><i class="bi bi-trash3"></i></button>`:''}
+      </div>`;
+    }).join('') : '<div style="padding:12px;color:var(--text-muted)">Empty</div>'}
+  </div>`;
+  container.innerHTML = html;
+}
+
+async function browseBackupDir(routineId, path) {
+  const sub = document.getElementById('backup-sub-content');
+  if (!sub) return;
+  try {
+    const data = await api('GET', `/backups/${encodeURIComponent(routineId)}/browse?path=${encodeURIComponent(path)}`);
+    renderBackupFileBrowser(sub, routineId, data.files || [], path);
+  } catch(e) { toast(`Failed: ${e.message}`, 'error'); }
+}
+
+async function restoreBackupFile(routineId, fileName) {
+  const ok = await confirmAction('Restore', `Restore "${fileName}"?`);
+  if (!ok) return;
+  try {
+    toast('Restoring...', 'info');
+    const data = await api('POST', `/backups/${encodeURIComponent(routineId)}/restore`, { file: fileName });
+    toast(`Restored to: ${data.restored_to}`, 'success');
+  } catch(e) { toast(`Failed: ${e.message}`, 'error'); }
+}
+
+async function deleteBackupFile(routineId, fileName) {
+  const ok = await confirmAction('Delete', `Delete "${fileName}"?`);
+  if (!ok) return;
+  try {
+    await api('POST', `/backups/${encodeURIComponent(routineId)}/delete`, { file: fileName });
+    toast('Deleted', 'success');
+    browseBackupFiles(routineId);
+  } catch(e) { toast(`Failed: ${e.message}`, 'error'); }
 }
 
 document.getElementById('btn-create-backup')?.addEventListener('click', () => {
@@ -1618,13 +1741,17 @@ async function createBackup() {
     toast(`Creating routine "${name}"...`, 'info');
     await api('POST', '/backups', {
       name,
-      source: document.getElementById('backup-source')?.value || '',
+      source_type: document.getElementById('backup-source-type')?.value || 'container_full',
       remote_host: document.getElementById('backup-remote-host')?.value || '',
+      remote_port: parseInt(document.getElementById('backup-remote-port')?.value || '22'),
       remote_path: document.getElementById('backup-remote-path')?.value || '/backups/ank',
       ssh_user: document.getElementById('backup-ssh-user')?.value || 'root',
       ssh_pass: document.getElementById('backup-ssh-pass')?.value || '',
       schedule: document.getElementById('backup-schedule')?.value || '',
-      retention: parseInt(document.getElementById('backup-retention')?.value || '30')
+      retention: parseInt(document.getElementById('backup-retention')?.value || '30'),
+      backup_mode: document.getElementById('backup-mode')?.value || 'full',
+      encryption: document.getElementById('backup-encryption')?.value || 'none',
+      immutable: document.getElementById('backup-immutable')?.checked || false,
     });
     closeModalById('backup-modal-overlay');
     toast(`Routine "${name}" created`, 'success');
@@ -1633,7 +1760,7 @@ async function createBackup() {
 }
 
 async function executeBackup(id) { try { toast('Running backup...','info'); await api('POST',`/backups/${encodeURIComponent(id)}/execute`); toast('Backup complete','success'); loadBackups(); } catch(e) { toast(`Failed: ${e.message}`,'error'); } }
-async function deleteBackup(id) { const ok = await confirmAction('Delete Backup','Delete this routine?'); if(!ok) return; try { await api('POST',`/backups/${encodeURIComponent(id)}/delete`); toast('Deleted','success'); loadBackups(); } catch(e) { toast(`Failed: ${e.message}`,'error'); } }
+async function deleteBackup(id) { const ok = await confirmAction('Delete Backup','Delete this routine and all its history?'); if(!ok) return; try { await api('POST',`/backups/${encodeURIComponent(id)}/delete`); toast('Deleted','success'); loadBackups(); } catch(e) { toast(`Failed: ${e.message}`,'error'); } }
 
 /* ═══════ NETWORKS ═══════ */
 async function loadNetworks() {
@@ -1703,6 +1830,7 @@ let settingsConfig = {};
 let settingsInfo = {};
 
 function showSettingsSection(section) {
+  if (_ankMgrPoll) { clearInterval(_ankMgrPoll); _ankMgrPoll = null; }
   document.querySelectorAll('#settings-sidebar .split-list-card').forEach(n => {
     n.classList.toggle('selected', n.dataset.section === section);
   });
@@ -1845,6 +1973,79 @@ function showSettingsSection(section) {
         </div>
       </div>
     </div></div>`;
+  } else if (section === 'ank-manager') {
+    el.innerHTML = `<div class="card"><div class="card-header"><h3><i class="bi bi-speedometer2"></i> ANK Manager</h3></div><div class="card-body">
+      <div id="ank-mgr-status" style="display:flex;align-items:center;gap:12px;margin-bottom:20px;padding:16px;background:var(--bg-base);border-radius:8px">
+        <span id="ank-mgr-dot" style="font-size:18px;color:var(--text-muted)">\u25cf</span>
+        <div><div id="ank-mgr-state" style="font-weight:600;font-size:14px">Checking...</div><div id="ank-mgr-detail" style="font-size:12px;color:var(--text-secondary)"></div></div>
+      </div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:20px">
+        <button class="btn btn-primary btn-sm" id="ank-mgr-restart-server"><i class="bi bi-arrow-clockwise"></i> Restart Server</button>
+        <button class="btn btn-ghost btn-sm" id="ank-mgr-stop"><i class="bi bi-stop-circle"></i> Stop Server</button>
+        <button class="btn btn-ghost btn-sm" id="ank-mgr-reboot"><i class="bi bi-phone"></i> Restart Device</button>
+        <button class="btn btn-danger btn-sm" id="ank-mgr-uninstall"><i class="bi bi-trash3"></i> Uninstall ANK</button>
+      </div>
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
+        <label class="form-label" style="margin:0">Live Logs</label>
+        <select class="form-select" id="ank-mgr-log-type" style="width:auto;padding:4px 8px;font-size:12px">
+          <option value="service">Server</option>
+          <option value="server">Server (full)</option>
+        </select>
+        <label style="display:flex;align-items:center;gap:4px;font-size:12px;color:var(--text-secondary);cursor:pointer"><input type="checkbox" id="ank-mgr-log-auto" checked style="accent-color:var(--accent)"> Auto-scroll</label>
+        <button class="btn btn-ghost btn-sm" id="ank-mgr-log-refresh"><i class="bi bi-arrow-clockwise"></i></button>
+      </div>
+      <pre id="ank-mgr-logs" style="background:var(--bg-base);color:var(--text-secondary);border:1px solid var(--border);border-radius:8px;padding:12px;max-height:300px;overflow-y:auto;font-family:'Consolas','Courier New',monospace;font-size:12px;line-height:1.5;white-space:pre-wrap;word-break:break-all"></pre>
+    </div></div>`;
+    let _mgrLogOffset = 0;
+    let _mgrLogPoll = null;
+    async function loadMgrStatus() {
+      try {
+        const s = await api('GET', '/ank-manager/status');
+        document.getElementById('ank-mgr-dot').style.color = s.running ? 'var(--success)' : 'var(--danger)';
+        document.getElementById('ank-mgr-state').textContent = s.running ? 'Running' : 'Stopped';
+        document.getElementById('ank-mgr-detail').textContent = s.running ? `PID: ${s.pid} | Uptime: ${s.uptime} | Containers: ${s.containers}` : 'Server is not running';
+      } catch(e) {
+        document.getElementById('ank-mgr-dot').style.color = 'var(--danger)';
+        document.getElementById('ank-mgr-state').textContent = 'Unreachable';
+        document.getElementById('ank-mgr-detail').textContent = 'Cannot connect to ANK server';
+      }
+    }
+    async function loadMgrLogs() {
+      const logType = document.getElementById('ank-mgr-log-type')?.value || 'service';
+      try {
+        const r = await fetch(`${API}/ank-manager/logs?type=${logType}&lines=150`, { headers: { 'X-ANK-Client': 'ank-panel', 'Authorization': `Bearer ${ankToken}` } });
+        const data = await r.json();
+        if (data.lines && data.lines.length) {
+          const el = document.getElementById('ank-mgr-logs');
+          el.textContent = data.lines.join('\n');
+          if (document.getElementById('ank-mgr-log-auto')) el.scrollTop = el.scrollHeight;
+        }
+      } catch(e) {}
+    }
+    loadMgrStatus();
+    loadMgrLogs();
+    document.getElementById('ank-mgr-restart-server')?.addEventListener('click', async () => {
+      const ok = await confirmAction('Restart Server', 'Restart the ANK server process?');
+      if (!ok) return;
+      try { await api('POST', '/ank-manager/restart-server'); toast('Server restarting...', 'success'); } catch(e) { toast(`Failed: ${e.message}`, 'error'); }
+    });
+    document.getElementById('ank-mgr-stop')?.addEventListener('click', async () => {
+      const ok = await confirmAction('Stop Server', 'Stop all containers and the ANK server?');
+      if (!ok) return;
+      try { await api('POST', '/ank-manager/stop'); toast('Stopping...', 'info'); } catch(e) { toast(`Failed: ${e.message}`, 'error'); }
+    });
+    document.getElementById('ank-mgr-reboot')?.addEventListener('click', async () => {
+      const ok = await confirmAction('Restart Device', 'This will reboot the Android device. Continue?');
+      if (!ok) return;
+      try { await api('POST', '/ank-manager/restart-device'); toast('Rebooting...', 'info'); } catch(e) { toast(`Failed: ${e.message}`, 'error'); }
+    });
+    document.getElementById('ank-mgr-uninstall')?.addEventListener('click', async () => {
+      const ok = await confirmAction('Uninstall ANK', 'This will PERMANENTLY delete ALL containers, images, data, and ANK itself. This cannot be undone!');
+      if (!ok) return;
+      try { await api('POST', '/ank-manager/uninstall'); toast('Uninstalling... device will reboot.', 'info'); } catch(e) { toast(`Failed: ${e.message}`, 'error'); }
+    });
+    document.getElementById('ank-mgr-log-refresh')?.addEventListener('click', loadMgrLogs);
+    document.getElementById('ank-mgr-log-type')?.addEventListener('change', loadMgrLogs);
   }
 }
 
@@ -2320,12 +2521,17 @@ document.getElementById('log-filter')?.addEventListener('change', () => { logsOf
 let refreshSeconds = parseInt(localStorage.getItem('ank_refresh') || '15');
 let refreshTimer = null;
 let refreshCycle = 0;
+let _formDirty = false;
+let _ankMgrPoll = null;
 
 function startRefreshTimer() {
   if (refreshTimer) clearInterval(refreshTimer);
   if (refreshSeconds <= 0) return;
   refreshTimer = setInterval(async () => {
     if (!isLoggedIn || document.getElementById('app').classList.contains('hidden') || document.hidden) return;
+    if (_formDirty) return;
+    const ae = document.activeElement;
+    if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.tagName === 'SELECT' || ae.isContentEditable)) return;
     refreshCycle++;
     try {
       const activePage = document.querySelector('.page.active');
@@ -2586,7 +2792,7 @@ document.querySelectorAll('.notch-item').forEach(item => {
       notchPreviewTimer = setTimeout(async () => {
         notchPreview.innerHTML = await loadNotchPreview(page);
         notchPreview.classList.add('active');
-      }, 1500);
+      }, 1000);
     }
   });
   item.addEventListener('mouseleave', () => {
@@ -2616,12 +2822,41 @@ function openFooterModal() {
   `);
 }
 
+/* ═══════ LITE MODE OVERLAY ═══════ */
+function applyLiteOverlay() {
+  if (!ankLiteMode) return;
+  document.body.classList.add('ank-lite');
+
+  // Networks page: full overlay
+  const networksPage = document.getElementById('page-networks');
+  if (networksPage && !ankModeFeatures.network_isolation) {
+    const layout = networksPage.querySelector('.split-layout');
+    if (layout && !layout.classList.contains('lite-overlay')) {
+      layout.classList.add('lite-overlay');
+      const badge = document.createElement('div');
+      badge.className = 'lite-badge';
+      badge.innerHTML = '<i class="bi bi-globe2"></i><strong>Limited</strong><span>Network isolation not available in lite mode</span><small>Containers share host network</small>';
+      layout.appendChild(badge);
+    }
+  }
+
+  // Hide nav items that are disabled
+  if (!ankModeFeatures.network_isolation) {
+    document.querySelectorAll('[data-page="networks"]').forEach(el => {
+      el.style.opacity = '0.4';
+      el.title = 'Network isolation not available in lite mode';
+    });
+  }
+}
+
 /* ═══════ THEME TOGGLE ═══════ */
 function getTheme() { return localStorage.getItem('ank_theme') || document.documentElement.getAttribute('data-theme') || 'dark'; }
 function setTheme(theme) { document.documentElement.setAttribute('data-theme', theme); localStorage.setItem('ank_theme', theme); document.querySelector('meta[name="theme-color"]')?.setAttribute('content', theme === 'dark' ? '#0a0d12' : '#ffffff'); }
 function toggleTheme() { setTheme(getTheme() === 'dark' ? 'light' : 'dark'); }
 
 /* ═══════ INIT ═══════ */
+document.addEventListener('input', (e) => { if (e.target.matches('input,textarea,select')) _formDirty = true; }, true);
+document.addEventListener('change', (e) => { if (e.target.matches('input,textarea,select')) _formDirty = true; }, true);
 if (isLoggedIn) { showApp(); detectWsProtocol().then(() => startRefreshTimer()); }
 // Theme toggle listeners
 document.getElementById('theme-toggle-login')?.addEventListener('click', toggleTheme);

@@ -27,6 +27,12 @@ from http.server import HTTPServer, ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs, unquote
 from datetime import datetime, timedelta
 
+try:
+    import ank_lite
+    HAS_LITE = True
+except ImportError:
+    HAS_LITE = False
+
 _port_lock = threading.Lock()
 _build_lock = threading.Lock()
 _building = False
@@ -540,6 +546,9 @@ MODE_LABELS = {
     "shared_host": {"color": "#eab308", "label": "Shared Host", "desc": "Chroot only (no namespace isolation)"},
     "native_host": {"color": "#94a3b8", "label": "Native Host", "desc": "No containerization"},
 }
+
+def is_lite():
+    return HAS_LITE and get_mode().get("mode") == "lite"
 
 def get_subnet():
     config = load_config()
@@ -1691,6 +1700,8 @@ small{color:#334155}
     def route_get(self, path, parsed):
         if path == "/api/status":
             self.api_status()
+        elif path == "/api/mode":
+            self.api_get_mode()
         elif path == "/api/health":
             self.send_json({"status": "ok"})
         elif path == "/api/protocol":
@@ -1760,6 +1771,10 @@ small{color:#334155}
             self.api_network_info()
         elif path == "/api/logs":
             self.api_get_logs(parsed)
+        elif path == "/api/ank-manager/status":
+            self.api_ank_manager_status()
+        elif path == "/api/ank-manager/logs":
+            self.api_ank_manager_logs(parsed)
         elif path == "/api/config":
             self.api_get_config()
         elif path == "/api/stacks":
@@ -1915,6 +1930,14 @@ small{color:#334155}
             self.api_update_config(data)
         elif path == "/api/system/uninstall":
             self.api_uninstall()
+        elif path == "/api/ank-manager/stop":
+            self.api_ank_manager_stop()
+        elif path == "/api/ank-manager/restart-server":
+            self.api_ank_manager_restart_server()
+        elif path == "/api/ank-manager/restart-device":
+            self.api_ank_manager_restart_device()
+        elif path == "/api/ank-manager/uninstall":
+            self.api_ank_manager_uninstall()
         elif path == "/api/stacks":
             self.api_create_stack(data)
         elif path.startswith("/api/stacks/") and path.endswith("/scale"):
@@ -2197,6 +2220,38 @@ small{color:#334155}
 
         ankd_port = self._find_free_ankd_port()
 
+        # --- LITE MODE ---
+        if is_lite():
+            def _do_lite_create():
+                log_path = os.path.join(ANK_DIR, "logs", f"{name}.log")
+                try:
+                    with open(log_path, "w") as lf:
+                        lf.write(f"Creating container '{name}' (lite mode)...\n")
+                        lf.flush()
+                    ok, result = ank_lite.create_container(
+                        name, image, root_password, ssh_port, ankd_port)
+                    with open(log_path, "a") as lf:
+                        lf.write(str(result) + "\n")
+                    if not ok:
+                        log(f"ERROR: lite create {name}: {result}")
+                        cfg = load_container_config(name)
+                        if cfg:
+                            cfg["status"] = "failed"
+                            save_container_config(name, cfg)
+                    else:
+                        log(f"Container {name} created (lite)")
+                except Exception as e:
+                    log(f"ERROR: lite create thread {name}: {e}")
+                    cfg = load_container_config(name)
+                    if cfg:
+                        cfg["status"] = "failed"
+                        save_container_config(name, cfg)
+            threading.Thread(target=_do_lite_create, daemon=True).start()
+            self.send_json({"message": f"Container '{name}' creating", "name": name, "ssh_port": ssh_port}, 201)
+            return
+
+        # --- ROOT MODE ---
+
         # Write stub config with "building" status immediately so UI shows it
         stub_dir = os.path.join(CONTAINERS_DIR, name)
         os.makedirs(stub_dir, exist_ok=True)
@@ -2275,6 +2330,40 @@ small{color:#334155}
         # Write status BEFORE spawning thread to avoid race condition
         config["status"] = "starting"
         save_container_config(name, config)
+
+        # --- LITE MODE ---
+        if is_lite():
+            def do_lite_start():
+                try:
+                    ok, result = ank_lite.start_container(name)
+                    cfg = load_container_config(name)
+                    if cfg:
+                        if not ok:
+                            log(f"ERROR: lite start {name}: {result}")
+                            cfg["status"] = "stopped"
+                            cfg["pid"] = None
+                            save_container_config(name, cfg)
+                            note_container_stopped(name)
+                        else:
+                            log(f"Container {name} started (lite)")
+                            cfg2 = load_container_config(name)
+                            if cfg2:
+                                cfg2["status"] = "running"
+                                save_container_config(name, cfg2)
+                            note_container_started(name)
+                except Exception as e:
+                    log(f"ERROR: lite start thread {name}: {e}")
+                    cfg = load_container_config(name)
+                    if cfg:
+                        cfg["status"] = "stopped"
+                        cfg["pid"] = None
+                        save_container_config(name, cfg)
+                        note_container_stopped(name)
+            threading.Thread(target=do_lite_start, daemon=True).start()
+            self.send_json({"message": f"Container '{name}' starting"})
+            return
+
+        # --- ROOT MODE ---
         def do_start():
             try:
                 output, code = run_script("container.sh", "start", name)
@@ -2318,6 +2407,32 @@ small{color:#334155}
         config["status"] = "stopping"
         save_container_config(name, config)
         note_container_stopped(name)
+
+        # --- LITE MODE ---
+        if is_lite():
+            def do_lite_stop():
+                try:
+                    ank_lite.stop_container(name)
+                    cfg = load_container_config(name)
+                    if cfg:
+                        log(f"Container {name} stopped (lite)")
+                        cfg["status"] = "stopped"
+                        cfg["pid"] = None
+                        save_container_config(name, cfg)
+                        note_container_stopped(name)
+                except Exception as e:
+                    log(f"ERROR: lite stop thread {name}: {e}")
+                    cfg = load_container_config(name)
+                    if cfg:
+                        cfg["status"] = "stopped"
+                        cfg["pid"] = None
+                        save_container_config(name, cfg)
+                        note_container_stopped(name)
+            threading.Thread(target=do_lite_stop, daemon=True).start()
+            self.send_json({"message": f"Container '{name}' stopping"})
+            return
+
+        # --- ROOT MODE ---
         def do_stop():
             try:
                 log_path = os.path.join(ANK_DIR, "logs", f"{name}.log")
@@ -2377,6 +2492,17 @@ small{color:#334155}
         if not config:
             self.send_error(404, f"Container '{name}' not found")
             return
+
+        # --- LITE MODE ---
+        if is_lite():
+            ok, result = ank_lite.delete_container(name)
+            if not ok:
+                self.send_error(500, f"Failed to delete: {result}")
+                return
+            self.send_json({"message": f"Container '{name}' deleted"})
+            return
+
+        # --- ROOT MODE ---
         output, code = run_script("container.sh", "delete", name)
         if code != 0:
             self.send_error(500, f"Failed to delete: {output}")
@@ -4536,6 +4662,21 @@ small{color:#334155}
     # ============================================================
 
     def api_list_networks(self):
+        # --- LITE MODE: limited network info ---
+        if is_lite():
+            self.send_json([{
+                "id": "shared",
+                "name": "shared_host",
+                "subnet": "N/A",
+                "gateway": "N/A",
+                "nat": False,
+                "containers": [],
+                "mode": "lite",
+                "lite": True,
+                "message": "Network isolation not available in lite mode"
+            }])
+            return
+
         config = load_config()
         net = config.get("network", {})
         subnet = net.get("subnet", "10.20.30.0")
@@ -4560,6 +4701,22 @@ small{color:#334155}
         self.send_json(networks)
 
     def api_network_info(self):
+        # --- LITE MODE ---
+        if is_lite():
+            self.send_json({
+                "bridge": "shared",
+                "subnet": "N/A",
+                "gateway": "N/A",
+                "wan_interface": "N/A",
+                "nat_enabled": False,
+                "ip_forward": "N/A",
+                "iptables_nat": [],
+                "mode": "lite",
+                "lite": True,
+                "message": "Network isolation not available in lite mode"
+            })
+            return
+
         config = load_config()
         net = config.get("network", {})
         subnet = net.get("subnet", "10.20.30.0")
@@ -4596,6 +4753,11 @@ small{color:#334155}
         })
 
     def api_create_network(self, data):
+        # --- LITE MODE ---
+        if is_lite():
+            self.send_error(400, "Network creation not available in lite mode")
+            return
+
         subnet = data.get("subnet", "")
         if not subnet:
             self.send_error(400, "Subnet required (e.g. 10.20.30.0)")
@@ -4712,6 +4874,120 @@ small{color:#334155}
             log("RESTART_SERVER: Done")
         threading.Thread(target=_restart, daemon=True).start()
         self.send_json({"message": "Server restarting..."})
+
+    # ── ANK Manager API ──────────────────────────────────────────────────────
+
+    def api_ank_manager_status(self):
+        """Get server status, PID, uptime, container count."""
+        import subprocess
+        result = {"running": True, "pid": os.getpid(), "uptime": "", "containers": 0, "mode": get_mode().get("mode", "unknown")}
+
+        try:
+            with open("/proc/uptime", "r") as f:
+                uptime_secs = float(f.read().split()[0])
+                days = int(uptime_secs // 86400)
+                hours = int((uptime_secs % 86400) // 3600)
+                mins = int((uptime_secs % 3600) // 60)
+                result["uptime"] = f"{days}d {hours}h {mins}m" if days else f"{hours}h {mins}m"
+        except Exception:
+            result["uptime"] = "-"
+
+        try:
+            if os.path.isdir(CONTAINERS_DIR):
+                result["containers"] = len([d for d in os.listdir(CONTAINERS_DIR) if os.path.isdir(os.path.join(CONTAINERS_DIR, d))])
+        except Exception:
+            pass
+
+        # Check disk usage
+        try:
+            st = os.statvfs(ANK_DIR)
+            used = (st.f_blocks - st.f_bavail) * st.f_frsize
+            result["disk_used_mb"] = round(used / (1024 * 1024), 1)
+        except Exception:
+            result["disk_used_mb"] = 0
+
+        self.send_json(result)
+
+    def api_ank_manager_stop(self):
+        """Gracefully stop all containers then the server."""
+        import threading
+        def _stop():
+            log("ANK_MANAGER: Stopping all containers...")
+            for cfg_file in glob.glob(os.path.join(CONTAINERS_DIR, "*/config.json")):
+                try:
+                    with open(cfg_file) as f:
+                        cfg = json.load(f)
+                    if cfg.get("status") == "running":
+                        name = cfg.get("name")
+                        if name:
+                            run_script("container.sh", "stop", name)
+                except Exception:
+                    pass
+            log("ANK_MANAGER: Sending SIGUSR1 to self...")
+            time.sleep(1)
+            os.kill(os.getpid(), signal.SIGUSR1)
+        threading.Thread(target=_stop, daemon=True).start()
+        self.send_json({"message": "Stopping all containers and server..."})
+
+    def api_ank_manager_restart_server(self):
+        """Graceful server restart via SIGHUP."""
+        log("ANK_MANAGER: Restart server via SIGHUP")
+        self.send_json({"message": "Server restarting..."})
+        time.sleep(0.5)
+        os.kill(os.getpid(), signal.SIGHUP)
+
+    def api_ank_manager_restart_device(self):
+        """Reboot the Android device."""
+        log("ANK_MANAGER: Rebooting device...")
+        self.send_json({"message": "Device rebooting..."})
+        import threading
+        def _reboot():
+            time.sleep(1)
+            os.system("svc power reboot 2>/dev/null || reboot 2>/dev/null || su -c reboot 2>/dev/null")
+        threading.Thread(target=_reboot, daemon=True).start()
+
+    def api_ank_manager_uninstall(self):
+        """Run the full uninstall.sh script."""
+        log("ANK_MANAGER: Starting full uninstall...")
+        import subprocess
+        # Find uninstall script
+        candidates = [
+            "/data/adb/modules/ank/scripts/uninstall.sh",
+            os.path.join(os.path.dirname(os.path.dirname(ANK_DIR)), "scripts", "uninstall.sh"),
+            os.path.join(ANK_DIR, "scripts", "uninstall.sh"),
+        ]
+        script = None
+        for c in candidates:
+            if os.path.isfile(c):
+                script = c
+                break
+        if not script:
+            self.send_json({"error": "uninstall.sh not found"}, 404)
+            return
+        log(f"ANK_MANAGER: Running {script}")
+        self.send_json({"message": "Uninstalling ANK... device will reboot."})
+        # Run in background — script will reboot device
+        log_file = os.path.join(ANK_DIR, "logs", "uninstall.log")
+        subprocess.Popen(["sh", script], stdout=open(log_file, "w"), stderr=subprocess.STDOUT)
+
+    def api_ank_manager_logs(self, parsed=None):
+        """Get last N lines of server logs for real-time tail."""
+        params = parse_qs(parsed.query) if parsed else {}
+        lines = int(params.get("lines", ["100"])[0])
+        log_type = params.get("type", ["service"])[0]
+
+        log_file = os.path.join(ANK_DIR, "logs", f"{log_type}.log")
+        if not os.path.isfile(log_file):
+            self.send_json({"lines": [], "type": log_type})
+            return
+
+        try:
+            with open(log_file, "r", errors="replace") as f:
+                all_lines = f.readlines()
+            tail = all_lines[-lines:]
+            self.send_json({"lines": [l.rstrip("\n") for l in tail], "type": log_type})
+        except Exception as e:
+            self.send_json({"lines": [f"[ERROR] {e}"], "type": log_type})
 
     def _generate_ankd_files(self, services_dir, rootfs, template_id, ssh_port):
         """Generate .ankd service files for containers created with older code."""
@@ -4873,6 +5149,25 @@ small{color:#334155}
         threading.Thread(target=do_uninstall, daemon=True).start()
         self.send_json({"message": "Uninstalling ANK... Reboot to complete removal."})
 
+    def api_get_mode(self):
+        mode = get_mode()
+        self.send_json({
+            "mode": mode.get("mode", "shared_host"),
+            "lite": is_lite(),
+            "features": {
+                "containers": True,
+                "terminal": True,
+                "files": True,
+                "backups": True,
+                "images": True,
+                "stacks": True,
+                "network_isolation": not is_lite(),
+                "port_mapping": True,
+                "resource_limits": not is_lite(),
+                "port_proxy": is_lite(),
+            }
+        })
+
     def api_status(self):
         config = load_config()
         total = 0
@@ -4920,7 +5215,8 @@ small{color:#334155}
             "containers_running": running,
             "containers_stopped": stopped,
             "disk": disk_info,
-            "building": _building
+            "building": _building,
+            "lite": is_lite(),
         })
 
     def api_list_images(self):
@@ -6379,8 +6675,55 @@ def _status_poller():
 
 
 def main():
+    def _handle_sigusr1(*_):
+        """SIGUSR1 = graceful stop (Manager sends this)."""
+        print("[SIGNAL] SIGUSR1 received — stopping server...")
+        sys.exit(0)
+
+    def _handle_sighup(*_):
+        """SIGHUP = restart. Delegates to restart-server.sh which stops,
+        waits, then starts the server cleanly."""
+        print("[SIGNAL] SIGHUP received — launching restart script...")
+        import subprocess
+        candidates = [
+            "/data/adb/modules/ank/scripts/restart-server.sh",
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "scripts", "restart-server.sh"),
+            os.path.join(ANK_DIR, "restart-server.sh"),
+        ]
+        for script in candidates:
+            if os.path.isfile(script):
+                subprocess.Popen(
+                    ["sh", script],
+                    stdout=open(os.path.join(ANK_DIR, "logs", "restart.log"), "w"),
+                    stderr=subprocess.STDOUT,
+                    start_new_session=True,
+                )
+                print(f"[SIGNAL] Restart script launched: {script}")
+                time.sleep(2)
+                os._exit(0)
+        print("[SIGNAL] No restart script found — cannot restart")
+
+    def _handle_sigusr2(*_):
+        """SIGUSR2 = full uninstall (runs uninstall.sh)."""
+        print("[SIGNAL] SIGUSR2 received — running uninstall script...")
+        import subprocess
+        uninstall_script = os.path.join(os.path.dirname(ANK_DIR), "ank", "scripts", "uninstall.sh")
+        # Fallback: try known locations
+        for candidate in [
+            uninstall_script,
+            "/data/adb/modules/ank/scripts/uninstall.sh",
+            os.path.join(ANK_DIR, "uninstall.sh"),
+        ]:
+            if os.path.isfile(candidate):
+                subprocess.Popen(["sh", candidate], stdout=open(os.path.join(ANK_DIR, "logs", "uninstall.log"), "w"), stderr=subprocess.STDOUT)
+                return
+        print("[SIGNAL] No uninstall script found")
+
     signal.signal(signal.SIGINT, lambda *_: sys.exit(0))
-    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+    signal.signal(signal.SIGTERM, _handle_sigusr1)
+    signal.signal(signal.SIGUSR1, _handle_sigusr1)
+    signal.signal(signal.SIGUSR2, _handle_sigusr2)
+    signal.signal(signal.SIGHUP, _handle_sighup)
     print(f"Ank Container Engine v2.0.0")
     print(f"Starting server on 0.0.0.0:{PORT}...")
 
