@@ -432,9 +432,22 @@ def _ankd_port_open(name):
         return None
     port = config.get("ankd_port")
     if not port:
-        # Fallback: check if ankd is running via PID
+        # Fallback: check PID, then try common ankd ports
         pid_alive = _pid_alive(name)
-        return bool(pid_alive) if pid_alive is not None else None
+        if pid_alive:
+            return True
+        # Try common ankd ports as last resort
+        for fallback_port in [50000, 50001, 50002]:
+            try:
+                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                s.settimeout(1)
+                result = s.connect_ex(("127.0.0.1", fallback_port))
+                s.close()
+                if result == 0:
+                    return True
+            except Exception:
+                pass
+        return None
     import socket
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -4910,8 +4923,9 @@ small{color:#334155}
         try:
             if not os.path.exists(path):
                 return "-"
-            out = os.popen(f'du -sb "{path}" 2>/dev/null').read().strip()
-            size = int(out.split()[0])
+            out = os.popen(f'du -sk "{path}" 2>/dev/null').read().strip()
+            size_kb = int(out.split()[0])
+            size = size_kb * 1024
             if size > 1073741824:
                 return f"{size/1073741824:.1f} GB"
             elif size > 1048576:

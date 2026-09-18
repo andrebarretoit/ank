@@ -576,7 +576,7 @@ tr:hover td { background: var(--bg-hover); }
 .terminal-dot.yellow { background: #f59e0b; }
 .terminal-dot.green { background: #10b981; }
 .terminal-title { margin-left: 8px; font-size: 12px; color: var(--text-muted); font-family: monospace; }
-.terminal-body { padding: 12px; min-height: 400px; }
+.terminal-body { padding: 12px; min-height: 400px; flex: 1; display: flex; flex-direction: column; }
 .xterm .xterm-viewport { background-color: transparent !important; }
 
 /* ═══════ EMPTY STATE ═══════ */

@@ -1105,15 +1105,32 @@ function showImageSection(section) {
       const name = document.getElementById('ankfile-name')?.value?.trim() || 'ank-build';
       const saveAsImage = document.getElementById('ankfile-save-image')?.checked || false;
       const imageName = document.getElementById('ankfile-image-name')?.value?.trim() || '';
+      const targetNode = document.getElementById('ankfile-target-node')?.value || 'local';
       if (!content) { toast('Ankfile is empty', 'error'); return; }
       if (!content.includes('FROM')) { toast('Ankfile must have a FROM instruction', 'error'); return; }
       if (saveAsImage && !imageName) { toast('Image name is required', 'error'); return; }
       if (saveAsImage && !/^[a-zA-Z0-9._-]+$/.test(imageName)) { toast('Image name: only letters, numbers, dots, dashes', 'error'); return; }
-      try { toast(`Building from Ankfile as "${name}"...`, 'info'); await api('POST', '/images/ankfile', { content, name, save_as_image: saveAsImage, image_name: imageName }); loadContainers(); if (saveAsImage) loadImages(); pollContainerStatus(name, 0); } catch (e) { toast(`Failed: ${e.message}`, 'error'); }
+      try {
+        toast(`Building from Ankfile as "${name}"...`, 'info');
+        await api('POST', '/images/ankfile', { content, name, save_as_image: saveAsImage, image_name: imageName, target_node: targetNode });
+        loadContainers();
+        if (saveAsImage) loadImages();
+        pollContainerStatus(name, 0);
+      } catch (e) { toast(`Failed: ${e.message}`, 'error'); }
     });
     document.getElementById('ankfile-save-image')?.addEventListener('change', (e) => {
       document.getElementById('ankfile-image-name-group').style.display = e.target.checked ? 'block' : 'none';
     });
+    try {
+      const d = await api('GET', '/system/dashboard');
+      const onlineNodes = (d.nodes || []).filter(n => n.status === 'online');
+      if (onlineNodes.length > 0) {
+        let opts = '<option value="local">Local</option>';
+        onlineNodes.forEach(n => { opts += `<option value="${esc(n.id)}">${esc(n.alias || n.ip)}</option>`; });
+        const nodeSelectContainer = document.getElementById('ankfile-node-select-container');
+        if (nodeSelectContainer) nodeSelectContainer.innerHTML = `<div class="form-group"><label class="form-label">Target Node</label><select class="form-input" id="ankfile-target-node">${opts}</select></div>`;
+      }
+    } catch(e) {}
     document.getElementById('ankfile-example-btn')?.addEventListener('click', () => {
       document.getElementById('ankfile-content').value = 'FROM alpine-3.20\nPASSWD ank123\nRUN apk add --allow-untrusted curl tar sqlite\nRUN mkdir -p /opt/cloudreve\nRUN curl -L https://github.com/cloudreve/cloudreve/releases/download/4.18.0/cloudreve_4.18.0_linux_armv7.tar.gz | tar xz -C /opt/cloudreve\nEXPOSE 5212\nWORKDIR /opt/cloudreve\nCMD /opt/cloudreve/cloudreve';
       document.getElementById('ankfile-name').value = 'cloudreve';
@@ -1382,7 +1399,7 @@ async function sendPairingRequest() {
     { id: 'port', label: 'Port', type: 'text', value: '8001' },
     { id: 'user', label: 'Username', type: 'text', value: 'admin' },
     { id: 'password', label: 'Password', type: 'text' },
-    { id: 'alias', label: 'Alias', type: 'text' }
+    { id: 'alias', label: 'Alias (optional)', type: 'text', placeholder: 'Auto-fills from node name' }
   ]);
   if (!result) return;
   try { await api('POST', '/nodes/pairing/send', { ip: result.ip, port: parseInt(result.port), user: result.user || 'admin', password: result.password, alias: result.alias }); toast('Pairing request sent', 'success'); loadNodes(); } catch(e) { toast(`Failed: ${e.message}`, 'error'); }

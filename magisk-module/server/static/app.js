@@ -387,11 +387,13 @@ async function renderDashboardNodes() {
       const localStatus = await api('GET', '/status');
       const localInfo = await api('GET', '/system/info');
       totalCpu += localStatus.cpu_usage || 0;
-      totalCores += localStatus.cpu_cores || localInfo.cpu_count || 0;
-      totalMemUsed += (localInfo.mem_used_bytes || 0) / 1073741824;
-      totalMemTotal += (localInfo.mem_total_bytes || 0) / 1073741824;
-      totalDiskUsed += (localStatus.disk?.used || 0) / 1073741824;
-      totalDiskTotal += (localStatus.disk?.total || 0) / 1073741824;
+      totalCores += localStatus.cpu_cores || 0;
+      const localMemTotal = (localInfo.memory?.total_kb || 0) / 1048576;
+      const localMemAvail = (localInfo.memory?.available_kb || 0) / 1048576;
+      totalMemUsed += localMemTotal - localMemAvail;
+      totalMemTotal += localMemTotal;
+      totalDiskUsed += (localStatus.disk?.used || 0);
+      totalDiskTotal += (localStatus.disk?.total || 0);
       totalContainers += (localStatus.containers_total || 0);
       onlineCount++;
     } catch(e) {}
@@ -436,17 +438,39 @@ async function renderDashboardNodes() {
 
 /* ═══════ CONTAINERS ═══════ */
 let cachedContainers = [];
+let containersRenderedOnce = false;
 async function loadContainers() {
   const el = document.getElementById('containers-list');
   if (!el) return;
-  if (!el.children.length || el.querySelector('.empty-state') || el.querySelector('.skeleton')) {
-    el.innerHTML = '<div class="skeleton skeleton-card"></div>';
-  }
   try {
     const containers = await api('GET', '/containers/all');
     cachedContainers = Array.isArray(containers) ? containers : [];
-    renderContainers(cachedContainers, 'all');
-  } catch (e) { el.innerHTML = '<div class="empty-state"><p>Failed to load</p></div>'; }
+    if (containersRenderedOnce && cachedContainers.length > 0) {
+      updateContainersInPlace(cachedContainers);
+    } else {
+      el.innerHTML = '';
+      renderContainers(cachedContainers, 'all');
+      containersRenderedOnce = true;
+    }
+  } catch (e) { if (!containersRenderedOnce) el.innerHTML = '<div class="empty-state"><p>Failed to load</p></div>'; }
+}
+function updateContainersInPlace(containers) {
+  const el = document.getElementById('containers-list');
+  if (!el) return;
+  const cards = el.querySelectorAll('.split-list-card');
+  const names = Array.from(cards).map(c => c.dataset.name);
+  containers.forEach(c => {
+    const name = c.name || '';
+    const idx = names.indexOf(name);
+    const badge = el.querySelector(`.split-list-card[data-name="${CSS.escape(name)}"] .badge`);
+    if (badge) {
+      const newClass = getStatusBadgeClass(c.status);
+      if (badge.className !== `badge ${newClass}`) badge.className = `badge ${newClass} status-badge-animated`;
+      const label = badge.textContent;
+      const newLabel = getStatusLabel(c.status);
+      if (label !== newLabel) badge.textContent = newLabel;
+    }
+  });
 }
 
 function renderContainers(containers, nodeId) {
@@ -630,7 +654,6 @@ async function showContainerDetail(name, nodeId) {
           <div class="settings-section">
             <div class="settings-section-title"><i class="bi bi-gear"></i> General</div>
             <div class="form-group"><label class="checkbox-label" style="display:flex;align-items:center;gap:8px;cursor:pointer"><input type="checkbox" id="detail-autostart" style="width:18px;height:18px;accent-color:var(--accent)"><i class="bi bi-power" style="color:var(--accent)"></i> Autostart on boot</label></div>
-            <div class="form-group"><label class="checkbox-label" style="display:flex;align-items:center;gap:8px;cursor:pointer"><input type="checkbox" id="detail-s6" style="width:18px;height:18px;accent-color:var(--accent)"><i class="bi bi-box-seam" style="color:var(--accent)"></i> Enable s6 supervisor</label><small class="form-hint">Start s6-overlay for additional custom services</small></div>
           </div>
           <div class="settings-section">
             <div class="settings-section-title"><i class="bi bi-key"></i> Access</div>
@@ -684,14 +707,20 @@ async function showContainerDetail(name, nodeId) {
         document.getElementById(`dtab-${tab.dataset.dtab}`).classList.add('active');
         if (tab.dataset.dtab !== 'terminal') closeContainerTerminal();
         if (tab.dataset.dtab === 'terminal' && currentContainer) initContainerTerminal();
-        if (tab.dataset.dtab === 'files' && currentContainer) { fileContainerName = currentContainer.name; fileCurrentPath = '/'; closeEditor(); loadFiles(); }
+        if (tab.dataset.dtab === 'files' && currentContainer) {
+          if (currentContainer.status !== 'running') {
+            const fileContent = document.getElementById('dtab-files');
+            if (fileContent) fileContent.innerHTML = '<div style="text-align:center;padding:40px 20px;color:var(--text-muted)"><i class="bi bi-folder2-open" style="font-size:2rem;display:block;margin-bottom:12px;opacity:0.3"></i><div style="font-size:13px">Start the container to access its filesystem</div></div>';
+            return;
+          }
+          fileContainerName = currentContainer.name; fileCurrentPath = '/'; closeEditor(); loadFiles();
+        }
         if (tab.dataset.dtab === 'services' && currentContainer) loadTaskManager();
       });
     });
 
     // Populate settings form
     document.getElementById('detail-autostart').checked = c.autostart || false;
-    document.getElementById('detail-s6').checked = c.s6 || false;
     document.getElementById('detail-mem-limit').value = c.resources?.memory_limit || '256M';
     document.getElementById('detail-cpu-limit').value = c.resources?.cpu_limit_percent || 50;
     document.getElementById('detail-ssh-port').value = c.ssh_port || '';
@@ -718,7 +747,6 @@ async function showContainerDetail(name, nodeId) {
       try {
         const updateData = {
           autostart: document.getElementById('detail-autostart').checked,
-          s6: document.getElementById('detail-s6').checked,
           resources: { memory_limit: document.getElementById('detail-mem-limit').value, cpu_limit_percent: parseInt(document.getElementById('detail-cpu-limit').value) },
           serves_static: document.getElementById('detail-serves-static').checked,
           static_path: document.getElementById('detail-static-path').value || ''
@@ -1120,14 +1148,12 @@ function showImageDetail(name, node) {
 }
 
 async function pullImage() {
-  let versions = ['3.20', '3.19', '3.18'];
-  try { const v = await api('GET', '/images/alpine-versions'); if (Array.isArray(v) && v.length) versions = v; } catch(e) {}
-  const versionOpts = versions.map(v => `<option value="${esc(v)}">Alpine ${esc(v)}</option>`).join('');
   const result = await customModal('Pull Image', [
-    { id: 'version', label: 'Alpine Version', type: 'select', options: versionOpts }
+    { id: 'version', label: 'Alpine Version', type: 'text', value: '3.20', hint: 'Enter version: 3.18, 3.19, 3.20, 3.21, 3.22, etc.' }
   ]);
   if (!result) return;
-  const version = result.version;
+  const version = result.version.trim();
+  if (!/^\d+\.\d+$/.test(version)) { toast('Invalid version format (e.g. 3.20)', 'error'); return; }
   const pullId = `pull-${Date.now()}`;
   document.body.insertAdjacentHTML('beforeend', `<div class="modal-overlay active" id="${pullId}"><div class="modal-card" style="max-width:560px"><div class="modal-header"><h3>Pulling Alpine ${esc(version)}</h3><button class="modal-close" onclick="document.getElementById('${pullId}').remove()">&times;</button></div><div class="modal-body"><pre class="log-output" id="${pullId}-log" style="min-height:180px;max-height:400px;overflow:auto"></pre></div><div class="modal-footer"><button class="btn btn-ghost" onclick="document.getElementById('${pullId}').remove()">Close</button></div></div></div>`);
   const logEl = document.getElementById(`${pullId}-log`);
@@ -1489,7 +1515,8 @@ async function loadBackups() {
   try {
     const data = await api('GET', '/backups');
     const routines = data.routines || [];
-    if (!routines.length) { el.innerHTML = '<div class="empty-state"><i class="bi bi-cloud-arrow-up"></i><h3>No backups</h3><p>Create a backup routine</p></div>'; return; }
+    if (!routines.length) { el.innerHTML = '<div class="empty-state"><i class="bi bi-cloud-arrow-up"></i><h3>No backup routines</h3><p>Backups require an SSH host configuration</p></div>'; const btn = document.getElementById('btn-create-backup'); if (btn) btn.style.display = 'none'; return; }
+    const btn = document.getElementById('btn-create-backup'); if (btn) btn.style.display = '';
     el.innerHTML = routines.map(r => {
       const lastRun = r.last_run ? new Date(r.last_run).toLocaleString() : 'Never';
       const statusColor = r.last_status === 'success' ? 'var(--success)' : r.last_status === 'failed' ? 'var(--danger)' : 'var(--text-muted)';
@@ -1736,6 +1763,7 @@ function showSettingsSection(section) {
         <div class="info-item"><span class="info-label">Total Used</span><span id="info-total-size">${info.total_size||'-'}</span></div>
         <div class="info-item"><span class="info-label">Device Free</span><span id="info-device-free">${info.device_free||'-'}</span></div>
       </div>
+      <button class="btn btn-ghost" style="margin-top:12px" onclick="refreshCacheInfo()"><i class="bi bi-arrow-clockwise"></i> Refresh</button>
     </div></div>`;
   } else if (section === 'about') {
     const sysInfo = settingsInfo || {};
@@ -1775,6 +1803,14 @@ async function loadSettings() {
   refreshSeconds = parseInt(settingsConfig.refresh_interval != null ? settingsConfig.refresh_interval : localStorage.getItem('ank_refresh') || '10');
   localStorage.setItem('ank_refresh', refreshSeconds);
   showSettingsSection('account');
+}
+
+async function refreshCacheInfo() {
+  try {
+    settingsInfo = await api('GET', '/system/info');
+    showSettingsSection('cache');
+    toast('Cache info updated', 'success');
+  } catch(e) { toast('Failed to refresh', 'error'); }
 }
 
 async function saveRemoteSSHSettings() {
