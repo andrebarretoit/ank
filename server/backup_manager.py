@@ -8,6 +8,7 @@ import datetime
 import hashlib
 import hmac
 import shlex
+import shutil
 
 ANK_DIR = os.environ.get("ANK_DIR", "/data/local/ank")
 BACKUPS_DIR = os.path.join(ANK_DIR, "backups")
@@ -221,21 +222,138 @@ class BackupManager:
             return ""
 
     def test_connection(self, remote_config):
-        host = shlex.quote(str(remote_config.get("host", "")))
-        port = shlex.quote(str(remote_config.get("port", 22)))
-        user = shlex.quote(str(remote_config.get("user", "root")))
-        password = shlex.quote(str(remote_config.get("password", "")))
-        cmd = (
-            f"sshpass -e ssh -p {port} "
-            f"-o ConnectTimeout=5 -o StrictHostKeyChecking=no "
-            f"{user}@{host} echo ok"
-        )
-        result = subprocess.run(
-            ["/system/bin/sh", "-c", cmd],
-            capture_output=True, text=True, timeout=15,
-            env={**os.environ, "SSHPASS": remote_config.get("password", "")}
-        )
-        return result.returncode == 0 and "ok" in result.stdout
+        """Test SSH connectivity to a remote backup target.
+
+        Returns a rich result dict:
+          {"ok": bool, "reason": str, "exit_code": int or None,
+           "stderr_tail": str, "timed_out": bool}
+        """
+        def _result(ok, reason, exit_code=None, stderr_tail="", timed_out=False):
+            return {
+                "ok": ok,
+                "reason": reason,
+                "exit_code": exit_code,
+                "stderr_tail": (stderr_tail or "")[-200:],
+                "timed_out": timed_out,
+            }
+
+        host = str(remote_config.get("host", "")).strip()
+        try:
+            port = int(str(remote_config.get("port", 22)).strip() or "22")
+        except (TypeError, ValueError):
+            return _result(False, "invalid port number", None, str(remote_config.get("port", "")))
+        if not host:
+            return _result(False, "host is empty")
+        user = str(remote_config.get("user", "root")).strip() or "root"
+        password = str(remote_config.get("password", ""))
+        target = host if "@" in host else f"{user}@{host}"
+
+        rootfs = os.path.join(ANK_DIR, "ankfs")
+        rootfs_sshpass = os.path.join(rootfs, "usr", "bin", "sshpass")
+        sshpass_bin = shutil.which("sshpass")
+        use_chroot = False
+        if not sshpass_bin:
+            # On-device: server runs on the Android host (musl-loaded python, NOT chrooted),
+            # so sshpass/ssh (Alpine musl binaries inside ankfs) are not on PATH and cannot
+            # be exec'd directly (ELF interpreter /lib/ld-musl-*.so.1 is missing on host).
+            # Run them chrooted into ankfs, like the rest of the codebase does.
+            if os.path.isfile(rootfs_sshpass):
+                use_chroot = True
+            else:
+                return _result(False, "sshpass not found on device (missing in ankfs rootfs)")
+
+        # argv list (no shell) — no quoting/injection issues; flags avoid the first-connection
+        # host-key prompt hang and bound the connect phase.
+        ssh_args = [
+            "-p", str(port),
+            "-o", "StrictHostKeyChecking=no",
+            "-o", "UserKnownHostsFile=/dev/null",
+            "-o", "ConnectTimeout=10",
+            "-o", "BatchMode=no",
+            target,
+            "echo", "__ANK_OK__",
+        ]
+        env = {**os.environ, "SSHPASS": password}
+        run_kwargs = {"capture_output": True, "text": True, "timeout": 30, "env": env}
+
+        try:
+            if use_chroot:
+                env["PATH"] = "/usr/sbin:/usr/bin:/sbin:/bin"  # inside the ankfs chroot
+                env["HOME"] = "/root"
+                chroot_bin = shutil.which("chroot")
+                if not chroot_bin:
+                    for cand in ("/system/bin/chroot", "/system/xbin/chroot", "/sbin/chroot"):
+                        if os.path.isfile(cand) and os.access(cand, os.X_OK):
+                            chroot_bin = cand
+                            break
+                if chroot_bin:
+                    result = subprocess.run(
+                        [chroot_bin, rootfs, "/usr/bin/sshpass", "-e", "ssh"] + ssh_args,
+                        **run_kwargs
+                    )
+                else:
+                    # No chroot binary available — chroot ourselves in the child before exec.
+                    def _preexec(rootfs_path=rootfs):
+                        os.chroot(rootfs_path)
+                        os.chdir("/")
+                    result = subprocess.run(
+                        ["/usr/bin/sshpass", "-e", "ssh"] + ssh_args,
+                        preexec_fn=_preexec, **run_kwargs
+                    )
+            else:
+                result = subprocess.run(
+                    [sshpass_bin, "-e", "ssh"] + ssh_args,
+                    **run_kwargs
+                )
+        except subprocess.TimeoutExpired:
+            return _result(False, "timed out — host unreachable or sshd not responding",
+                           124, "", timed_out=True)
+        except (OSError, ValueError) as e:
+            # ValueError: preexec_fn unsupported on this platform
+            return _result(False, f"could not run sshpass: {e}", None, str(e))
+
+        exit_code = result.returncode
+        stderr_tail = (result.stderr or result.stdout or "").strip()
+        ok = exit_code == 0 and "__ANK_OK__" in (result.stdout or "")
+        if ok:
+            return _result(True, "connected", exit_code, stderr_tail)
+        return _result(False, self._map_ssh_failure(exit_code, stderr_tail), exit_code, stderr_tail)
+
+    @staticmethod
+    def _map_ssh_failure(exit_code, stderr):
+        """Map ssh/sshpass exit codes and stderr text to a short human reason."""
+        low = (stderr or "").lower()
+        if "permission denied" in low or "incorrect password" in low or "authentication failed" in low:
+            return "authentication failed — wrong user or password"
+        if "connection refused" in low:
+            return "connection refused — wrong port or sshd not running on target"
+        if ("could not resolve hostname" in low or "name or service not known" in low
+                or "temporary failure in name resolution" in low or "nodename nor servname" in low):
+            return "host not resolved — check hostname/DNS"
+        if "connection timed out" in low or "no route to host" in low or "connection reset" in low:
+            return "host unreachable — connection timed out"
+        if "host key verification failed" in low:
+            return "host key verification failed"
+        if "posix_openpt" in low or "/dev/ptmx" in low or "failed to create pty" in low:
+            return "sshpass could not allocate a pty (/dev/ptmx or devpts missing in ankfs)"
+        if "chroot" in low and ("operation not permitted" in low or "permission denied" in low):
+            return "chroot failed — insufficient permissions"
+        if "not found" in low and ("sshpass" in low or low.endswith("ssh: not found")):
+            return "sshpass/ssh not found on device"
+        code_map = {
+            1: "ssh connection or authentication failed (exit 1)",
+            2: "ssh usage/option error (exit 2)",
+            5: "wrong password or connection refused (exit 5)",
+            6: "no password or host not resolved (exit 6)",
+            124: "connection timed out — host unreachable (exit 124)",
+            125: "ssh failed to start (exit 125)",
+            126: "sshpass/ssh not executable (exit 126)",
+            127: "sshpass or ssh not found on device (exit 127)",
+            255: "ssh could not connect or authenticate (exit 255)",
+        }
+        if exit_code in code_map:
+            return code_map[exit_code]
+        return f"ssh failed with exit code {exit_code}"
 
     def list_remote_files(self, remote_config, path=""):
         base = remote_config.get("path", "/backups/ank").rstrip("/")

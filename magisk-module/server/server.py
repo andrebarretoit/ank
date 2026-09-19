@@ -34,8 +34,39 @@ except ImportError:
     HAS_LITE = False
 
 _port_lock = threading.Lock()
+_ankd_heal_lock = threading.Lock()
 _build_lock = threading.Lock()
 _building = False
+
+# ============================================================
+# Password hashing (pbkdf2-sha256)
+# ============================================================
+
+def _hash_password(password):
+    """Hash password with pbkdf2-sha256. Returns hash string for storage."""
+    import hashlib as _hl
+    salt = secrets.token_bytes(16)
+    dk = _hl.pbkdf2_hmac("sha256", password.encode(), salt, 100000)
+    return f"$pbkdf2$100000${salt.hex()}${dk.hex()}"
+
+def _verify_password(password, stored):
+    """Verify password against stored hash. Falls back to plaintext comparison for backward compat."""
+    if not stored:
+        return password == ""
+    if stored.startswith("$pbkdf2$"):
+        try:
+            parts = stored.split("$")
+            iterations = int(parts[2])
+            salt = bytes.fromhex(parts[3])
+            expected = bytes.fromhex(parts[4])
+            import hashlib as _hl
+            dk = _hl.pbkdf2_hmac("sha256", password.encode(), salt, iterations)
+            import hmac as _hmac
+            return _hmac.compare_digest(dk, expected)
+        except Exception:
+            return False
+    return password == stored
+
 _pull_status = {}  # version -> {"state": "pulling|building|done|error", "output": [...], "error": ""}
 
 # --- Container status debouncing -------------------------------------------
@@ -50,8 +81,11 @@ _pull_status = {}  # version -> {"state": "pulling|building|done|error", "output
 _status_lock = threading.Lock()
 _status_fail_counts = {}     # name -> consecutive failed-check count
 _status_grace_until = {}     # name -> monotonic() time before which checks are skipped
+_container_state_locks = {}  # name -> threading.Lock for serializing start/stop/restart
+_container_state_locks_lock = threading.Lock()  # protects _container_state_locks dict
 STATUS_FAIL_THRESHOLD = 5    # consecutive failures required before flipping to stopped
 STATUS_GRACE_SECONDS = 30    # skip checks for this long right after a start
+ANKD_HEALTH_FILE_MAX_AGE = 60  # ankd rewrites /tmp/ank-health every ~3s; older = stale
 
 ANK_DIR = os.environ.get("ANK_DIR", "/data/local/ank")
 ANK_SDCARD = "/sdcard/AndroidKonteiner"
@@ -253,58 +287,137 @@ def save_container_config(name, config):
 def _ank_find_service_uuid(container_name, service_name):
     """Find a service's uuid by scanning generated scripts in
     merged/etc/ankd/services/ for '<uuid>-<service_name>.sh'.
-    Also checks the .ankd files in services.d/ to resolve service
-    names when the generated script uses the NAME field."""
+    Service definitions live in merged/etc/ankd/services.d/ named
+    'NN-<name>.ankd' (numeric order prefix, e.g. 01-sshd.ankd) or
+    '<name>.ankd'; the prefix is stripped and the NAME= field is
+    compared so this can never resolve a different service's (or a
+    stale/legacy) pgid file."""
     merged = os.path.join(CONTAINERS_DIR, container_name, "merged")
     generated_dir = os.path.join(merged, "etc", "ankd", "services")
     services_d = os.path.join(merged, "etc", "ankd", "services.d")
-    # Pass 1: direct match on generated script filename
+    pids_dir = os.path.join(merged, "etc", "ankd", "pids")
+    # Candidate uuids: generated scripts whose filename is
+    # '<uuid>-<service_name>.sh' (uuids are hex, service names may
+    # contain dashes, so split on the FIRST dash only).
+    candidates = []
     try:
-        for f in os.listdir(generated_dir):
+        for f in sorted(os.listdir(generated_dir)):
             if f.endswith(f"-{service_name}.sh"):
-                return f.split("-", 1)[0]
+                candidates.append(f.split("-", 1)[0])
     except OSError:
         pass
-    # Pass 2: resolve service NAME from .ankd files, then match
+    if not candidates:
+        return None
+    # Is the service still defined in services.d? Match by stripping
+    # the numeric order prefix ('01-sshd.ankd' -> 'sshd') or by the
+    # NAME= field, so 'sshd' resolves to 01-sshd.ankd.
+    defined = False
     try:
-        for ank_file in os.listdir(services_d):
+        for ank_file in sorted(os.listdir(services_d)):
             if not ank_file.endswith(".ankd"):
                 continue
-            ank_path = os.path.join(services_d, ank_file)
+            stem = ank_file[:-len(".ankd")]
+            stripped = stem.split("-", 1)[1] if "-" in stem else stem
+            if stripped == service_name or stem == service_name:
+                defined = True
+                break
             try:
-                with open(ank_path) as af:
+                with open(os.path.join(services_d, ank_file)) as af:
                     for line in af:
-                        if line.startswith("NAME="):
-                            name_val = line.split("=", 1)[1].strip()
-                            if name_val == service_name:
-                                # Extract order prefix from .ankd filename (e.g. "01-sshd.ankd" -> "01")
-                                order = ank_file.split("-")[0] if "-" in ank_file else ""
-                                # Look for matching generated script with same order prefix
-                                for f in os.listdir(generated_dir):
-                                    if f.startswith(order + "-") and f.endswith(".sh"):
-                                        return f.split("-", 1)[0]
+                        if line.startswith("NAME=") and line.split("=", 1)[1].strip() == service_name:
+                            defined = True
+                            break
             except OSError:
                 continue
+            if defined:
+                break
     except OSError:
         pass
-    return None
+    if not defined:
+        # Definition already deleted (service delete leaves generated
+        # scripts behind until the ankd daemon cleans them up) — the
+        # suffix match is all we have for a cleanup kill.
+        return candidates[0]
+    if len(candidates) == 1:
+        return candidates[0]
+    # Multiple generations of generated scripts for the same name:
+    # prefer a uuid whose recorded pgid is alive so a stale script
+    # (whose pgid file may hold a recycled pid) never wins.
+    for uuid in candidates:
+        try:
+            with open(os.path.join(pids_dir, f"{uuid}.pgid")) as pf:
+                pgid = int(pf.read().strip())
+            os.kill(pgid, 0)
+            return uuid
+        except (OSError, ValueError, ProcessLookupError, PermissionError):
+            continue
+    return candidates[0]
 
-def _ank_stop_service_pgid(container_name, service_name):
-    """Stop a single service by reading its pgid from the registry ankd
-    keeps at merged/etc/ankd/pids/<uuid>.pgid (real disk, host-visible,
-    no bind mount needed). Every ankd service is started via setsid, so
-    the recorded pid is simultaneously its process-group id: os.killpg
-    takes down the master and every forked child (e.g. nginx workers) in
-    one call, with no ps/pgrep subprocess calls and no /proc scanning."""
+def _ank_stop_service_pgid(container_name, service_name, mark_stopped=True):
+    """Host-side FALLBACK stop for a single service: reads its pgid from
+    the registry ankd keeps at merged/etc/ankd/pids/<uuid>.pgid and
+    killpgs it. Guarded, because the old blind killpg took whole
+    containers down:
+      * writes a stop-flag (merged/etc/ankd/stopped/<name>) so the ankd
+        daemon's RESTART_POLICY=always loop doesn't resurrect the
+        service, unless mark_stopped=False (restart fallback relies on
+        the daemon restarting it);
+      * refuses to kill unless the recorded pgid is alive AND its
+        /proc/<pid>/root resolves inside this container's merged
+        rootfs — a recycled pid or a PID-namespace-local pgid
+        (isolated/shared_network containers record namespaced pids,
+        which mean something entirely different on the host) is never
+        signalled. The primary stop path is the in-container signal
+        mode (ankd.sh ankd.servicestart/servicestop)."""
+    merged = os.path.join(CONTAINERS_DIR, container_name, "merged")
+    if mark_stopped:
+        try:
+            stopped_dir = os.path.join(merged, "etc", "ankd", "stopped")
+            os.makedirs(stopped_dir, exist_ok=True)
+            with open(os.path.join(stopped_dir, service_name), "w") as f:
+                f.write("manual-stop\n")
+        except OSError:
+            pass
     uuid = _ank_find_service_uuid(container_name, service_name)
     if not uuid:
         return False
-    pgid_file = os.path.join(CONTAINERS_DIR, container_name, "merged", "etc", "ankd", "pids", f"{uuid}.pgid")
+    pgid_file = os.path.join(merged, "etc", "ankd", "pids", f"{uuid}.pgid")
     try:
         with open(pgid_file) as f:
             pgid = int(f.read().strip())
     except (OSError, ValueError):
         return False
+    # Guard 1: the recorded pgid must be alive at all.
+    alive = False
+    try:
+        os.kill(pgid, 0)
+        alive = True
+    except ProcessLookupError:
+        alive = False
+    except PermissionError:
+        alive = True  # exists but not probed by us; try the kill anyway
+    except OSError:
+        alive = False  # e.g. EINVAL/EPERM oddities — refuse to guess
+    if not alive:
+        # dead entry — clean the registry so future lookups don't reuse it
+        try:
+            os.remove(pgid_file)
+        except OSError:
+            pass
+        return False
+    # Guard 2: a live pid must be a process of THIS container (services
+    # run chrooted into merged/). Anything else means the pid was
+    # recycled or is a namespaced pid misread from the host — killpg
+    # on it could hit the container init group and take the whole
+    # container down. The in-container signal path handles those cases.
+    try:
+        proc_root = os.path.realpath(f"/proc/{pgid}/root")
+    except OSError:
+        proc_root = None
+    if proc_root:
+        merged_real = os.path.realpath(merged)
+        if proc_root != merged_real and not proc_root.startswith(merged_real + os.sep):
+            return False  # refused — not provably ours
     try:
         os.killpg(pgid, signal.SIGKILL)
     except ProcessLookupError:
@@ -429,9 +542,13 @@ def _pid_alive(name):
 
 
 def _health_file_status(name):
-    """Health file written by ankd (UP/DOWN). Runs inside container."""
+    """Health file written by ankd (UP/DOWN) every ~3s. Runs inside container.
+    A file older than ANKD_HEALTH_FILE_MAX_AGE is stale (daemon stopped
+    writing) and is treated as unknown, not as proof of life."""
     health_path = os.path.join(CONTAINERS_DIR, name, "merged", "tmp", "ank-health")
     try:
+        if time.time() - os.path.getmtime(health_path) > ANKD_HEALTH_FILE_MAX_AGE:
+            return None
         with open(health_path, "r") as f:
             status = f.read().strip()
         return status == "UP"
@@ -516,6 +633,14 @@ def should_mark_stopped(name):
         count = _status_fail_counts.get(name, 0) + 1
         _status_fail_counts[name] = count
         return count >= STATUS_FAIL_THRESHOLD
+
+
+def _get_container_lock(name):
+    """Get or create a per-container threading lock to serialize state transitions."""
+    with _container_state_locks_lock:
+        if name not in _container_state_locks:
+            _container_state_locks[name] = threading.Lock()
+        return _container_state_locks[name]
 
 
 def note_container_started(name):
@@ -1430,9 +1555,12 @@ small{color:#334155}
 
     def do_OPTIONS(self):
         self.send_response(204)
-        self.send_header("Access-Control-Allow-Origin", "*")
+        origin = self.headers.get("Origin", "")
+        if origin and origin != "null":
+            self.send_header("Access-Control-Allow-Origin", origin)
         self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-ANK-Client")
+        self.send_header("Access-Control-Allow-Credentials", "true")
         self.send_security_headers()
         self.end_headers()
 
@@ -2013,7 +2141,12 @@ small{color:#334155}
             self.api_files_delete(name, qs)
             return
         parts = path.split("/")
-        if len(parts) >= 4 and parts[2] == "containers":
+        if len(parts) >= 6 and parts[2] == "containers" and parts[4] == "services":
+            # DELETE /api/containers/<name>/services/<service> — must be
+            # routed to the service delete, NOT to api_delete_container
+            # (which used to swallow it and delete the WHOLE container).
+            self.api_service_action(parts[3], parts[5], "delete")
+        elif len(parts) >= 4 and parts[2] == "containers":
             self.api_delete_container(parts[3])
         elif len(parts) >= 4 and parts[2] == "networks":
             self.api_delete_network(parts[3])
@@ -2040,10 +2173,17 @@ small{color:#334155}
             self.send_error(429, "Too many login attempts. Try again later.")
             return
 
+        if not isinstance(data, dict):
+            self.send_error(400, "Request body must be a JSON object")
+            return
+
         config = load_config()
         user = data.get("username", "")
         pwd = data.get("password", "")
-        if user == config.get("username") and pwd == config.get("password"):
+        if not user or not pwd:
+            self.send_error(400, "Username and password are required")
+            return
+        if user == config.get("username") and _verify_password(pwd, config.get("password", "")):
             token = _create_token(user)
             self.send_json({
                 "success": True,
@@ -2058,7 +2198,7 @@ small{color:#334155}
     def api_change_password(self, data):
         config = load_config()
         current = data.get("current_password", "")
-        if current != config.get("password"):
+        if not _verify_password(current, config.get("password", "")):
             self.send_error(401, "Current password incorrect")
             return
         new_user = data.get("username") or config.get("username")
@@ -2067,7 +2207,7 @@ small{color:#334155}
             self.send_error(400, "Password must be at least 6 characters")
             return
         config["username"] = new_user
-        config["password"] = new_pass
+        config["password"] = _hash_password(new_pass)
         config["first_boot"] = False
         save_config(config)
         try:
@@ -2146,18 +2286,43 @@ small{color:#334155}
         self.send_json(result)
 
     def api_container_health(self, name):
-        """Dual health check: SSH port + ankd port. Returns status and which probe responded."""
+        """Health check: SSH port + ankd port + ankd health file.
+        Returns status and which probes responded."""
         config = load_container_config(name)
         if not config:
             self.send_json({"error": "not found"}, 404)
             return
         ssh_ok = _sshd_port_open(name)
-        ankd_ok = _ankd_port_open(name)
-        pid_alive = _pid_alive(name)
-        # If ankd port not configured, infer from PID + SSH
         ankd_port = config.get("ankd_port")
-        if ankd_ok is None and not ankd_port:
-            ankd_ok = bool(pid_alive) if pid_alive is not None else False
+        ankd_ok = _ankd_port_open(name)
+        ankd_port_probed = ankd_ok is True
+        health_up = _health_file_status(name)
+        pid_alive = _pid_alive(name)
+
+        if not ankd_port and (ankd_ok or ssh_ok or health_up or pid_alive):
+            ankd_port = self._heal_ankd_port(name)
+
+        if ankd_ok is None:
+            # No ankd port configured: infer daemon liveness from host-visible
+            # evidence. The health file is written by ankd itself every ~3s;
+            # pid alive + ssh answering means the init process ankd started
+            # is still up.
+            if health_up:
+                ankd_ok = True
+            elif pid_alive and ssh_ok:
+                ankd_ok = True
+            elif health_up is False and pid_alive is False:
+                ankd_ok = False
+            else:
+                ankd_ok = bool(pid_alive) if pid_alive is not None else False
+        elif not ankd_ok:
+            # Port configured but TCP probe failed. The listener can be
+            # unreachable from host loopback (isolated netns without port
+            # forwarding, nc restart gap, non-busybox nc) while the daemon
+            # itself is alive: the health file is secondary evidence.
+            if health_up and (ssh_ok or pid_alive):
+                ankd_ok = True
+
         if ssh_ok and ankd_ok:
             status = "running"
         elif ankd_ok:
@@ -2175,8 +2340,32 @@ small{color:#334155}
             "ssh_alive": ssh_ok,
             "ankd_port": ankd_port,
             "ankd_alive": ankd_ok,
+            "ankd_port_probed": ankd_port_probed,
+            "ankd_health_file": health_up,
             "pid_alive": pid_alive
         })
+
+    def _heal_ankd_port(self, name):
+        """Self-heal legacy containers created before per-container ankd ports
+        existed: allocate a free port and persist it to config.json so future
+        starts pass it into the container (container.sh reads it) and health
+        checks can probe TCP directly. Serialized to keep two concurrent
+        health checks from allocating the same port."""
+        with _ankd_heal_lock:
+            try:
+                config = load_container_config(name)
+                if not config:
+                    return None
+                if config.get("ankd_port"):
+                    return config["ankd_port"]
+                port = int(self._find_free_ankd_port())
+                config["ankd_port"] = port
+                save_container_config(name, config)
+                log(f"[HEALTH] {name}: allocated ankd_port {port} (legacy container)")
+                return port
+            except Exception as e:
+                log(f"[HEALTH] {name}: ankd_port self-heal failed: {e}")
+                return None
 
     def api_container_inspect(self, name):
         config = load_container_config(name)
@@ -2216,7 +2405,14 @@ small{color:#334155}
         if not ssh_port:
             ssh_port = self._find_free_port(2201)
         else:
-            ssh_port = int(ssh_port)
+            try:
+                ssh_port = int(ssh_port)
+                if ssh_port < 1 or ssh_port > 65535:
+                    self.send_error(400, "ssh_port must be between 1 and 65535")
+                    return
+            except (ValueError, TypeError):
+                self.send_error(400, "ssh_port must be a valid integer")
+                return
 
         ankd_port = self._find_free_ankd_port()
 
@@ -2323,13 +2519,17 @@ small{color:#334155}
         self.send_json({"message": f"Container '{name}' creating", "name": name, "ssh_port": ssh_port}, 201)
 
     def api_start_container(self, name):
-        config = load_container_config(name)
-        if not config:
-            self.send_error(404, f"Container '{name}' not found")
-            return
-        # Write status BEFORE spawning thread to avoid race condition
-        config["status"] = "starting"
-        save_container_config(name, config)
+        state_lock = _get_container_lock(name)
+        with state_lock:
+            config = load_container_config(name)
+            if not config:
+                self.send_error(404, f"Container '{name}' not found")
+                return
+            if config.get("status") in ("starting", "stopping"):
+                self.send_error(409, f"Container '{name}' is already {config.get('status')}")
+                return
+            config["status"] = "starting"
+            save_container_config(name, config)
 
         # --- LITE MODE ---
         if is_lite():
@@ -2399,14 +2599,18 @@ small{color:#334155}
         self.send_json({"message": f"Container '{name}' starting"})
 
     def api_stop_container(self, name):
-        config = load_container_config(name)
-        if not config:
-            self.send_error(404, f"Container '{name}' not found")
-            return
-        # Write status BEFORE spawning thread
-        config["status"] = "stopping"
-        save_container_config(name, config)
-        note_container_stopped(name)
+        state_lock = _get_container_lock(name)
+        with state_lock:
+            config = load_container_config(name)
+            if not config:
+                self.send_error(404, f"Container '{name}' not found")
+                return
+            if config.get("status") in ("starting", "stopping"):
+                self.send_error(409, f"Container '{name}' is already {config.get('status')}")
+                return
+            config["status"] = "stopping"
+            save_container_config(name, config)
+            note_container_stopped(name)
 
         # --- LITE MODE ---
         if is_lite():
@@ -2646,15 +2850,51 @@ small{color:#334155}
         if not config:
             self.send_error(404, f"Container '{name}' not found")
             return
-        instance_uuid = config.get("instance_uuid", name)
+        if not service or not all(c.isalnum() or c in "-_." for c in service):
+            self.send_error(400, "Invalid service name")
+            return
         services_dir = os.path.join(CONTAINERS_DIR, name, "merged", "etc", "ankd", "services.d")
-        ank_file = os.path.join(services_dir, f"{service}.ankd")
-        if action != "delete" and not os.path.exists(ank_file):
+        # Service definitions are named 'NN-<service>.ankd' (numeric
+        # order prefix, e.g. 01-sshd.ankd) or plain '<service>.ankd' —
+        # resolve by stripping the prefix. The old f"{service}.ankd"
+        # lookup 404'd every prefixed service and sent stop down the
+        # wrong path.
+        ank_file = None
+        if os.path.isdir(services_dir):
+            for f in sorted(os.listdir(services_dir)):
+                if not f.endswith(".ankd"):
+                    continue
+                stem = f[:-len(".ankd")]
+                stripped = stem.split("-", 1)[1] if "-" in stem else stem
+                if stripped == service or stem == service:
+                    ank_file = os.path.join(services_dir, f)
+                    break
+        if action != "delete" and not ank_file:
             self.send_error(404, f"Service '{service}' not found")
             return
         if action == "delete":
-            if os.path.exists(ank_file):
-                os.remove(ank_file)
+            # Kill the service first (signal mode + guarded host kill),
+            # THEN remove the definition. Generated scripts and pgid
+            # files are left for the ankd daemon's ctl handler, which
+            # may still need the pgid file to reach a service inside a
+            # PID namespace; it cleans them up once the .ankd is gone.
+            def _do_service_delete():
+                try:
+                    run_script("container.sh", "exec", name,
+                               f"/usr/ankd/core/ankd.sh ankd.servicestop {service}", timeout=20)
+                except Exception as e:
+                    log(f"[SERVICE] delete {name}/{service}: stop failed: {e}")
+                _ank_stop_service_pgid(name, service)
+                try:
+                    if ank_file and os.path.exists(ank_file):
+                        os.remove(ank_file)
+                    flag = os.path.join(CONTAINERS_DIR, name, "merged", "etc", "ankd", "stopped", service)
+                    if os.path.exists(flag):
+                        os.remove(flag)
+                except OSError as e:
+                    log(f"[SERVICE] delete {name}/{service}: cleanup failed: {e}")
+            import threading
+            threading.Thread(target=_do_service_delete, daemon=True).start()
             self.send_json({"message": f"Service '{service}' deleted"})
             return
         if action == "enable":
@@ -2674,18 +2914,73 @@ small{color:#334155}
             self.send_json({"message": f"Service '{service}' disabled"})
             return
         if action == "stop":
-            _ank_stop_service_pgid(name, service)
-            self.send_json({"message": f"Service '{service}' stopped"})
-            return
-        if action in ("start", "restart"):
-            if action == "restart":
-                _ank_stop_service_pgid(name, service)
-            # Start via ankd exec — run async to avoid hanging the API
-            def _do_service_start():
+            # Stop ONLY this service via the ankd signal mode inside the
+            # container: it writes a stop-flag the daemon respects (no
+            # RESTART_POLICY=always resurrection) and kills just this
+            # service's process group. The old host-side killpg on the
+            # pgid registry nuked the whole container whenever the
+            # resolved uuid/pgid was stale or PID-namespace-local.
+            def _do_service_stop():
+                output, code = "", 1
                 try:
-                    run_script("container.sh", "exec", name, f"/usr/ankd/core/ankd.sh start {service}", timeout=30)
-                except Exception:
-                    pass
+                    output, code = run_script("container.sh", "exec", name,
+                                              f"/usr/ankd/core/ankd.sh ankd.servicestop {service}", timeout=20)
+                except Exception as e:
+                    log(f"[SERVICE] stop {name}/{service} exec failed: {e}")
+                if code != 0:
+                    log(f"[SERVICE] stop {name}/{service}: signal mode failed "
+                        f"(rc={code}: {output.strip()[:200] if output else ''})")
+                    # Guarded host-side fallback (refuses unverifiable pids)
+                    _ank_stop_service_pgid(name, service)
+                else:
+                    log(f"[SERVICE] stop {name}/{service}: {output.strip()[:200] if output else 'ok'}")
+            import threading
+            threading.Thread(target=_do_service_stop, daemon=True).start()
+            self.send_json({"message": f"Service '{service}' stopping"})
+            return
+        if action == "restart":
+            # Restart ONLY this service: stop (flag + group kill), then
+            # queue the start. Runs in a thread like stop/start; the
+            # ankd daemon performs the spawn inside the PID namespace.
+            def _do_service_restart():
+                output, code = "", 1
+                try:
+                    output, code = run_script("container.sh", "exec", name,
+                                              f"/usr/ankd/core/ankd.sh ankd.servicerestart {service}", timeout=20)
+                except Exception as e:
+                    log(f"[SERVICE] restart {name}/{service} exec failed: {e}")
+                if code != 0:
+                    log(f"[SERVICE] restart {name}/{service}: signal mode failed "
+                        f"(rc={code}: {output.strip()[:200] if output else ''})")
+                    # Fallback: kill without a stop-flag so the daemon's
+                    # restart policy brings the service back up.
+                    _ank_stop_service_pgid(name, service, mark_stopped=False)
+            import threading
+            threading.Thread(target=_do_service_restart, daemon=True).start()
+            self.send_json({"message": f"Service '{service}' restarting"})
+            return
+        if action == "start":
+            # Start via the ankd signal mode — the daemon (inside the
+            # container's PID namespace) does the actual spawn. Run in a
+            # thread like before to avoid ever hanging the API.
+            def _do_service_start():
+                output, code = "", 1
+                try:
+                    output, code = run_script("container.sh", "exec", name,
+                                              f"/usr/ankd/core/ankd.sh ankd.servicestart {service}", timeout=20)
+                except Exception as e:
+                    log(f"[SERVICE] start {name}/{service} exec failed: {e}")
+                if code != 0:
+                    log(f"[SERVICE] start {name}/{service}: signal mode failed "
+                        f"(rc={code}: {output.strip()[:200] if output else ''})")
+                    # Fallback: at least clear a stale stop-flag so the
+                    # daemon's restart policy can bring the service back.
+                    try:
+                        flag = os.path.join(CONTAINERS_DIR, name, "merged", "etc", "ankd", "stopped", service)
+                        if os.path.exists(flag):
+                            os.remove(flag)
+                    except OSError:
+                        pass
             import threading
             threading.Thread(target=_do_service_start, daemon=True).start()
             self.send_json({"message": f"Service '{service}' starting"})
@@ -2699,6 +2994,13 @@ small{color:#334155}
         lines = 50
         if data:
             lines = data.get("lines", 50)
+        try:
+            lines = int(lines)
+        except (ValueError, TypeError):
+            lines = 50
+        if not all(c.isalnum() or c in "-_." for c in service):
+            self.send_error(400, "Invalid service name")
+            return
         merged = os.path.join(CONTAINERS_DIR, name, "merged")
         log_file = os.path.join(merged, "var", "log", "ankd", f"{service}.log")
         if os.path.isfile(log_file):
@@ -2720,6 +3022,13 @@ small{color:#334155}
         config = load_container_config(name)
         if not config:
             self.send_error(404, f"Container '{name}' not found")
+            return
+        try:
+            lines = int(lines)
+        except (ValueError, TypeError):
+            lines = 50
+        if not all(c.isalnum() or c in "-_." for c in service):
+            self.send_error(400, "Invalid service name")
             return
         merged = os.path.join(CONTAINERS_DIR, name, "merged")
         log_dir = os.path.join(merged, "var", "log", "ankd")
@@ -2768,10 +3077,15 @@ small{color:#334155}
             self.send_json({"logs": output, "service": service})
 
     def api_restart_container(self, name):
-        config = load_container_config(name)
-        if not config:
-            self.send_error(404, f"Container '{name}' not found")
-            return
+        state_lock = _get_container_lock(name)
+        with state_lock:
+            config = load_container_config(name)
+            if not config:
+                self.send_error(404, f"Container '{name}' not found")
+                return
+            if config.get("status") in ("starting", "stopping"):
+                self.send_error(409, f"Container '{name}' is already {config.get('status')}")
+                return
         def do_restart():
             try:
                 cfg = load_container_config(name)
@@ -2814,6 +3128,12 @@ small{color:#334155}
         cmd = data.get("command", "")
         if not cmd:
             self.send_error(400, "Command required")
+            return
+        if not isinstance(cmd, str):
+            self.send_error(400, "Command must be a string")
+            return
+        if len(cmd) > 4096:
+            self.send_error(400, "Command too long (max 4096 characters)")
             return
         config = load_container_config(name)
         if not config or config.get("status") != "running":
@@ -2904,10 +3224,14 @@ small{color:#334155}
                 import zipfile, io, tempfile
                 try:
                     with zipfile.ZipFile(io.BytesIO(file_data)) as zf:
+                        dest_real = os.path.realpath(dest)
                         for info in zf.infolist():
                             if info.is_dir():
                                 continue
-                            out_path = os.path.join(dest, info.filename)
+                            out_path = os.path.realpath(os.path.join(dest, info.filename))
+                            if not out_path.startswith(dest_real):
+                                self.send_error(400, f"ZipSlip: path traversal detected in {info.filename}")
+                                return
                             os.makedirs(os.path.dirname(out_path), exist_ok=True)
                             with open(out_path, "wb") as f:
                                 f.write(zf.read(info.filename))
@@ -2937,8 +3261,8 @@ small{color:#334155}
 
     def _safe_path(self, merged, rel_path):
         rel_path = rel_path.lstrip("/")
-        full = os.path.normpath(os.path.join(merged, rel_path))
-        if not full.startswith(merged):
+        full = os.path.realpath(os.path.join(merged, rel_path))
+        if not full.startswith(os.path.realpath(merged)):
             return None
         return full
 
@@ -3156,11 +3480,33 @@ small{color:#334155}
         if not config:
             self.send_error(404, f"Container '{name}' not found")
             return
+        if not isinstance(data, dict):
+            self.send_error(400, "Request body must be a JSON object")
+            return
         if "resources" in data:
+            if not isinstance(data["resources"], dict):
+                self.send_error(400, "resources must be an object")
+                return
             config.setdefault("resources", {}).update(data["resources"])
         if "policies" in data:
+            if not isinstance(data["policies"], dict):
+                self.send_error(400, "policies must be an object")
+                return
             config.setdefault("policies", {}).update(data["policies"])
         if "port_mappings" in data:
+            if not isinstance(data["port_mappings"], list):
+                self.send_error(400, "port_mappings must be an array")
+                return
+            for pm in data["port_mappings"]:
+                if not isinstance(pm, dict):
+                    self.send_error(400, "Each port mapping must be an object")
+                    return
+                if "host_port" in pm:
+                    try:
+                        pm["host_port"] = int(pm["host_port"])
+                    except (ValueError, TypeError):
+                        self.send_error(400, "host_port must be an integer")
+                        return
             config["port_mappings"] = data["port_mappings"]
             # Port mirroring: update .ankd PORT= + config files
             new_port = data["port_mappings"][0]["host_port"] if data["port_mappings"] else None
@@ -3897,6 +4243,12 @@ small{color:#334155}
         if not cmd:
             self.send_error(400, "Command required")
             return
+        if not isinstance(cmd, str):
+            self.send_error(400, "Command must be a string")
+            return
+        if len(cmd) > 4096:
+            self.send_error(400, "Command too long (max 4096 characters)")
+            return
         parts = cmd.strip().split()
         if not parts:
             self.send_json({"stdout": "", "stderr": "", "code": 0})
@@ -4146,7 +4498,7 @@ small{color:#334155}
             uptime_sec = 0
             try:
                 with open("/proc/uptime", "r") as f: uptime_sec = float(f.read().split()[0])
-            except: pass
+            except (OSError, ValueError): pass
             lines = [
                 f"ANK Engine v{config.get('version','0.1')}",
                 f"Uptime:     {int(uptime_sec//3600)}h {int((uptime_sec%3600)//60)}m",
@@ -4181,7 +4533,7 @@ small{color:#334155}
                     for line in f:
                         parts = line.split()
                         if parts[0] == "MemTotal:": mem_total = int(parts[1])
-            except: pass
+            except (OSError, ValueError): pass
             lines = [
                 f"Device:     {device}",
                 f"Kernel:     {kernel}",
@@ -4988,14 +5340,54 @@ small{color:#334155}
             log(f"ANK_MANAGER: [UNINSTALL] {ts} from {client_ip} - FAILED to start uninstall: {e}")
 
     def api_ank_manager_logs(self, parsed=None):
-        """Get last N lines of server logs for real-time tail."""
-        params = parse_qs(parsed.query) if parsed else {}
-        lines = int(params.get("lines", ["100"])[0])
-        log_type = params.get("type", ["service"])[0]
+        """Get last N lines of ANK logs for real-time tail.
 
-        log_file = os.path.join(ANK_DIR, "logs", f"{log_type}.log")
+        Type mapping: "server" → logs/server.log (the LIVE server log — log() is
+        print() and service.sh/start-server.sh redirect stdout to it),
+        "service" → logs/service.log (legacy service wrapper log),
+        "install" → logs/install.log, "uninstall" → logs/uninstall.log.
+        Default type is "server".
+        """
+        params = parse_qs(parsed.query) if parsed else {}
+        try:
+            lines = max(1, min(int(params.get("lines", ["100"])[0]), 2000))
+        except (ValueError, TypeError):
+            lines = 100
+        log_type = params.get("type", ["server"])[0]
+
+        log_dir = os.path.join(ANK_DIR, "logs")
+        log_type_files = {
+            "server": "server.log",
+            "service": "service.log",
+            "install": "install.log",
+            "uninstall": "uninstall.log",
+        }
+        fname = log_type_files.get(log_type, "server.log")
+        log_file = os.path.join(log_dir, fname)
+
         if not os.path.isfile(log_file):
-            self.send_json({"lines": [], "type": log_type})
+            if fname == "server.log":
+                # Fall back to whatever this process is actually writing:
+                # log() writes via print() to stdout; if stdout is redirected
+                # to a file (service.sh/start-server.sh), tail that instead.
+                alt = None
+                try:
+                    fd1 = os.readlink("/proc/self/fd/1")
+                    if fd1 and os.path.isfile(fd1) and os.path.abspath(fd1) != os.path.abspath(log_file):
+                        alt = fd1
+                except OSError:
+                    alt = None
+                if alt:
+                    try:
+                        with open(alt, "r", errors="replace") as f:
+                            tail = f.readlines()[-lines:]
+                        self.send_json({"lines": [l.rstrip("\n") for l in tail], "type": log_type, "source": alt})
+                        return
+                    except OSError:
+                        pass
+                self.send_json({"lines": [f"[INFO] {log_file} not found yet — no live server log available (was the server started without output redirection?)"], "type": log_type})
+            else:
+                self.send_json({"lines": [], "type": log_type})
             return
 
         try:
@@ -5350,10 +5742,16 @@ small{color:#334155}
             self.send_error(400, f"Invalid tar.gz: {e}")
             return
         os.makedirs(IMAGES_DIR, exist_ok=True)
+        images_real = os.path.realpath(IMAGES_DIR)
         extracted = []
         for member in tar.getmembers():
             if member.isdir():
                 continue
+            member_path = os.path.realpath(os.path.join(IMAGES_DIR, member.name))
+            if not member_path.startswith(images_real):
+                tar.close()
+                self.send_error(400, f"TarSlip: path traversal detected in {member.name}")
+                return
             top = member.name.split("/")[0]
             if top and top not in extracted:
                 extracted.append(top)
@@ -5597,11 +5995,20 @@ small{color:#334155}
         if not sm:
             self.send_json({"error": "stack_manager not available"}, 500)
             return
+        if not isinstance(data, dict):
+            self.send_json({"error": "Request body must be a JSON object"}, 400)
+            return
         name = data.get("name", "").strip()
         template = data.get("template", data.get("image", "nginx"))
         ankfile = data.get("ankfile", "")
         if not name:
             self.send_json({"error": "name required"}, 400)
+            return
+        if len(name) > 64:
+            self.send_json({"error": "name must be 64 characters or less"}, 400)
+            return
+        if not all(c.isalnum() or c in "-_" for c in name):
+            self.send_json({"error": "name must contain only alphanumeric characters, hyphens, or underscores"}, 400)
             return
         if not template and not ankfile:
             self.send_json({"error": "template or ankfile required"}, 400)
@@ -5728,28 +6135,20 @@ small{color:#334155}
             return
         self.send_json(routine)
 
-    def api_backup_browse(self, routine_id, query):
-        from urllib.parse import parse_qs
-        params = parse_qs(query)
-        remote_path = params.get("path", ["/"])[0]
-        try:
-            bm = self._get_backup_manager()
-            if not bm:
-                self.send_json({"error": "backup_manager not available"}, 500)
-                return
-            files = bm.list_remote_files(routine_id, remote_path)
-            self.send_json({"files": files, "path": remote_path})
-        except Exception as e:
-            self.send_json({"error": str(e)}, 500)
-
     def api_create_backup_routine(self, data):
         bm = self._get_backup_manager()
         if not bm:
             self.send_json({"error": "backup_manager not available"}, 500)
             return
+        if not isinstance(data, dict):
+            self.send_json({"error": "Request body must be a JSON object"}, 400)
+            return
         name = data.get("name", "").strip()
         if not name:
             self.send_json({"error": "name required"}, 400)
+            return
+        if len(name) > 128:
+            self.send_json({"error": "name must be 128 characters or less"}, 400)
             return
         config = {
             "name": name,
@@ -5801,17 +6200,33 @@ small{color:#334155}
         if not bm:
             self.send_json({"error": "backup_manager not available"}, 500)
             return
+        if not isinstance(data, dict):
+            data = {}
+        try:
+            port = int(data.get("remote_port", data.get("port", 22)))
+        except (TypeError, ValueError):
+            port = 22
         remote = {
-            "host": data.get("remote_host", data.get("host", "")),
-            "port": int(data.get("remote_port", data.get("port", 22))),
+            "host": str(data.get("remote_host", data.get("host", ""))).strip(),
+            "port": port,
             "user": data.get("ssh_user", data.get("user", "root")),
-            "password": data.get("ssh_pass", data.get("password", "")),
+            "password": data.get("ssh_pass", data.get("password", data.get("pass", ""))),
         }
         try:
-            ok = bm.test_connection(remote)
-            self.send_json({"connected": ok})
+            result = bm.test_connection(remote)
+            if isinstance(result, dict):
+                ok = bool(result.get("ok"))
+                self.send_json({
+                    "connected": ok,
+                    "reason": result.get("reason", "connected" if ok else "connection failed"),
+                    "exit_code": result.get("exit_code"),
+                    "stderr_tail": result.get("stderr_tail", ""),
+                })
+            else:
+                ok = bool(result)
+                self.send_json({"connected": ok, "reason": "connected" if ok else "connection failed"})
         except Exception as e:
-            self.send_json({"connected": False, "error": str(e)})
+            self.send_json({"connected": False, "reason": f"test failed: {e}", "error": str(e)})
 
     def api_backup_browse(self, routine_id, query):
         from urllib.parse import parse_qs
@@ -6003,9 +6418,15 @@ small{color:#334155}
         if not nm:
             self.send_json({"error": "node_manager not available"}, 500)
             return
+        if not isinstance(data, dict):
+            self.send_json({"error": "Request body must be a JSON object"}, 400)
+            return
         ip = data.get("ip", "").strip()
         if not ip:
             self.send_json({"error": "ip required"}, 400)
+            return
+        if len(ip) > 255:
+            self.send_json({"error": "ip address too long"}, 400)
             return
         try:
             node = nm.add_node(data)
@@ -6566,10 +6987,16 @@ small{color:#334155}
             method()
             if not getattr(self, '_is_websocket', False):
                 self.wfile.flush()
+        except (ConnectionResetError, BrokenPipeError, OSError):
+            self.close_connection = True
         except TimeoutError:
             self.close_connection = True
-        except Exception:
-            pass
+        except Exception as e:
+            try:
+                log(f"[ERROR] Request handling error: {type(e).__name__}: {e}")
+            except Exception:
+                pass
+            self.close_connection = True
 
     def finish(self):
         if getattr(self, '_is_websocket', False):

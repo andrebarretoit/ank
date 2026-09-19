@@ -49,7 +49,7 @@ def _save_config(config):
     with open(CONFIG_FILE, "w") as f:
         json.dump(config, f, indent=2)
     try:
-        os.chmod(CONFIG_FILE, 0o666)
+        os.chmod(CONFIG_FILE, 0o600)
     except Exception:
         pass
 
@@ -763,7 +763,7 @@ class NodeManager:
         with open(path, "w") as f:
             json.dump(config, f, indent=2)
         try:
-            os.chmod(path, 0o666)
+            os.chmod(path, 0o600)
         except Exception:
             pass
 

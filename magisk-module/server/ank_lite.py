@@ -13,7 +13,7 @@ import subprocess
 import threading
 import socket
 import select
-from datetime import datetime
+from datetime import datetime, timezone
 
 ANK_DIR = os.environ.get("ANK_DIR", "/data/local/ank")
 CONTAINERS_DIR = os.path.join(ANK_DIR, "containers")
@@ -54,6 +54,13 @@ def _save_container_config(name, config):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w") as f:
         json.dump(config, f, indent=2)
+
+
+def _setsid_safe():
+    try:
+        return os.setsid()
+    except OSError:
+        return None
 
 
 def _is_proot_running(name):
@@ -169,7 +176,7 @@ def create_container(name, image="alpine-3.20", root_password="ank123",
         "ssh_port": int(ssh_port),
         "ankd_port": int(ankd_port),
         "pid": None,
-        "created_at": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "root_password": root_password,
         "port_mappings": [],
         "autostart": False,
@@ -226,7 +233,7 @@ def start_container(name):
             cmd,
             stdout=open(log_path, "a"),
             stderr=subprocess.STDOUT,
-            preexec_fn=os.setsid if hasattr(os, "setsid") else None,
+            preexec_fn=_setsid_safe,
         )
 
         config["pid"] = proc.pid

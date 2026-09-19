@@ -147,10 +147,28 @@ class Orchestrator:
         """Remove the least loaded container"""
         self.stack_manager.scale_down(stack_name)
 
+    @staticmethod
+    def _find_cgroup_path(container_name, *suffixes):
+        """Probe multiple cgroup path patterns to find one that exists on this kernel."""
+        prefix = f"ank-{container_name}"
+        search_bases = [
+            os.path.join("/sys/fs/cgroup/memory", prefix),
+            os.path.join("/sys/fs/cgroup", prefix),
+            os.path.join("/sys/fs/cgroup/cpuacct", prefix),
+            os.path.join("/sys/fs/cgroup/pids", prefix),
+        ]
+        for base in search_bases:
+            for suffix in suffixes:
+                candidate = os.path.join(base, suffix)
+                if os.path.exists(candidate):
+                    return candidate
+        return None
+
     def _get_container_metrics(self, container_name):
         """Read CPU and memory metrics for a container.
 
         Tries cgroup v1, then v2, then /proc fallback.
+        Detects the correct cgroup path format for the device kernel version.
 
         Returns: {cpu_percent, mem_percent, mem_bytes, mem_limit, pid_count}
         """
@@ -159,38 +177,28 @@ class Orchestrator:
         cpu_usage_ns = 0
         pid_count = 0
 
-        # --- cgroup v1 memory ---
-        cg1_mem = f"/sys/fs/cgroup/memory/ank-{container_name}/memory.usage_in_bytes"
-        cg1_limit = f"/sys/fs/cgroup/memory/ank-{container_name}/memory.limit_in_bytes"
-        if os.path.exists(cg1_mem):
-            mem_bytes = self._read_int_file(cg1_mem)
-            mem_limit = self._read_int_file(cg1_limit)
+        # --- cgroup memory (auto-detect v1/v2 paths) ---
+        cg_mem = self._find_cgroup_path(container_name, "memory.usage_in_bytes", "memory.current")
+        cg_limit = self._find_cgroup_path(container_name, "memory.limit_in_bytes", "memory.max")
+        if cg_mem:
+            mem_bytes = self._read_int_file(cg_mem)
+            if cg_limit:
+                mem_limit = self._read_int_file(cg_limit)
+            if mem_limit == 0 or mem_limit == 0x7FFFFFFFFFFFFFFF:
+                mem_limit = mem_bytes
 
-        # --- cgroup v2 memory ---
-        cg2_mem = f"/sys/fs/cgroup/ank-{container_name}/memory.current"
-        cg2_limit = f"/sys/fs/cgroup/ank-{container_name}/memory.max"
-        if os.path.exists(cg2_mem):
-            mem_bytes = self._read_int_file(cg2_mem)
-            raw_limit = self._read_int_file(cg2_limit)
-            mem_limit = raw_limit if raw_limit != 0 and raw_limit != 0x7FFFFFFFFFFFFFFF else mem_bytes
-
-        # --- cgroup v1 cpu ---
-        cg1_cpu = f"/sys/fs/cgroup/cpuacct/ank-{container_name}/cpuacct.usage"
-        if os.path.exists(cg1_cpu):
-            cpu_usage_ns = self._read_int_file(cg1_cpu)
-
-        # --- cgroup v2 cpu ---
-        cg2_cpu = f"/sys/fs/cgroup/ank-{container_name}/cpu.stat"
-        if os.path.exists(cg2_cpu):
-            cpu_usage_ns = self._read_cgroup2_cpu(cg2_cpu)
+        # --- cgroup cpu (auto-detect v1/v2 paths) ---
+        cg_cpu = self._find_cgroup_path(container_name, "cpuacct.usage", "cpu.stat")
+        if cg_cpu:
+            if cg_cpu.endswith("cpuacct.usage"):
+                cpu_usage_ns = self._read_int_file(cg_cpu)
+            elif cg_cpu.endswith("cpu.stat"):
+                cpu_usage_ns = self._read_cgroup2_cpu(cg_cpu)
 
         # --- pid count via cgroup procs or pids ---
-        cg1_procs = f"/sys/fs/cgroup/pids/ank-{container_name}/pids.current"
-        cg2_pids = f"/sys/fs/cgroup/ank-{container_name}/pids.current"
-        if os.path.exists(cg1_procs):
-            pid_count = self._read_int_file(cg1_procs)
-        elif os.path.exists(cg2_pids):
-            pid_count = self._read_int_file(cg2_pids)
+        cg_pids = self._find_cgroup_path(container_name, "pids.current")
+        if cg_pids:
+            pid_count = self._read_int_file(cg_pids)
         else:
             pid_count = self._count_procs(container_name)
 

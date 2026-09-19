@@ -841,7 +841,10 @@ cmd_start() {
     # Find shell
     local SHELL=""
     for sh in /bin/sh /bin/ash /usr/bin/sh; do
-        [ -e "$ROOTFS$sh" ] || [ -L "$ROOTFS$sh" ] && { SHELL="$sh"; break; }
+        if [ -e "$ROOTFS$sh" ] || [ -L "$ROOTFS$sh" ]; then
+            SHELL="$sh"
+            break
+        fi
     done
     [ -z "$SHELL" ] && SHELL="/bin/sh"
     echo "  Shell: $SHELL"
@@ -870,7 +873,7 @@ cmd_start() {
         local _n=$(echo "$node_info" | cut -d: -f1)
         local _t=$(echo "$node_info" | cut -d: -f2)
         local _m=$(echo "$node_info" | cut -d: -f3)
-        mknod "$ROOTFS/dev/$_n" c "$_t" "$_m" 2>/dev/null
+        [ -e "$ROOTFS/dev/$_n" ] || mknod "$ROOTFS/dev/$_n" c "$_t" "$_m" 2>/dev/null
         chmod 666 "$ROOTFS/dev/$_n" 2>/dev/null
     done
     mount -t devpts devpts "$ROOTFS/dev/pts" 2>/dev/null
@@ -931,7 +934,7 @@ cmd_start() {
 
     # Kill any stale process holding our SSH port
     if [ "$SSHD_PORT" != "22" ]; then
-        local hex_port=$(printf '%04X' $SSHD_PORT)
+        local hex_port=$(printf '%04X' "$SSHD_PORT")
         local inode=$(awk -v port="$hex_port" '$2 ~ ":"port"$" {split($2,a,":"); print $10}' /proc/net/tcp 2>/dev/null | head -1)
         if [ -n "$inode" ] && [ "$inode" != "0" ]; then
             for fd_dir in /proc/[0-9]*/fd; do
@@ -1640,7 +1643,7 @@ cmd_svc_start() {
     local ANKD_FILE="$ROOTFS/etc/ankd/services.d/"*-"${SVC_UUID}.ankd"
     local GENERATED="/usr/ankd/generated"
 
-    ANKD_FILE=$(ls $ANKD_FILE 2>/dev/null | head -1)
+    ANKD_FILE=$(ls "$ANKD_FILE" 2>/dev/null | head -1)
     if [ ! -f "$ANKD_FILE" ]; then
         echo "ERROR: Service '$SVC_UUID' not found"
         exit 1
@@ -1704,7 +1707,7 @@ cmd_svc_logs() {
     local LOG_DIR="$CONTAINERS_DIR/$NAME/merged/var/log/ankd"
     local ANKD_FILE="$CONTAINERS_DIR/$NAME/merged/etc/ankd/services.d/"*-"${SVC_UUID}.ankd"
 
-    ANKD_FILE=$(ls $ANKD_FILE 2>/dev/null | head -1)
+    ANKD_FILE=$(ls "$ANKD_FILE" 2>/dev/null | head -1)
     local name_val=""
     [ -f "$ANKD_FILE" ] && name_val=$(grep "^NAME=" "$ANKD_FILE" | cut -d= -f2)
 
@@ -1714,6 +1717,50 @@ cmd_svc_logs() {
     else
         echo "No logs found for service '$SVC_UUID'"
     fi
+}
+
+# ============================================================
+# Exec a command inside the container rootfs (chroot)
+# Used by the panel for ankd service management, e.g.:
+#   container.sh exec <name> "/usr/ankd/core/ankd.sh ankd.servicestop sshd"
+# ============================================================
+cmd_exec() {
+    local NAME="$1"
+    local COMMAND="$2"
+    local ROOTFS="$CONTAINERS_DIR/$NAME/merged"
+
+    if [ -z "$COMMAND" ]; then
+        echo "Usage: container.sh exec <name> <command>"
+        exit 1
+    fi
+    if [ ! -d "$ROOTFS/bin" ]; then
+        echo "ERROR: Container '$NAME' rootfs not found"
+        exit 1
+    fi
+
+    # /proc is required by ankd's service management (kill -0 checks,
+    # /proc/<pid>/cmdline validation in ankd-svckill.sh). In PID-
+    # namespace modes the container's own /proc lives in its private
+    # mount namespace and is not visible here, so mount the host view.
+    if [ ! -e "$ROOTFS/proc/self" ]; then
+        mkdir -p "$ROOTFS/proc" 2>/dev/null
+        mount -t proc proc "$ROOTFS/proc" 2>/dev/null
+    fi
+
+    # /dev/null + /dev/urandom: bind-mount from host when missing
+    # (mknod on Android can create regular files under SELinux)
+    if [ ! -e "$ROOTFS/dev/null" ]; then
+        mkdir -p "$ROOTFS/dev" 2>/dev/null
+        mount --bind /dev/null "$ROOTFS/dev/null" 2>/dev/null || \
+            mknod "$ROOTFS/dev/null" c 1 3 2>/dev/null
+    fi
+    if [ ! -e "$ROOTFS/dev/urandom" ]; then
+        mkdir -p "$ROOTFS/dev" 2>/dev/null
+        mount --bind /dev/urandom "$ROOTFS/dev/urandom" 2>/dev/null || \
+            mknod "$ROOTFS/dev/urandom" c 1 9 2>/dev/null
+    fi
+
+    chroot "$ROOTFS" /bin/sh -c "export PATH=/bin:/sbin:/usr/bin:/usr/sbin; $COMMAND"
 }
 
 # ============================================================
@@ -1735,8 +1782,9 @@ case "$CMD" in
     svc-stop)   cmd_svc_stop "$NAME" "$3" ;;
     svc-restart) cmd_svc_restart "$NAME" "$3" ;;
     svc-logs)   cmd_svc_logs "$NAME" "$3" "$4" ;;
+    exec)       cmd_exec "$NAME" "$3" ;;
     *)
-        echo "Usage: $0 {create|start|stop|delete|list|inspect|build-base|svc-list|svc-start|svc-stop|svc-restart|svc-logs} <name> [args]"
+        echo "Usage: $0 {create|start|stop|delete|list|inspect|build-base|svc-list|svc-start|svc-stop|svc-restart|svc-logs|exec} <name> [args]"
         exit 1
         ;;
 esac

@@ -240,7 +240,6 @@ class InstallThread(QThread):
             result = self.adb._run_device(self.serial, ["install", "-r", apk_path], timeout=60)
             if result.returncode != 0:
                 self.log.emit(f"WARN: Failed to install ANK UI: {result.stderr}")
-            else:
         else:
             self.log.emit("WARN: skipping ANK UI")
 

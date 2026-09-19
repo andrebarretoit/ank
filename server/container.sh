@@ -1720,6 +1720,50 @@ cmd_svc_logs() {
 }
 
 # ============================================================
+# Exec a command inside the container rootfs (chroot)
+# Used by the panel for ankd service management, e.g.:
+#   container.sh exec <name> "/usr/ankd/core/ankd.sh ankd.servicestop sshd"
+# ============================================================
+cmd_exec() {
+    local NAME="$1"
+    local COMMAND="$2"
+    local ROOTFS="$CONTAINERS_DIR/$NAME/merged"
+
+    if [ -z "$COMMAND" ]; then
+        echo "Usage: container.sh exec <name> <command>"
+        exit 1
+    fi
+    if [ ! -d "$ROOTFS/bin" ]; then
+        echo "ERROR: Container '$NAME' rootfs not found"
+        exit 1
+    fi
+
+    # /proc is required by ankd's service management (kill -0 checks,
+    # /proc/<pid>/cmdline validation in ankd-svckill.sh). In PID-
+    # namespace modes the container's own /proc lives in its private
+    # mount namespace and is not visible here, so mount the host view.
+    if [ ! -e "$ROOTFS/proc/self" ]; then
+        mkdir -p "$ROOTFS/proc" 2>/dev/null
+        mount -t proc proc "$ROOTFS/proc" 2>/dev/null
+    fi
+
+    # /dev/null + /dev/urandom: bind-mount from host when missing
+    # (mknod on Android can create regular files under SELinux)
+    if [ ! -e "$ROOTFS/dev/null" ]; then
+        mkdir -p "$ROOTFS/dev" 2>/dev/null
+        mount --bind /dev/null "$ROOTFS/dev/null" 2>/dev/null || \
+            mknod "$ROOTFS/dev/null" c 1 3 2>/dev/null
+    fi
+    if [ ! -e "$ROOTFS/dev/urandom" ]; then
+        mkdir -p "$ROOTFS/dev" 2>/dev/null
+        mount --bind /dev/urandom "$ROOTFS/dev/urandom" 2>/dev/null || \
+            mknod "$ROOTFS/dev/urandom" c 1 9 2>/dev/null
+    fi
+
+    chroot "$ROOTFS" /bin/sh -c "export PATH=/bin:/sbin:/usr/bin:/usr/sbin; $COMMAND"
+}
+
+# ============================================================
 # Main
 # ============================================================
 CMD="$1"
@@ -1738,8 +1782,9 @@ case "$CMD" in
     svc-stop)   cmd_svc_stop "$NAME" "$3" ;;
     svc-restart) cmd_svc_restart "$NAME" "$3" ;;
     svc-logs)   cmd_svc_logs "$NAME" "$3" "$4" ;;
+    exec)       cmd_exec "$NAME" "$3" ;;
     *)
-        echo "Usage: $0 {create|start|stop|delete|list|inspect|build-base|svc-list|svc-start|svc-stop|svc-restart|svc-logs} <name> [args]"
+        echo "Usage: $0 {create|start|stop|delete|list|inspect|build-base|svc-list|svc-start|svc-stop|svc-restart|svc-logs|exec} <name> [args]"
         exit 1
         ;;
 esac

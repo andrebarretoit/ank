@@ -488,6 +488,14 @@ async function renderDashboardNodes() {
 }
 
 /* ═══════ CONTAINERS ═══════ */
+function isTransientStatus(s) { return /ing$/i.test(String(s || '')); }
+function containerActionDisabled(s) {
+  if (s === 'running') return { start: true, stop: false, restart: false, delete: true };
+  if (isTransientStatus(s)) return { start: true, stop: true, restart: true, delete: true };
+  if (s === 'stopped') return { start: false, stop: true, restart: true, delete: false };
+  if (s === 'failed') return { start: false, stop: true, restart: true, delete: false };
+  return { start: false, stop: true, restart: true, delete: true };
+}
 let cachedContainers = [];
 let containersRenderedOnce = false;
 async function loadContainers() {
@@ -533,16 +541,13 @@ function renderContainers(containers, nodeId) {
     const node = c.node || 'local';
     const s = c.status;
     const bc = getStatusBadgeClass(s);
-    const isRunning = s === 'running';
-    const isBuilding = s === 'building';
-    const isFailed = s === 'failed';
-    const isTransient = isBuilding || isFailed || s === 'starting' || s === 'stopping';
+    const dis = containerActionDisabled(s);
     const nodeTag = node !== 'local' ? `<span class="badge badge-info" style="font-size:9px">${esc(c.node_alias||node.slice(0,6))}</span>` : '';
     const mem = c.stats && c.stats.memory_bytes ? fmtBytes(c.stats.memory_bytes) : '';
-    const startDisabled = isRunning || isBuilding || isFailed;
-    const stopDisabled = !isRunning;
-    const restartDisabled = isTransient;
-    const deleteDisabled = isRunning || isBuilding;
+    const startDisabled = dis.start;
+    const stopDisabled = dis.stop;
+    const restartDisabled = dis.restart;
+    const deleteDisabled = dis.delete;
     return `<div class="split-list-card" data-name="${esc(name)}" onclick="showContainerDetail('${esc(name)}','${node}')">
       <div class="slc-top"><span class="slc-name"><i class="bi bi-box-seam" style="color:var(--accent)"></i>${esc(name)}${nodeTag}</span><span class="badge ${bc}" style="font-size:10px">${getStatusLabel(s)}</span></div>
       <div class="slc-meta"><span><i class="bi bi-image"></i> ${esc(c.template_name||c.image||'-')}</span><span><i class="bi bi-globe2"></i> ${esc(c.ip_address||'N/A')}</span>${mem?`<span>${mem}</span>`:''}</div>
@@ -574,10 +579,9 @@ async function showContainerDetail(name, nodeId) {
     currentContainer = c;
     currentContainer._nodeId = nodeId || 'local';
     const s = c.status;
-    const isRunning = s === 'running';
     const isBuilding = s === 'building';
     const isFailed = s === 'failed';
-    const isTransient = isBuilding || isFailed || s === 'starting' || s === 'stopping';
+    const dis = containerActionDisabled(s);
     const logText = typeof logs.logs === 'string' ? logs.logs : (Array.isArray(logs.logs) ? logs.logs.join('\n') : '');
     const host = location.hostname || 'localhost';
     const sshHint = (c.ssh_port && s === 'running') ? `<div class="ssh-hint"><div class="ssh-hint-header"><i class="bi bi-terminal"></i> SSH</div><code class="ssh-hint-cmd">ssh root@${host} -p ${c.ssh_port}</code><button class="btn btn-sm btn-ghost" onclick="copyText(this.previousElementSibling.textContent);toast('Copied!','success')"><i class="bi bi-clipboard"></i></button></div>` : '';
@@ -587,14 +591,14 @@ async function showContainerDetail(name, nodeId) {
         <h2><i class="bi bi-box-seam" style="color:var(--accent)"></i>${esc(c.name)} <span class="badge ${getStatusBadgeClass(s)}" style="font-size:11px">${getStatusLabel(s)}</span></h2>
         <div class="sr-actions">
           ${isRemote ? `
-            ${s==='running'||s==='starting'?`<button class="btn btn-secondary btn-sm" onclick="remoteContainerAction('${nodeId}','${esc(name)}','stop')"><i class="bi bi-stop-fill"></i> Stop</button>`:`<button class="btn btn-success btn-sm" onclick="remoteContainerAction('${nodeId}','${esc(name)}','start')"><i class="bi bi-play-fill"></i> Start</button>`}
-            <button class="btn btn-primary btn-sm" onclick="remoteContainerAction('${nodeId}','${esc(name)}','restart')"><i class="bi bi-arrow-repeat"></i></button>
-            <button class="btn btn-danger btn-sm" onclick="remoteDeleteContainer('${nodeId}','${esc(name)}')"><i class="bi bi-trash3"></i></button>
+            ${s==='running'||s==='starting'?`<button class="btn btn-secondary btn-sm" onclick="remoteContainerAction('${nodeId}','${esc(name)}','stop')" ${dis.stop?'disabled':''}><i class="bi bi-stop-fill"></i> Stop</button>`:`<button class="btn btn-success btn-sm" onclick="remoteContainerAction('${nodeId}','${esc(name)}','start')" ${dis.start?'disabled':''}><i class="bi bi-play-fill"></i> Start</button>`}
+            <button class="btn btn-primary btn-sm" onclick="remoteContainerAction('${nodeId}','${esc(name)}','restart')" ${dis.restart?'disabled':''}><i class="bi bi-arrow-repeat"></i></button>
+            <button class="btn btn-danger btn-sm" onclick="remoteDeleteContainer('${nodeId}','${esc(name)}')" ${dis.delete?'disabled':''}><i class="bi bi-trash3"></i></button>
           ` : `
-            <button class="btn btn-success btn-sm" id="detail-start" onclick="startContainer('${esc(name)}')" ${(isRunning||isBuilding||s==='starting')?'disabled':''}><i class="bi bi-play-fill"></i> Start</button>
-            <button class="btn btn-secondary btn-sm" id="detail-stop" onclick="stopContainer('${esc(name)}')" ${(!isRunning)?'disabled':''}><i class="bi bi-stop-fill"></i> Stop</button>
-            <button class="btn btn-primary btn-sm" id="detail-restart" onclick="restartContainer('${esc(name)}')" ${isTransient?'disabled':''}><i class="bi bi-arrow-repeat"></i></button>
-            <button class="btn btn-danger btn-sm" id="detail-delete" onclick="deleteContainer('${esc(name)}')" ${(isRunning||isBuilding)?'disabled':''}><i class="bi bi-trash3"></i></button>
+            <button class="btn btn-success btn-sm" id="detail-start" onclick="startContainer('${esc(name)}')" ${dis.start?'disabled':''}><i class="bi bi-play-fill"></i> Start</button>
+            <button class="btn btn-secondary btn-sm" id="detail-stop" onclick="stopContainer('${esc(name)}')" ${dis.stop?'disabled':''}><i class="bi bi-stop-fill"></i> Stop</button>
+            <button class="btn btn-primary btn-sm" id="detail-restart" onclick="restartContainer('${esc(name)}')" ${dis.restart?'disabled':''}><i class="bi bi-arrow-repeat"></i></button>
+            <button class="btn btn-danger btn-sm" id="detail-delete" onclick="deleteContainer('${esc(name)}')" ${dis.delete?'disabled':''}><i class="bi bi-trash3"></i></button>
           `}
         </div>
       </div>
@@ -1012,18 +1016,15 @@ function updateContainerBadge(name, status) {
 }
 
 function updateDetailButtons(name, status) {
-  const isRunning = status === 'running';
-  const isBuilding = status === 'building';
-  const isFailed = status === 'failed';
-  const isTransient = isBuilding || isFailed || status === 'starting' || status === 'stopping';
-    const startBtn = document.getElementById('detail-start');
-    const stopBtn = document.getElementById('detail-stop');
-    const restartBtn = document.getElementById('detail-restart');
-    const deleteBtn = document.getElementById('detail-delete');
-    if (startBtn) startBtn.disabled = isRunning || isBuilding || status === 'starting';
-    if (stopBtn) stopBtn.disabled = !isRunning && status !== 'running';
-    if (restartBtn) restartBtn.disabled = isTransient;
-    if (deleteBtn) deleteBtn.disabled = isRunning || isBuilding;
+  const dis = containerActionDisabled(status);
+  const startBtn = document.getElementById('detail-start');
+  const stopBtn = document.getElementById('detail-stop');
+  const restartBtn = document.getElementById('detail-restart');
+  const deleteBtn = document.getElementById('detail-delete');
+  if (startBtn) startBtn.disabled = dis.start;
+  if (stopBtn) stopBtn.disabled = dis.stop;
+  if (restartBtn) restartBtn.disabled = dis.restart;
+  if (deleteBtn) deleteBtn.disabled = dis.delete;
 }
 
 async function pollContainerStatus(name, attempt) {
@@ -1401,11 +1402,12 @@ async function showNodeDetail(nodeId, name, status) {
       <div style="font-size:12px;font-weight:600;color:var(--text-secondary);margin-bottom:10px">Containers (${contArr.length})</div>
       ${contArr.length ? contArr.map(c => {
         const sc = getStatusBadgeClass(c.status);
+        const dis = containerActionDisabled(c.status);
         return `<div style="display:flex;align-items:center;justify-content:space-between;padding:8px 12px;border:1px solid var(--border);border-radius:8px;margin-bottom:6px">
           <span style="font-size:13px">${esc(c.name)} <span class="badge ${sc}" style="font-size:9px">${getStatusLabel(c.status)}</span></span>
           <div style="display:flex;gap:4px">
-            ${c.status==='running'?`<button class="btn btn-icon btn-ghost sm" onclick="remoteContainerAction('${nodeId}','${esc(c.name)}','stop')"><i class="bi bi-stop-fill"></i></button>`:`<button class="btn btn-icon btn-ghost sm" onclick="remoteContainerAction('${nodeId}','${esc(c.name)}','start')"><i class="bi bi-play-fill"></i></button>`}
-            <button class="btn btn-icon btn-ghost sm" onclick="remoteDeleteContainer('${nodeId}','${esc(c.name)}')"><i class="bi bi-trash3"></i></button>
+            ${c.status==='running'||c.status==='starting'?`<button class="btn btn-icon btn-ghost sm" onclick="remoteContainerAction('${nodeId}','${esc(c.name)}','stop')" ${dis.stop?'disabled':''}><i class="bi bi-stop-fill"></i></button>`:`<button class="btn btn-icon btn-ghost sm" onclick="remoteContainerAction('${nodeId}','${esc(c.name)}','start')" ${dis.start?'disabled':''}><i class="bi bi-play-fill"></i></button>`}
+            <button class="btn btn-icon btn-ghost sm" onclick="remoteDeleteContainer('${nodeId}','${esc(c.name)}')" ${dis.delete?'disabled':''}><i class="bi bi-trash3"></i></button>
           </div></div>`;
       }).join('') : '<div style="text-align:center;padding:16px;color:var(--text-muted);font-size:12px">No containers</div>'}`;
   } catch (e) { el.innerHTML = `<div style="color:var(--danger);padding:20px;text-align:center"><i class="bi bi-exclamation-triangle"></i> ${esc(e.message)}</div>`; }
@@ -1806,10 +1808,23 @@ async function testBackupConnection() {
   const result = document.getElementById('backup-test-result');
   btn.disabled = true; result.textContent = 'Testing...'; result.style.color = 'var(--text-muted)';
   try {
-    const data = await api('GET', `/backups/test-connection?host=${encodeURIComponent(document.getElementById('backup-remote-host')?.value||'')}&port=${document.getElementById('backup-remote-port')?.value||'22'}&user=${encodeURIComponent(document.getElementById('backup-ssh-user')?.value||'')}&pass=${encodeURIComponent(document.getElementById('backup-ssh-pass')?.value||'')}&path=${encodeURIComponent(document.getElementById('backup-remote-path')?.value||'/backups/ank')}`);
+    const body = {
+      host: document.getElementById('backup-remote-host')?.value || '',
+      port: document.getElementById('backup-remote-port')?.value || '22',
+      user: document.getElementById('backup-ssh-user')?.value || '',
+      pass: document.getElementById('backup-ssh-pass')?.value || '',
+      path: document.getElementById('backup-remote-path')?.value || '/backups/ank'
+    };
+    const data = await api('POST', '/backups/test-connection', body);
+    // TEMP-DEBUG: remove after root cause fixed
+    console.log('[ANK-DEBUG][backup-test]', JSON.stringify(data));
     if (data.connected) { result.textContent = '✓ Connected'; result.style.color = 'var(--green)'; backupTestPassed = true; }
     else { result.textContent = '✗ Could not connect — check host, port and credentials'; result.style.color = 'var(--red)'; backupTestPassed = false; }
-  } catch(e) { result.textContent = '✗ Could not connect — check host, port and credentials'; result.style.color = 'var(--red)'; backupTestPassed = false; }
+  } catch(e) {
+    // TEMP-DEBUG: remove after root cause fixed
+    console.log('[ANK-DEBUG][backup-test] request failed:', e && (e.stack || e.message || e));
+    result.textContent = '✗ Could not connect — check host, port and credentials'; result.style.color = 'var(--red)'; backupTestPassed = false;
+  }
   btn.disabled = false;
 }
 
@@ -2097,8 +2112,9 @@ function showSettingsSection(section) {
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
         <label class="form-label" style="margin:0">Live Logs</label>
         <select class="form-select" id="ank-mgr-log-type" style="width:auto;padding:4px 8px;font-size:12px">
-          <option value="service">Server</option>
-          <option value="server">Server (full)</option>
+          <option value="server">Server (live)</option>
+          <option value="service">Service (legacy)</option>
+          <option value="install">Install</option>
         </select>
         <label style="display:flex;align-items:center;gap:4px;font-size:12px;color:var(--text-secondary);cursor:pointer"><input type="checkbox" id="ank-mgr-log-auto" checked style="accent-color:var(--accent)"> Auto-scroll</label>
         <button class="btn btn-ghost btn-sm" id="ank-mgr-log-refresh"><i class="bi bi-arrow-clockwise"></i></button>
@@ -2120,19 +2136,20 @@ function showSettingsSection(section) {
       }
     }
     async function loadMgrLogs() {
-      const logType = document.getElementById('ank-mgr-log-type')?.value || 'service';
+      const logType = document.getElementById('ank-mgr-log-type')?.value || 'server';
       try {
         const r = await fetch(`${API}/ank-manager/logs?type=${logType}&lines=150`, { headers: { 'X-ANK-Client': 'ank-panel', 'Authorization': `Bearer ${ankToken}` } });
         const data = await r.json();
-        if (data.lines && data.lines.length) {
-          const el = document.getElementById('ank-mgr-logs');
-          el.textContent = data.lines.join('\n');
-          if (document.getElementById('ank-mgr-log-auto')) el.scrollTop = el.scrollHeight;
-        }
+        const el = document.getElementById('ank-mgr-logs');
+        if (!el) return;
+        el.textContent = (data.lines && data.lines.length) ? data.lines.join('\n') : '(no log output yet)';
+        if (document.getElementById('ank-mgr-log-auto')?.checked) el.scrollTop = el.scrollHeight;
       } catch(e) {}
     }
     loadMgrStatus();
     loadMgrLogs();
+    if (window._ankMgrLogPoll) clearInterval(window._ankMgrLogPoll);
+    window._ankMgrLogPoll = setInterval(loadMgrLogs, 5000);
     document.getElementById('ank-mgr-restart-server')?.addEventListener('click', async () => {
       const ok = await confirmAction('Restart Server', 'Restart the ANK server process?');
       if (!ok) return;
@@ -2513,7 +2530,14 @@ async function loadTaskManager() {
         healthBanner = `<div style="padding:8px 12px;border-radius:var(--radius-sm);background:var(--danger-dim);margin-bottom:12px;font-size:12px;display:flex;align-items:center;gap:12px"><i class="bi bi-x-circle-fill" style="color:var(--danger)"></i><span style="color:var(--danger)">Container stopped</span></div>`;
       } else {
         const sshOk = health.ssh_alive ? '<span style="color:var(--success)">SSH OK</span>' : '<span style="color:var(--danger)">SSH Down</span>';
-        const ankdOk = health.ankd_alive ? '<span style="color:var(--success)">Ankd OK</span>' : '<span style="color:var(--warning)">Ankd N/A</span>';
+        let ankdOk;
+        if (health.ankd_alive) {
+          ankdOk = `<span style="color:var(--success)">Ankd OK${health.ankd_port_probed && health.ankd_port ? ' (port ' + health.ankd_port + ')' : ''}</span>`;
+        } else if (health.ankd_alive === false) {
+          ankdOk = '<span style="color:var(--danger)">Ankd Down</span>';
+        } else {
+          ankdOk = '<span style="color:var(--warning)">Ankd N/A</span>';
+        }
         healthBanner = `<div style="padding:8px 12px;border-radius:var(--radius-sm);background:var(--warning-dim);margin-bottom:12px;font-size:12px;display:flex;align-items:center;gap:12px"><i class="bi bi-exclamation-triangle" style="color:var(--warning)"></i><span>Degraded: ${sshOk} | ${ankdOk}</span></div>`;
       }
     }
@@ -2550,10 +2574,17 @@ async function loadTaskManager() {
 async function taskManagerServiceAction(service, action) {
   if (!currentContainer) return;
   if (action === 'delete') { const ok = await confirmAction('Delete Service', `Delete service "${service}"?`); if (!ok) return; }
+  const past = { stop: 'stopped', start: 'started', restart: 'restarted', enable: 'enabled', disable: 'disabled' }[action] || 'updated';
   try {
-    if (action === 'delete') { await api('DELETE', `/containers/${currentContainer.name}/services/${service}`); toast(`Service "${service}" deleted`, 'success'); }
-    else { await api('POST', `/containers/${currentContainer.name}/services/${service}/${action}`); toast(`Service "${service}" ${action}ed`, 'success'); }
+    if (action === 'delete') { await api('DELETE', `/containers/${currentContainer.name}/services/${service}`); }
+    else { await api('POST', `/containers/${currentContainer.name}/services/${service}/${action}`); }
+    toast(`Service "${service}" ${past}`, 'success');
     setTimeout(loadTaskManager, 500);
+    // ankd completes the action asynchronously (the daemon may pick up
+    // the request up to ~3s later) — re-poll to catch the final state.
+    if (action === 'stop' || action === 'start' || action === 'restart') {
+      setTimeout(loadTaskManager, 4000);
+    }
   } catch (e) { toast(`Failed: ${e.message}`, 'error'); }
 }
 
