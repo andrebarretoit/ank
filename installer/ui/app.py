@@ -54,7 +54,7 @@ MODE_FLOWS = {
     "clone": ["clone_connect", "confirm", "clone_progress", "reboot", "done"],
     "migrate": ["clone_connect", "migrate_options", "confirm", "clone_progress", "reboot", "done"],
     "uninstall": ["connect", "confirm", "install", "done"],
-    "reinstall": ["connect", "confirm", "install", "reboot", "done"],
+    "reinstall": ["connect", "detect", "confirm", "install", "reboot", "done"],
     "export": ["connect", "confirm", "install", "done"],
     "restore_engine": ["connect", "restore_select", "confirm", "restore_progress", "reboot", "done"],
 }
@@ -72,7 +72,7 @@ CONFIRM_NEXT_LABEL = {
     "clone": "\u25b6 Clone",
     "migrate": "\u25b6 Migrate",
     "uninstall": "\u2716 Uninstall",
-    "reinstall": "\u25b6 Reinstall",
+    "reinstall": "\u25b6 Install",
     "export": "\u25b6 Export",
     "restore_engine": "\u25b6 Restore",
 }

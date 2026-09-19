@@ -211,7 +211,7 @@ STEPS_BY_MODE = {
     "clone": ["Connect Devices", "Confirm", "Cloning", "Rebooting", "Finished"],
     "migrate": ["Connect Devices", "Migration Options", "Confirm", "Migrating", "Rebooting", "Finished"],
     "uninstall": ["Connect Device", "Confirm", "Uninstalling", "Finished"],
-    "reinstall": ["Connect Device", "Confirm", "Reinstalling", "Rebooting", "Finished"],
+    "reinstall": ["Connect Device", "Compatibility", "Confirm", "Installing", "Rebooting", "Finished"],
     "export": ["Connect Device", "Confirm", "Exporting", "Finished"],
     "restore_engine": ["Connect Device", "Select Backup", "Confirm", "Restoring", "Rebooting", "Finished"],
 }
