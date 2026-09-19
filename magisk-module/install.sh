@@ -493,10 +493,32 @@ AllowTcpForwarding no
 PidFile /run/sshd.pid
 Subsystem sftp internal-sftp
 SSHEOF
-# Generate SSH host keys (needs /dev/urandom)
-mount -t proc proc "$ANKBASE/proc" 2>/dev/null
-_chroot_rootfs "$ANKBASE" "/usr/bin/ssh-keygen -A" 2>/dev/null || true
-umount "$ANKBASE/proc" 2>/dev/null
+# Generate SSH host keys for ANK-ALPINEBASE (3-strategy: host openssl → host ssh-keygen → chroot)
+mkdir -p "$ANKBASE/etc/ssh" 2>/dev/null
+if [ ! -f "$ANKBASE/etc/ssh/ssh_host_rsa_key" ] || [ ! -f "$ANKBASE/etc/ssh/ssh_host_ed25519_key" ]; then
+    KEYGEN_OK=""
+    OPENSSL=$(command -v openssl 2>/dev/null || echo /system/bin/openssl)
+    if [ -x "$OPENSSL" ]; then
+        $OPENSSL genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072 -outform PEM -out "$ANKBASE/etc/ssh/ssh_host_rsa_key" 2>/dev/null && \
+        $OPENSSL rsa -in "$ANKBASE/etc/ssh/ssh_host_rsa_key" -pubout -out "$ANKBASE/etc/ssh/ssh_host_rsa_key.pub" 2>/dev/null && KEYGEN_OK="1"
+        $OPENSSL genpkey -algorithm Ed25519 -outform PEM -out "$ANKBASE/etc/ssh/ssh_host_ed25519_key" 2>/dev/null && \
+        $OPENSSL pkey -in "$ANKBASE/etc/ssh/ssh_host_ed25519_key" -pubout -out "$ANKBASE/etc/ssh/ssh_host_ed25519_key.pub" 2>/dev/null && KEYGEN_OK="1"
+    fi
+    if [ -z "$KEYGEN_OK" ]; then
+        HKG=$(command -v ssh-keygen 2>/dev/null || echo /system/bin/ssh-keygen)
+        [ -x "$HKG" ] && $HKG -t rsa -b 3072 -f "$ANKBASE/etc/ssh/ssh_host_rsa_key" -N "" -q 2>/dev/null && \
+        $HKG -t ed25519 -f "$ANKBASE/etc/ssh/ssh_host_ed25519_key" -N "" -q 2>/dev/null && KEYGEN_OK="1"
+    fi
+    if [ -z "$KEYGEN_OK" ] && [ -f "$ANKBASE/usr/bin/ssh-keygen" ]; then
+        mount -t proc proc "$ANKBASE/proc" 2>/dev/null
+        _chroot_rootfs "$ANKBASE" "/usr/bin/ssh-keygen -A" 2>/dev/null || true
+        umount "$ANKBASE/proc" 2>/dev/null
+    fi
+    chmod 600 "$ANKBASE/etc/ssh/ssh_host_rsa_key" 2>/dev/null
+    chmod 644 "$ANKBASE/etc/ssh/ssh_host_rsa_key.pub" 2>/dev/null
+    chmod 600 "$ANKBASE/etc/ssh/ssh_host_ed25519_key" 2>/dev/null
+    chmod 644 "$ANKBASE/etc/ssh/ssh_host_ed25519_key.pub" 2>/dev/null
+fi
 mkdir -p "$ANKBASE/root/.ssh"
 chmod 700 "$ANKBASE/root/.ssh"
 touch "$ANKBASE/root/.ssh/authorized_keys"
@@ -554,8 +576,36 @@ if [ -d "$ANKFS/etc/ssh" ]; then
     sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication yes/' "$ANKFS/etc/ssh/sshd_config" 2>/dev/null
     sed -i 's/^#\?ChallengeResponseAuthentication.*/ChallengeResponseAuthentication no/' "$ANKFS/etc/ssh/sshd_config" 2>/dev/null
     sed -i '/^UsePAM/d' "$ANKFS/etc/ssh/sshd_config" 2>/dev/null
-    [ ! -f "$ANKFS/etc/ssh/ssh_host_rsa_key" ] && \
-        _chroot_rootfs "$ANKFS" "/usr/bin/ssh-keygen -A" 2>/dev/null || true
+    # Generate SSH host keys (3-strategy: host openssl → host ssh-keygen → chroot)
+    mkdir -p "$ANKFS/etc/ssh" 2>/dev/null
+    if [ ! -f "$ANKFS/etc/ssh/ssh_host_rsa_key" ] || [ ! -f "$ANKFS/etc/ssh/ssh_host_ed25519_key" ]; then
+        KEYGEN_OK=""
+        # Strategy 1: host openssl
+        OPENSSL=$(command -v openssl 2>/dev/null || echo /system/bin/openssl)
+        if [ -x "$OPENSSL" ]; then
+            $OPENSSL genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072 -outform PEM -out "$ANKFS/etc/ssh/ssh_host_rsa_key" 2>/dev/null && \
+            $OPENSSL rsa -in "$ANKFS/etc/ssh/ssh_host_rsa_key" -pubout -out "$ANKFS/etc/ssh/ssh_host_rsa_key.pub" 2>/dev/null && KEYGEN_OK="1"
+            $OPENSSL genpkey -algorithm Ed25519 -outform PEM -out "$ANKFS/etc/ssh/ssh_host_ed25519_key" 2>/dev/null && \
+            $OPENSSL pkey -in "$ANKFS/etc/ssh/ssh_host_ed25519_key" -pubout -out "$ANKFS/etc/ssh/ssh_host_ed25519_key.pub" 2>/dev/null && KEYGEN_OK="1"
+        fi
+        # Strategy 2: host ssh-keygen
+        if [ -z "$KEYGEN_OK" ]; then
+            HKG=$(command -v ssh-keygen 2>/dev/null || echo /system/bin/ssh-keygen)
+            [ -x "$HKG" ] && $HKG -t rsa -b 3072 -f "$ANKFS/etc/ssh/ssh_host_rsa_key" -N "" -q 2>/dev/null && \
+            $HKG -t ed25519 -f "$ANKFS/etc/ssh/ssh_host_ed25519_key" -N "" -q 2>/dev/null && KEYGEN_OK="1"
+        fi
+        # Strategy 3: chroot ssh-keygen
+        if [ -z "$KEYGEN_OK" ] && [ -f "$ANKFS/usr/bin/ssh-keygen" ]; then
+            mount -t proc proc "$ANKFS/proc" 2>/dev/null
+            _chroot_rootfs "$ANKFS" "/usr/bin/ssh-keygen -A" 2>/dev/null || true
+            umount "$ANKFS/proc" 2>/dev/null
+        fi
+        # Set permissions
+        chmod 600 "$ANKFS/etc/ssh/ssh_host_rsa_key" 2>/dev/null
+        chmod 644 "$ANKFS/etc/ssh/ssh_host_rsa_key.pub" 2>/dev/null
+        chmod 600 "$ANKFS/etc/ssh/ssh_host_ed25519_key" 2>/dev/null
+        chmod 644 "$ANKFS/etc/ssh/ssh_host_ed25519_key.pub" 2>/dev/null
+    fi
     mkdir -p "$ANKFS/root/.ssh"
     chmod 700 "$ANKFS/root/.ssh"
     touch "$ANKFS/root/.ssh/authorized_keys"
@@ -609,13 +659,10 @@ fi
 ANK_PASS=$(grep -o '"password":"[^"]*"' "$ANK_DIR/config.json" 2>/dev/null | head -1 | cut -d'"' -f4)
 [ -z "$ANK_PASS" ] && ANK_PASS="ank123"
 if [ -f "$ANKFS/usr/sbin/chpasswd" ] || [ -f "$ANKFS/usr/bin/chpasswd" ]; then
-    echo "root:${ANK_PASS}" | _chroot_rootfs "$ANKFS" "cat > /tmp/pw && chpasswd" 2>/dev/null || \
     echo "root:${ANK_PASS}" | _chroot_rootfs "$ANKFS" "/sbin/chpasswd" 2>/dev/null || true
-    # pfSense-style: admin user = root (uid 0), same password
-    if ! grep -q "^admin:" "$ANKFS/etc/passwd" 2>/dev/null; then
-        echo "admin:x:0:0::/root:/ankcoreshell.sh" >> "$ANKFS/etc/passwd" 2>/dev/null
-        echo "admin:$(grep "^root:" "$ANKFS/etc/shadow" 2>/dev/null | cut -d: -f2)" >> "$ANKFS/etc/shadow" 2>/dev/null
-    fi
+    # pfSense-style: admin user with same password (UID 1000, not root UID)
+    deluser admin 2>/dev/null || true
+    _chroot_rootfs "$ANKFS" "/sbin/adduser -D -u 1000 -s /ankcoreshell.sh -h /root admin" 2>/dev/null || true
     echo "admin:${ANK_PASS}" | _chroot_rootfs "$ANKFS" "/sbin/chpasswd" 2>/dev/null || true
     log OK "root + admin passwords set in ankfs"
 fi
@@ -667,6 +714,33 @@ if [ -f "$SRC/scripts/ank-shell.sh" ]; then
     cp "$SRC/scripts/ank-shell.sh" "$ANKFS/ank-shell.sh"
     chmod 755 "$ANKFS/ank-shell.sh"
 fi
+# Create MOTD (dynamic CPU/MEM/UPTIME)
+mkdir -p "$ANKFS/etc/profile.d" 2>/dev/null
+cat > "$ANKFS/etc/profile.d/ank-motd.sh" << 'MOTDEOF'
+ank_motd() {
+    read _ u1 n1 s1 _ < /proc/stat
+    sleep 1
+    read _ u2 n2 s2 _ < /proc/stat
+    total=$(( (u2+n2+s2) - (u1+n1+s1) ))
+    idle=$(( u2 - u1 ))
+    if [ "$total" -gt 0 ]; then
+        cpu=$(( (total - idle) * 100 / total ))
+    else
+        cpu=0
+    fi
+    mem_total=$(awk '/^MemTotal/{print $2}' /proc/meminfo)
+    mem_avail=$(awk '/^MemAvailable/{print $2}' /proc/meminfo)
+    if [ -n "$mem_total" ] && [ "$mem_total" -gt 0 ] 2>/dev/null; then
+        mem_used=$(( (mem_total - mem_avail) * 100 / mem_total ))
+    else
+        mem_used=0
+    fi
+    up=$(awk '{d=int($1/86400);h=int(($1%86400)/3600);m=int(($1%3600)/60);printf "%dd %dh %dm",d,h,m}' /proc/uptime)
+    printf "\n  CPU: %s%%  MEM: %s%%  UPTIME: %s\n\n" "$cpu" "$mem_used" "$up"
+}
+ank_motd
+unset ank_motd
+MOTDEOF
 mkdir -p "$ANK_DIR/core/static"
 cp -r "$SRC/server/static/"* "$ANK_DIR/core/static/" 2>/dev/null
 mkdir -p "$ANK_DIR/images"
