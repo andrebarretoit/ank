@@ -658,15 +658,25 @@ fi
 # Set root password in ankfs from config.json
 ANK_PASS=$(grep -o '"password":"[^"]*"' "$ANK_DIR/config.json" 2>/dev/null | head -1 | cut -d'"' -f4)
 [ -z "$ANK_PASS" ] && ANK_PASS="ank123"
-if [ -f "$ANKFS/usr/sbin/chpasswd" ] || [ -f "$ANKFS/usr/bin/chpasswd" ]; then
-    # pfSense-style: admin user with same password (UID 1000)
-    deluser admin 2>/dev/null || true
-    _chroot_rootfs "$ANKFS" "/sbin/adduser -D -u 1000 -s /ankcoreshell.sh -h /root admin" 2>/dev/null || true
-    # Write passwords to temp file, redirect into chpasswd inside chroot
-    printf "root:%s\nadmin:%s\n" "$ANK_PASS" "$ANK_PASS" > "$ANKFS/tmp/.pw"
-    _chroot_rootfs "$ANKFS" "/sbin/chpasswd < /tmp/.pw" 2>/dev/null || true
-    rm -f "$ANKFS/tmp/.pw"
-    log OK "root + admin passwords set in ankfs"
+
+# Generate SHA-512 hash on host (no chroot needed)
+OPENSSL=$(command -v openssl 2>/dev/null || echo /system/bin/openssl)
+ENC_PASS=""
+if [ -x "$OPENSSL" ]; then
+    ENC_PASS=$($OPENSSL passwd -6 "$ANK_PASS" 2>/dev/null)
+fi
+
+if [ -n "$ENC_PASS" ]; then
+    # Write admin user in passwd (UID 1000, same home/shell as root)
+    if ! grep -q "^admin:" "$ANKFS/etc/passwd" 2>/dev/null; then
+        echo "admin:x:1000:1000::/root:/ankcoreshell.sh" >> "$ANKFS/etc/passwd"
+    fi
+    # Write shadow entries directly (host openssl hash, no chroot)
+    printf "root:%s:0:0:99999:7:::\nadmin:%s:0:0:99999:7:::\n" "$ENC_PASS" "$ENC_PASS" > "$ANKFS/etc/shadow"
+    chmod 640 "$ANKFS/etc/shadow"
+    log OK "root + admin passwords set via host openssl"
+else
+    log "WARN: openssl not found on host, passwords not set"
 fi
 
 # --- STEP 4: Server + scripts ---
