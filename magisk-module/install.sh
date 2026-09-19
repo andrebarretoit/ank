@@ -659,11 +659,13 @@ fi
 ANK_PASS=$(grep -o '"password":"[^"]*"' "$ANK_DIR/config.json" 2>/dev/null | head -1 | cut -d'"' -f4)
 [ -z "$ANK_PASS" ] && ANK_PASS="ank123"
 if [ -f "$ANKFS/usr/sbin/chpasswd" ] || [ -f "$ANKFS/usr/bin/chpasswd" ]; then
-    echo "root:${ANK_PASS}" | _chroot_rootfs "$ANKFS" "/sbin/chpasswd" 2>/dev/null || true
-    # pfSense-style: admin user with same password (UID 1000, not root UID)
+    # pfSense-style: admin user with same password (UID 1000)
     deluser admin 2>/dev/null || true
     _chroot_rootfs "$ANKFS" "/sbin/adduser -D -u 1000 -s /ankcoreshell.sh -h /root admin" 2>/dev/null || true
-    echo "admin:${ANK_PASS}" | _chroot_rootfs "$ANKFS" "/sbin/chpasswd" 2>/dev/null || true
+    # Write passwords to temp file, redirect into chpasswd inside chroot
+    printf "root:%s\nadmin:%s\n" "$ANK_PASS" "$ANK_PASS" > "$ANKFS/tmp/.pw"
+    _chroot_rootfs "$ANKFS" "/sbin/chpasswd < /tmp/.pw" 2>/dev/null || true
+    rm -f "$ANKFS/tmp/.pw"
     log OK "root + admin passwords set in ankfs"
 fi
 
