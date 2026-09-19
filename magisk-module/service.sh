@@ -126,10 +126,6 @@ if [ -e "$ROOTFS/usr/sbin/sshd" ]; then
         chmod 755 "$ROOTFS/ank-shell.sh" 2>/dev/null
         sed -i '1s|#!/system/bin/sh|#!/bin/sh|' "$ROOTFS/ank-shell.sh" 2>/dev/null
     fi
-    # Set root shell to ank-shell
-    if ! grep -q "ank-shell" "$ROOTFS/etc/passwd" 2>/dev/null; then
-        sed -i 's|^root:.*|root:/bin/sh|' "$ROOTFS/etc/passwd" 2>/dev/null
-    fi
     # ANK MOTD (dynamic)
     if ! grep -q "ank_motd" "$ROOTFS/etc/profile.d/ank-motd.sh" 2>/dev/null; then
         mkdir -p "$ROOTFS/etc/profile.d" 2>/dev/null

@@ -19,11 +19,36 @@ NC='\033[0m'
 
 clear 2>/dev/null
 
+# Dynamic MOTD
+_cpu() {
+    read _ u1 n1 s1 _ < /proc/stat
+    sleep 1
+    read _ u2 n2 s2 _ < /proc/stat
+    total=$(( (u2+n2+s2) - (u1+n1+s1) ))
+    idle=$(( u2 - u1 ))
+    [ "$total" -gt 0 ] && echo $(( (total - idle) * 100 / total )) || echo 0
+}
+_mem() {
+    local t=$(awk '/^MemTotal/{print $2}' /proc/meminfo)
+    local a=$(awk '/^MemAvailable/{print $2}' /proc/meminfo)
+    [ -n "$t" ] && [ "$t" -gt 0 ] 2>/dev/null && echo $(( (t - a) * 100 / t )) || echo 0
+}
+_up() {
+    awk '{d=int($1/86400);h=int(($1%86400)/3600);m=int(($1%3600)/60);printf "%dd %dh %dm",d,h,m}' /proc/uptime
+}
+
 echo ""
-echo -e "${CYAN}  ╔══════════════════════════════════╗${NC}"
-echo -e "${CYAN}  ║${NC}     ANK - Android Konteiner       ${CYAN}║${NC}"
-echo -e "${CYAN}  ╚══════════════════════════════════╝${NC}"
+echo -e "${CYAN}          /$$$$$$  /$$   /$$ /$$   /$$${NC}"
+echo -e "${CYAN}         /$$__  $$| $$$ | $$| $$  /$$/${NC}"
+echo -e "${CYAN}        | $$  \ $$| $$$$| $$| $$ /$$/${NC}"
+echo -e "${CYAN}        | $$$$$$$$| $$ $$ $$| $$$$$/${NC}"
+echo -e "${CYAN}        | $$__  $$| $$  $$$$| $$  $${NC}"
+echo -e "${CYAN}        | $$  | $$| $$\  $$$| $$\  $${NC}"
+echo -e "${CYAN}        | $$  | $$| $$ \  $$| $$ \  $${NC}"
+echo -e "${CYAN}        |__/  |__/|__/  \__/|__/  \__/${NC}"
 echo ""
+echo -e "       Android Konteiner | ANK CLI"
+printf "       CPU: %s%%  MEM: %s%%  UPTIME: %s\n" "$(_cpu)" "$(_mem)" "$(_up)"
 
 # Show container summary
 if [ -d "$ANK_DIR/containers" ]; then

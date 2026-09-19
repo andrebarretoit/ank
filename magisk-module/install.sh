@@ -591,7 +591,7 @@ if [ -f "$ANKFS/usr/sbin/sshd" ]; then
     cp "$SRC/server/ank-shell.sh" "$ANKFS/ank-shell.sh" 2>/dev/null
     chmod 755 "$ANKFS/ank-shell.sh" 2>/dev/null
     sed -i '1s|#!/system/bin/sh|#!/bin/sh|' "$ANKFS/ank-shell.sh" 2>/dev/null
-    sed -i 's|^root:.*|root:/bin/sh|' "$ANKFS/etc/passwd" 2>/dev/null
+    sed -i 's|^\(root:[^:]*:[^:]*:[^:]*:[^:]*:[^:]*:\).*|\1/bin/sh|' "$ANKFS/etc/passwd" 2>/dev/null
     log OK "ANK Shell installed"
 fi
 log OK "ANK Core addons installed"
@@ -613,9 +613,7 @@ if [ -f "$ANKFS/usr/sbin/chpasswd" ] || [ -f "$ANKFS/usr/bin/chpasswd" ]; then
     echo "root:${ANK_PASS}" | _chroot_rootfs "$ANKFS" "/sbin/chpasswd" 2>/dev/null || true
     # pfSense-style: admin user = root (uid 0), same password
     if ! grep -q "^admin:" "$ANKFS/etc/passwd" 2>/dev/null; then
-        ROOT_LINE=$(grep "^root:" "$ANKFS/etc/passwd" 2>/dev/null)
-        ROOT_UID=$(echo "$ROOT_LINE" | cut -d: -f3)
-        echo "admin:x:${ROOT_UID}:${ROOT_UID}::/root:/bin/sh" >> "$ANKFS/etc/passwd" 2>/dev/null
+        echo "admin:x:0:0::/root:/ankcoreshell.sh" >> "$ANKFS/etc/passwd" 2>/dev/null
         echo "admin:$(grep "^root:" "$ANKFS/etc/shadow" 2>/dev/null | cut -d: -f2)" >> "$ANKFS/etc/shadow" 2>/dev/null
     fi
     echo "admin:${ANK_PASS}" | _chroot_rootfs "$ANKFS" "/sbin/chpasswd" 2>/dev/null || true
