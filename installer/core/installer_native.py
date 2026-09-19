@@ -59,12 +59,12 @@ class NativeInstaller:
         ank_dir = "/data/local/ank"
 
         # server.py
-        server_py = os.path.join(project_dir, "server", "server.py")
+        server_py = os.path.join(project_dir, "magisk-module", "server", "server.py")
         if os.path.exists(server_py):
             self.adb.push(self.serial, server_py, f"{ank_dir}/server.py")
 
         # static/
-        static_dir = os.path.join(project_dir, "server", "static")
+        static_dir = os.path.join(project_dir, "magisk-module", "server", "static")
         if os.path.isdir(static_dir):
             self.adb.shell(self.serial, f"mkdir -p {ank_dir}/static")
             for root, dirs, files in os.walk(static_dir):

@@ -232,30 +232,88 @@ class ManualInstaller:
         self.adb.shell_su(self.serial, f"mkdir -p {ank_dir}/images/ank-alpinebase")
 
     def _setup_services(self):
-        """Setup boot service for ANK server."""
+        """Setup boot service for ANK server (non-Magisk rooted devices)."""
         self.adb.shell_su(self.serial, "mkdir -p /adb/services.d")
 
-        service_content = """#!/system/bin/sh
-# ANK Server Service - starts on boot
+        # Detect architecture for musl linker
+        arch_output, _ = self.adb.shell(self.serial, "uname -m")
+        arch = arch_output.strip().lower()
+        if "aarch64" in arch or "arm64" in arch:
+            musl_name = "ld-musl-aarch64.so.1"
+        elif "armv7" in arch or "armhf" in arch or "armv8" in arch:
+            musl_name = "ld-musl-armhf.so.1"
+        elif "x86_64" in arch:
+            musl_name = "ld-musl-x86_64.so.1"
+        else:
+            musl_name = f"ld-musl-{arch}.so.1"
+
+        service_content = f"""#!/system/bin/sh
+# ANK Server Service - starts on boot (non-Magisk)
 ANK_DIR="/data/local/ank"
-LOG_FILE="$ANK_DIR/logs/service.log"
+ROOTFS="$ANK_DIR/ankfs"
+LOG="$ANK_DIR/logs/service.log"
+CONFIG="$ANK_DIR/config.json"
 
-# Wait for boot to complete
+mkdir -p "$ANK_DIR/logs"
+
+# Wait for boot
+count=0
 while [ "$(getprop sys.boot_completed)" != "1" ]; do
-    sleep 5
+    sleep 2
+    count=$((count + 1))
+    [ "$count" -gt 60 ] && break
 done
+sleep 3
 
-# Check if ANK mode file exists
-if [ ! -f "$ANK_DIR/mode" ]; then
-    exit 0
+# Kill old server
+pkill -f "ld-musl-.*server.py" 2>/dev/null
+sleep 1
+
+# Find musl linker
+MUSL="$ROOTFS/lib/{musl_name}"
+if [ ! -f "$MUSL" ]; then
+    MUSL=$(find "$ROOTFS/lib" -name "ld-musl-*.so.*" 2>/dev/null | head -1)
+fi
+if [ ! -f "$MUSL" ]; then
+    echo "[$(date)] ERROR: musl linker not found" >> "$LOG"
+    exit 1
 fi
 
-# Start ANK server
-cd "$ANK_DIR/ankfs"
-export PATH="$ANK_DIR/ankfs/bin:$ANK_DIR/ankfs/usr/bin:$PATH"
-export LD_LIBRARY_PATH="$ANK_DIR/ankfs/lib:$ANK_DIR/ankfs/usr/lib"
+# Setup /dev nodes
+mkdir -p "$ROOTFS/dev"
+for _dn in null urandom random tty ptmx; do
+    [ -e "/dev/$_dn" ] && mount --bind "/dev/$_dn" "$ROOTFS/dev/$_dn" 2>/dev/null
+    [ -e "$ROOTFS/dev/$_dn" ] || mknod "$ROOTFS/dev/$_dn" c 1 3 2>/dev/null
+    chmod 666 "$ROOTFS/dev/$_dn" 2>/dev/null
+done
 
-nohup python3 /opt/ank/server.py >> "$LOG_FILE" 2>&1 &
+# Mount tmpfs on /dev if devpts not mounted
+if ! mountpoint -q "$ROOTFS/dev/pts" 2>/dev/null; then
+    umount "$ROOTFS/dev" 2>/dev/null
+    mount -t tmpfs -o size=16m tmpfs "$ROOTFS/dev" 2>/dev/null
+    for _dn in null zero random urandom tty ptmx console; do
+        [ -e "/dev/$_dn" ] && mount --bind "/dev/$_dn" "$ROOTFS/dev/$_dn" 2>/dev/null
+        [ -e "$ROOTFS/dev/$_dn" ] || mknod "$ROOTFS/dev/$_dn" c 1 3 2>/dev/null
+        chmod 666 "$ROOTFS/dev/$_dn" 2>/dev/null
+    done
+    mkdir -p "$ROOTFS/dev/pts" "$ROOTFS/dev/shm" 2>/dev/null
+    mount -t devpts devpts "$ROOTFS/dev/pts" 2>/dev/null
+fi
+
+# Start server via musl linker
+cd "$ROOTFS"
+env LD_LIBRARY_PATH="$ROOTFS/usr/lib:$ROOTFS/lib" nohup "$MUSL" "$ROOTFS/usr/bin/python3" "$ROOTFS/opt/ank/server.py" >> "$LOG" 2>&1 &
+echo $! > "$ANK_DIR/logs/server.pid"
+echo "[$(date)] Server started (PID: $(cat $ARK_DIR/logs/server.pid 2>/dev/null))" >> "$LOG"
+
+# Start sshd if available
+if [ -f "$ROOTFS/usr/sbin/sshd" ]; then
+    mkdir -p "$ROOTFS/run/ankd" "$ROOTFS/dev/pts" "$ROOTFS/dev/shm" 2>/dev/null
+    mount -t devpts devpts "$ROOTFS/dev/pts" 2>/dev/null
+    mount -t proc proc "$ROOTFS/proc" 2>/dev/null
+    nohup chroot "$ROOTFS" /usr/sbin/sshd -p 2200 -o "PidFile=/run/ankd/sshd.pid" -o "PasswordAuthentication=yes" -o "PermitRootLogin=yes" -e >> "$LOG" 2>&1 &
+    echo "[$(date)] sshd started on port 2200" >> "$LOG"
+fi
 """
         self.adb.shell_su(self.serial,
             f"echo '{service_content}' > /adb/services.d/ank.sh")

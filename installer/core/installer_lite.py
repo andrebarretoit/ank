@@ -309,13 +309,13 @@ class LiteInstaller:
         project_dir = os.path.dirname(script_dir)
 
         # server.py
-        server_py = os.path.join(project_dir, "server", "server.py")
+        server_py = os.path.join(project_dir, "magisk-module", "server", "server.py")
         if os.path.exists(server_py):
             self.adb.shell(self.serial, f"mkdir -p {REMOTE_ROOTFS}/opt/ank")
             self.adb.push(self.serial, server_py, f"{REMOTE_ROOTFS}/opt/ank/server.py")
 
         # static/
-        static_dir = os.path.join(project_dir, "server", "static")
+        static_dir = os.path.join(project_dir, "magisk-module", "server", "static")
         if os.path.isdir(static_dir):
             self.adb.shell(self.serial, f"mkdir -p {REMOTE_ROOTFS}/opt/ank/static")
             for root, dirs, files in os.walk(static_dir):
