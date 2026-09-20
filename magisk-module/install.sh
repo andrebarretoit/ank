@@ -659,11 +659,16 @@ fi
 ANK_PASS=$(grep -o '"password":"[^"]*"' "$ANK_DIR/config.json" 2>/dev/null | head -1 | cut -d'"' -f4)
 [ -z "$ANK_PASS" ] && ANK_PASS="ank123"
 
-# Generate SHA-512 hash on host (no chroot needed)
-OPENSSL=$(command -v openssl 2>/dev/null || echo /system/bin/openssl)
+# Generate SHA-512 hash using prebuild's openssl via musl linker
 ENC_PASS=""
-if [ -x "$OPENSSL" ]; then
-    ENC_PASS=$($OPENSSL passwd -6 "$ANK_PASS" 2>/dev/null)
+MUSL=$(ls "$ANKFS"/lib/ld-musl-*.so* 2>/dev/null | head -1)
+if [ -n "$MUSL" ] && [ -x "$MUSL" ]; then
+    ENC_PASS=$(LD_LIBRARY_PATH="$ANKFS/usr/lib:$ANKFS/lib" "$MUSL" "$ANKFS/usr/bin/openssl" passwd -6 "$ANK_PASS" 2>/dev/null)
+fi
+# Fallback: host openssl
+if [ -z "$ENC_PASS" ]; then
+    OPENSSL=$(command -v openssl 2>/dev/null || echo /system/bin/openssl)
+    [ -x "$OPENSSL" ] && ENC_PASS=$($OPENSSL passwd -6 "$ANK_PASS" 2>/dev/null)
 fi
 
 if [ -n "$ENC_PASS" ]; then
@@ -671,12 +676,19 @@ if [ -n "$ENC_PASS" ]; then
     if ! grep -q "^admin:" "$ANKFS/etc/passwd" 2>/dev/null; then
         echo "admin:x:1000:1000::/root:/ankcoreshell.sh" >> "$ANKFS/etc/passwd"
     fi
-    # Write shadow entries directly (host openssl hash, no chroot)
-    printf "root:%s:0:0:99999:7:::\nadmin:%s:0:0:99999:7:::\n" "$ENC_PASS" "$ENC_PASS" > "$ANKFS/etc/shadow"
+    # Write shadow entries directly (no chroot needed)
+    # sp_lstchg must be >0 or OpenSSH considers password expired
+    SP_CHG=$(( $(date +%s) / 86400 ))
+    printf "root:%s:%s:0:99999:7:::\nadmin:%s:%s:0:99999:7:::\n" "$ENC_PASS" "$SP_CHG" "$ENC_PASS" "$SP_CHG" > "$ANKFS/etc/shadow"
     chmod 640 "$ANKFS/etc/shadow"
-    log OK "root + admin passwords set via host openssl"
+    log OK "root + admin passwords set via openssl (musl)"
 else
-    log "WARN: openssl not found on host, passwords not set"
+    log "WARN: openssl not available, passwords not set"
+fi
+
+# Ensure /etc/shells includes ankcoreshell (sshd rejects login if shell not listed)
+if ! grep -q "ankcoreshell" "$ANKFS/etc/shells" 2>/dev/null; then
+    echo "/ankcoreshell.sh" >> "$ANKFS/etc/shells" 2>/dev/null || true
 fi
 
 # --- STEP 4: Server + scripts ---
