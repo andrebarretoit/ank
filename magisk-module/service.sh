@@ -106,7 +106,7 @@ if ! mountpoint -q "$ROOTFS/dev/pts" 2>/dev/null; then
         chmod 666 "$ROOTFS/dev/$_dn" 2>/dev/null
     done
     mkdir -p "$ROOTFS/dev/pts" "$ROOTFS/dev/shm" 2>/dev/null
-    mount -t devpts devpts "$ROOTFS/dev/pts" 2>/dev/null
+    mount -t devpts -o mode=0620,ptmxmode=0666 devpts "$ROOTFS/dev/pts" 2>/dev/null
     log "Mounted tmpfs on /dev (kernel 3.10 workaround)"
 fi
 
@@ -153,21 +153,33 @@ fi
 
 if [ "$SSH_ENABLED" = "1" ] && [ -f "$ROOTFS/usr/sbin/sshd" ]; then
     mkdir -p "$ROOTFS/run/ankd" 2>/dev/null
+    # /var doesn't exist on Android — create in /data and symlink for sshd's /var/empty
+    mkdir -p /data/local/ank/var/empty 2>/dev/null
+    chmod 755 /data/local/ank/var/empty 2>/dev/null
+    [ ! -e /var ] && ln -sf /data/local/ank/var /var 2>/dev/null
     mkdir -p "$ROOTFS/dev/pts" "$ROOTFS/dev/shm" 2>/dev/null
-    mount -t devpts devpts "$ROOTFS/dev/pts" 2>/dev/null
+    # Mount devpts FIRST so ptmx is created by devpts (not bind-mounted from host)
+    umount "$ROOTFS/dev/pts" 2>/dev/null
+    mount -t devpts -o mode=0620,ptmxmode=0666 devpts "$ROOTFS/dev/pts" 2>/dev/null
+    # Remove host bind-mounted ptmx, replace with devpts ptmx so PTY slave is in same namespace
+    umount "$ROOTFS/dev/ptmx" 2>/dev/null
+    rm -f "$ROOTFS/dev/ptmx" 2>/dev/null
+    ln -sf pts/ptmx "$ROOTFS/dev/ptmx" 2>/dev/null
+    chmod 666 "$ROOTFS/dev/pts/ptmx" 2>/dev/null
     mount -t proc proc "$ROOTFS/proc" 2>/dev/null
-    # Start sshd (no -D: sshd daemonizes itself via fork, survives parent exit)
     log "sshd config: port=$SSH_PORT rootfs=$ROOTFS"
     log "  sshd binary: $(ls -la "$ROOTFS/usr/sbin/sshd" 2>/dev/null || echo 'MISSING')"
     log "  host keys: rsa=$(ls "$ROOTFS/etc/ssh/ssh_host_rsa_key" 2>/dev/null || echo 'no') ed25519=$(ls "$ROOTFS/etc/ssh/ssh_host_ed25519_key" 2>/dev/null || echo 'no')"
-    log "  dev/urandom: $(ls -la "$ROOTFS/dev/urandom" 2>/dev/null || echo 'MISSING')"
     log "  shadow: $(head -1 "$ROOTFS/etc/shadow" 2>/dev/null | cut -d: -f1 || echo 'MISSING')"
+    log "  devpts: $(mount | grep "$ROOTFS/dev/pts" 2>/dev/null)"
+    log "  ptmx: $(ls -la "$ROOTFS/dev/ptmx" "$ROOTFS/dev/pts/ptmx" 2>/dev/null)"
     chroot "$ROOTFS" /usr/sbin/sshd -t 2>&1 | while IFS= read -r line; do log "  sshd -t: $line"; done || true
     nohup chroot "$ROOTFS" /usr/sbin/sshd \
         -p "$SSH_PORT" \
         -o "PidFile=/run/ankd/sshd.pid" \
         -o "PasswordAuthentication=yes" \
         -o "PermitRootLogin=yes" \
+        -o "PermitTTY=yes" \
         -o "ChallengeResponseAuthentication=no" \
         -e 2>&1 | while IFS= read -r line; do log "  sshd: $line"; done &
     sleep 2
