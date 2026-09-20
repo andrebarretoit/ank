@@ -660,13 +660,22 @@ ANK_PASS=$(grep -o '"password":"[^"]*"' "$ANK_DIR/config.json" 2>/dev/null | hea
 [ -z "$ANK_PASS" ] && ANK_PASS="ank123"
 
 # Generate SHA-512 hash — MUST run inside chroot for crypt() compatibility
-# LD_LIBRARY_PATH approach produces hashes that chroot sshd cannot verify
+# LD_LIBRARY_PATH/musl-direct produces hashes that chroot sshd cannot verify
 ENC_PASS=""
-# Primary: chroot openssl (proven to work)
+# Primary: chroot openssl directly
 if [ -f "$ANKFS/usr/bin/openssl" ]; then
-    ENC_PASS=$(_chroot_rootfs "$ANKFS" "/usr/bin/openssl passwd -6 $ANK_PASS" 2>/dev/null)
+    CHROOT_BIN=""
+    for c in /system/bin/chroot /system/xbin/chroot; do
+        [ -x "$c" ] && CHROOT_BIN="$c" && break
+    done
+    if [ -z "$CHROOT_BIN" ]; then
+        CHROOT_BIN=$(command -v chroot 2>/dev/null)
+    fi
+    if [ -n "$CHROOT_BIN" ]; then
+        ENC_PASS=$("$CHROOT_BIN" "$ANKFS" /usr/bin/openssl passwd -6 "$ANK_PASS" 2>/dev/null)
+    fi
 fi
-# Fallback: host openssl
+# Fallback: host openssl (may not work in chroot sshd)
 if [ -z "$ENC_PASS" ]; then
     OPENSSL=$(command -v openssl 2>/dev/null || echo /system/bin/openssl)
     [ -x "$OPENSSL" ] && ENC_PASS=$($OPENSSL passwd -6 "$ANK_PASS" 2>/dev/null)
