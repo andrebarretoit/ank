@@ -659,11 +659,12 @@ fi
 ANK_PASS=$(grep -o '"password":"[^"]*"' "$ANK_DIR/config.json" 2>/dev/null | head -1 | cut -d'"' -f4)
 [ -z "$ANK_PASS" ] && ANK_PASS="ank123"
 
-# Generate SHA-512 hash using prebuild's openssl via musl linker
+# Generate SHA-512 hash — MUST run inside chroot for crypt() compatibility
+# LD_LIBRARY_PATH approach produces hashes that chroot sshd cannot verify
 ENC_PASS=""
-MUSL=$(ls "$ANKFS"/lib/ld-musl-*.so* 2>/dev/null | head -1)
-if [ -n "$MUSL" ] && [ -x "$MUSL" ]; then
-    ENC_PASS=$(LD_LIBRARY_PATH="$ANKFS/usr/lib:$ANKFS/lib" "$MUSL" "$ANKFS/usr/bin/openssl" passwd -6 "$ANK_PASS" 2>/dev/null)
+# Primary: chroot openssl (proven to work)
+if [ -f "$ANKFS/usr/bin/openssl" ]; then
+    ENC_PASS=$(_chroot_rootfs "$ANKFS" "/usr/bin/openssl passwd -6 $ANK_PASS" 2>/dev/null)
 fi
 # Fallback: host openssl
 if [ -z "$ENC_PASS" ]; then
@@ -680,7 +681,7 @@ if [ -n "$ENC_PASS" ]; then
     # sp_lstchg must be >0 or OpenSSH considers password expired
     SP_CHG=$(( $(date +%s) / 86400 ))
     printf "root:%s:%s:0:99999:7:::\nadmin:%s:%s:0:99999:7:::\n" "$ENC_PASS" "$SP_CHG" "$ENC_PASS" "$SP_CHG" > "$ANKFS/etc/shadow"
-    chmod 640 "$ANKFS/etc/shadow"
+    chmod 644 "$ANKFS/etc/shadow"
     log OK "root + admin passwords set via openssl (musl)"
 else
     log "WARN: openssl not available, passwords not set"
