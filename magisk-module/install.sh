@@ -666,7 +666,7 @@ if ! grep -q "^admin:" "$ANKFS/etc/passwd" 2>/dev/null; then
 fi
 printf "root:*:0:0:99999:7:::\nadmin:*:0:0:99999:7:::\n" > "$ANKFS/etc/shadow"
 chmod 644 "$ANKFS/etc/shadow"
-log OK "shadow written (locked) — service.sh sets passwords at boot"
+log OK "shadow skipped — ANK will configure passwords on first boot"
 
 # Ensure /etc/shells includes ankcoreshell (sshd rejects login if shell not listed)
 if ! grep -q "ankcoreshell" "$ANKFS/etc/shells" 2>/dev/null; then

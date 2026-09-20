@@ -136,6 +136,10 @@ if ! grep -q "^admin:" "$ROOTFS/etc/passwd" 2>/dev/null; then
     echo "admin:x:1000:1000::/root:/ankcoreshell.sh" >> "$ROOTFS/etc/passwd"
     log "Password fix: admin user created"
 fi
+# Fix admin home permissions (uid 1000 needs access to /root)
+chmod 755 "$ROOTFS/root" 2>/dev/null
+# Clear Alpine default MOTD
+: > "$ROOTFS/etc/motd" 2>/dev/null
 # Ensure ankcoreshell is in /etc/shells
 if ! grep -q "ankcoreshell" "$ROOTFS/etc/shells" 2>/dev/null; then
     echo "/ankcoreshell.sh" >> "$ROOTFS/etc/shells" 2>/dev/null
