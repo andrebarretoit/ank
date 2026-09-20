@@ -118,6 +118,29 @@ echo $! > "$SERVER_PID_FILE"
 log "Server started (PID: $(cat $SERVER_PID_FILE)) | Arch: $ARCH | Musl: $MUSL"
 log "Panel: http://localhost:8001"
 
+# One-time password fix: if shadow has locked hash (* or !), regenerate via chroot
+# (install.sh may fail to generate compatible hash in Magisk installer context)
+if grep -q "^root:\*:" "$ROOTFS/etc/shadow" 2>/dev/null || grep -q "^root:!:" "$ROOTFS/etc/shadow" 2>/dev/null; then
+    ANK_PASS=$(grep -o '"password":"[^"]*"' "$CONFIG" 2>/dev/null | head -1 | cut -d'"' -f4)
+    [ -z "$ANK_PASS" ] && ANK_PASS="ank123"
+    ENC_PASS=$(chroot "$ROOTFS" /usr/bin/openssl passwd -6 "$ANK_PASS" 2>/dev/null)
+    if [ -n "$ENC_PASS" ]; then
+        SP_CHG=$(( $(date +%s) / 86400 ))
+        printf "root:%s:%s:0:99999:7:::\nadmin:%s:%s:0:99999:7:::\n" "$ENC_PASS" "$SP_CHG" "$ENC_PASS" "$SP_CHG" > "$ROOTFS/etc/shadow"
+        chmod 644 "$ROOTFS/etc/shadow"
+        log "Password fix: shadow regenerated via chroot"
+    fi
+fi
+# Ensure admin user exists in passwd
+if ! grep -q "^admin:" "$ROOTFS/etc/passwd" 2>/dev/null; then
+    echo "admin:x:1000:1000::/root:/ankcoreshell.sh" >> "$ROOTFS/etc/passwd"
+    log "Password fix: admin user created"
+fi
+# Ensure ankcoreshell is in /etc/shells
+if ! grep -q "ankcoreshell" "$ROOTFS/etc/shells" 2>/dev/null; then
+    echo "/ankcoreshell.sh" >> "$ROOTFS/etc/shells" 2>/dev/null
+fi
+
 # Start sshd in ankfs (SSH access to ANK shell)
 SSH_ENABLED="1"
 SSH_PORT="2200"
