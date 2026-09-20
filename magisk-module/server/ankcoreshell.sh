@@ -9,6 +9,11 @@ ANK_DIR="/data/local/ank"
 CONFIG="$ANK_DIR/config.json"
 SCRIPTS_DIR="$ANK_DIR/core"
 
+# Non-interactive SSH: pass command to /bin/sh
+if [ "$#" -gt 0 ]; then
+    exec /bin/sh "$@"
+fi
+
 # Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'

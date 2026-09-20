@@ -1968,7 +1968,6 @@ function showSettingsSection(section) {
     el.innerHTML = `<div class="card"><div class="card-header"><h3><i class="bi bi-person-gear"></i> Account</h3></div><div class="card-body">
       <form id="password-form">
         <div class="form-group"><label class="form-label">Current Password</label><input type="password" class="form-input" id="current-password" required></div>
-        <div class="form-group"><label class="form-label">Username</label><input type="text" class="form-input" id="new-username" autocomplete="off"></div>
         <div class="form-group"><label class="form-label">New Password</label><input type="password" class="form-input" id="new-password" minlength="6"></div>
         <button type="submit" class="btn btn-primary"><i class="bi bi-check-lg"></i> Save</button>
       </form>
@@ -1976,19 +1975,16 @@ function showSettingsSection(section) {
     document.getElementById('password-form')?.addEventListener('submit', async (e) => {
       e.preventDefault();
       try {
+        const newPass = document.getElementById('new-password').value;
         await api('POST', '/auth/password', {
           current_password: document.getElementById('current-password').value,
-          username: document.getElementById('new-username').value || undefined,
-          new_password: document.getElementById('new-password').value || undefined
+          new_password: newPass
         });
-        toast('Credentials updated', 'success');
-        const newPass = document.getElementById('new-password').value;
-        const newUser = document.getElementById('new-username').value;
+        toast('Password updated', 'success');
         if (newPass) {
-          const user = newUser || loginUsername.value;
           const loginRes = await fetch(`${API}/auth/login`, {
             method: 'POST', headers: { 'Content-Type': 'application/json', 'X-ANK-Client': 'ank-panel' },
-            body: JSON.stringify({ username: user, password: newPass })
+            body: JSON.stringify({ username: loginUsername.value, password: newPass })
           });
           const loginData = await loginRes.json();
           if (loginData.token) { ankToken = loginData.token; localStorage.setItem('ank_token', ankToken); }

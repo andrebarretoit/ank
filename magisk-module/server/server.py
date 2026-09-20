@@ -2201,13 +2201,11 @@ small{color:#334155}
         if not _verify_password(current, config.get("password", "")):
             self.send_error(401, "Current password incorrect")
             return
-        new_user = data.get("username") or config.get("username")
         new_pass = data.get("new_password", "")
         if not new_pass or len(new_pass) < 6:
             self.send_error(400, "Password must be at least 6 characters")
             return
-        config["username"] = new_user
-        config["password"] = _hash_password(new_pass)
+        config["password"] = new_pass
         config["first_boot"] = False
         save_config(config)
         try:
@@ -2216,7 +2214,7 @@ small{color:#334155}
                 f.write(f"ANK - Android Konteiner\n")
                 f.write(f"=======================\n")
                 f.write(f"Painel: https://localhost:8001\n")
-                f.write(f"Usuario: {new_user}\n")
+                f.write(f"Usuario: {config.get('username', 'admin')}\n")
                 f.write(f"Senha: {new_pass}\n")
         except Exception:
             pass
@@ -5470,31 +5468,36 @@ small{color:#334155}
         threading.Thread(target=_do, daemon=True).start()
 
     def _sync_ankfs_password(self, password):
-        """Sync root password to ankfs /etc/shadow for SSH auth.
-        pfSense-style: both 'admin' and 'root' work, both map to uid 0."""
+        """Sync password to ankfs /etc/shadow for SSH auth.
+        pfSense-style: both 'admin' and 'root' work with same password."""
         ankfs = os.path.join(ANK_DIR, "ankfs")
         shadow = os.path.join(ankfs, "etc/shadow")
-        if os.path.isfile(shadow):
-            try:
-                import subprocess
-                proc = subprocess.Popen(
-                    ["chroot", ankfs, "/sbin/chpasswd"],
-                    stdin=subprocess.PIPE,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL
-                )
-                proc.communicate(input=f"root:{password}".encode(), timeout=5)
-                # Also set admin password (same as root)
-                proc2 = subprocess.Popen(
-                    ["chroot", ankfs, "/sbin/chpasswd"],
-                    stdin=subprocess.PIPE,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL
-                )
-                proc2.communicate(input=f"admin:{password}".encode(), timeout=5)
-            except Exception:
-                pass
-        # Ensure admin user exists in /etc/passwd (uid 0 = root)
+        if not os.path.isfile(shadow):
+            return
+        try:
+            import subprocess
+            # Generate SHA-512 hash via chroot openssl (crypt compat)
+            proc = subprocess.Popen(
+                ["chroot", ankfs, "/usr/bin/openssl", "passwd", "-6", password],
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
+            )
+            out, _ = proc.communicate(timeout=5)
+            enc = out.decode().strip()
+            if not enc or not enc.startswith("$6$"):
+                return
+            # Write shadow directly (sp_lstchg = today)
+            import time
+            sp_chg = int(time.time() / 86400)
+            shadow_content = (
+                f"root:{enc}:{sp_chg}:0:99999:7:::\n"
+                f"admin:{enc}:{sp_chg}:0:99999:7:::\n"
+            )
+            with open(shadow, "w") as f:
+                f.write(shadow_content)
+            os.chmod(shadow, 0o644)
+        except Exception:
+            pass
+        # Ensure admin user exists in /etc/passwd (uid 1000)
         passwd = os.path.join(ankfs, "etc/passwd")
         if os.path.isfile(passwd):
             try:
@@ -5502,13 +5505,8 @@ small{color:#334155}
                     lines = f.readlines()
                 has_admin = any(l.startswith("admin:") for l in lines)
                 if not has_admin:
-                    # Add admin user with uid=0, same as root
-                    root_line = next((l for l in lines if l.startswith("root:")), None)
-                    if root_line:
-                        parts = root_line.strip().split(":")
-                        admin_line = f"admin:x:{parts[2]}:{parts[3]}::/root:/bin/sh\n"
-                        with open(passwd, "a") as f:
-                            f.write(admin_line)
+                    with open(passwd, "a") as f:
+                        f.write("admin:x:1000:1000::/root:/ankcoreshell.sh\n")
             except Exception:
                 pass
 
