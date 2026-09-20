@@ -659,42 +659,14 @@ fi
 ANK_PASS=$(grep -o '"password":"[^"]*"' "$ANK_DIR/config.json" 2>/dev/null | head -1 | cut -d'"' -f4)
 [ -z "$ANK_PASS" ] && ANK_PASS="ank123"
 
-# Generate SHA-512 hash — MUST run inside chroot for crypt() compatibility
-# LD_LIBRARY_PATH/musl-direct produces hashes that chroot sshd cannot verify
-ENC_PASS=""
-# Primary: chroot openssl directly
-if [ -f "$ANKFS/usr/bin/openssl" ]; then
-    CHROOT_BIN=""
-    for c in /system/bin/chroot /system/xbin/chroot; do
-        [ -x "$c" ] && CHROOT_BIN="$c" && break
-    done
-    if [ -z "$CHROOT_BIN" ]; then
-        CHROOT_BIN=$(command -v chroot 2>/dev/null)
-    fi
-    if [ -n "$CHROOT_BIN" ]; then
-        ENC_PASS=$("$CHROOT_BIN" "$ANKFS" /usr/bin/openssl passwd -6 "$ANK_PASS" 2>/dev/null)
-    fi
+# Write shadow with locked password — service.sh regenerates at boot via chroot
+# (Magisk installer context cannot run chroot correctly for openssl hash)
+if ! grep -q "^admin:" "$ANKFS/etc/passwd" 2>/dev/null; then
+    echo "admin:x:1000:1000::/root:/ankcoreshell.sh" >> "$ANKFS/etc/passwd"
 fi
-# Fallback: host openssl (may not work in chroot sshd)
-if [ -z "$ENC_PASS" ]; then
-    OPENSSL=$(command -v openssl 2>/dev/null || echo /system/bin/openssl)
-    [ -x "$OPENSSL" ] && ENC_PASS=$($OPENSSL passwd -6 "$ANK_PASS" 2>/dev/null)
-fi
-
-if [ -n "$ENC_PASS" ]; then
-    # Write admin user in passwd (UID 1000, same home/shell as root)
-    if ! grep -q "^admin:" "$ANKFS/etc/passwd" 2>/dev/null; then
-        echo "admin:x:1000:1000::/root:/ankcoreshell.sh" >> "$ANKFS/etc/passwd"
-    fi
-    # Write shadow entries directly (no chroot needed)
-    # sp_lstchg must be >0 or OpenSSH considers password expired
-    SP_CHG=$(( $(date +%s) / 86400 ))
-    printf "root:%s:%s:0:99999:7:::\nadmin:%s:%s:0:99999:7:::\n" "$ENC_PASS" "$SP_CHG" "$ENC_PASS" "$SP_CHG" > "$ANKFS/etc/shadow"
-    chmod 644 "$ANKFS/etc/shadow"
-    log OK "root + admin passwords set via openssl (musl)"
-else
-    log "WARN: openssl not available, passwords not set"
-fi
+printf "root:*:0:0:99999:7:::\nadmin:*:0:0:99999:7:::\n" > "$ANKFS/etc/shadow"
+chmod 644 "$ANKFS/etc/shadow"
+log OK "shadow written (locked) — service.sh sets passwords at boot"
 
 # Ensure /etc/shells includes ankcoreshell (sshd rejects login if shell not listed)
 if ! grep -q "ankcoreshell" "$ANKFS/etc/shells" 2>/dev/null; then
