@@ -2,6 +2,7 @@
 ANK Installer - Step: ANK Manager (PySide6)
 Start/Stop/Restart ANK server + real-time logs.
 Shown in sidebar when ANK is detected as installed.
+Handles both rooted (chroot/musl) and lite (proot) installations.
 """
 
 import time
@@ -14,24 +15,71 @@ from PySide6.QtGui import QTextCursor
 from ui.theme import COLORS
 
 
+def _detect_ank_paths(adb, serial):
+    """Detect ANK installation paths and mode. Returns dict with paths or None."""
+    # Check rooted first
+    out, _ = adb.shell(serial, "ls /data/local/ank/mode 2>/dev/null")
+    if out and "mode" in out:
+        try:
+            import json as _j
+            mode_out, _ = adb.shell(serial, "cat /data/local/ank/mode 2>/dev/null")
+            mode_data = _j.loads(mode_out.strip()) if mode_out.strip().startswith("{") else {}
+            mode = mode_data.get("mode", "shared_host")
+        except Exception:
+            mode = "shared_host"
+
+        if mode == "lite":
+            return {
+                "mode": "lite",
+                "base_dir": "/data/local/tmp/ank",
+                "start_script": "/data/local/tmp/ank/start-lite.sh",
+                "stop_script": "/data/local/tmp/ank/stop-lite.sh",
+                "log_file": "/data/local/tmp/ank/logs/server.log",
+                "rooted": False,
+            }
+        return {
+            "mode": mode,
+            "base_dir": "/data/local/ank",
+            "start_script": None,
+            "stop_script": None,
+            "log_file": "/data/local/ank/logs/service.log",
+            "rooted": True,
+        }
+
+    # Check lite
+    out, _ = adb.shell(serial, "ls /data/local/tmp/ank/mode 2>/dev/null")
+    if out and "mode" in out:
+        return {
+            "mode": "lite",
+            "base_dir": "/data/local/tmp/ank",
+            "start_script": "/data/local/tmp/ank/start-lite.sh",
+            "stop_script": "/data/local/tmp/ank/stop-lite.sh",
+            "log_file": "/data/local/tmp/ank/logs/server.log",
+            "rooted": False,
+        }
+
+    return None
+
+
 class StatusPollThread(QThread):
     """Background thread polling ANK server status via ADB."""
     status_update = Signal(str, str)  # status, detail
     log_line = Signal(str)
 
-    def __init__(self, adb, serial, rooted):
+    def __init__(self, adb, serial, ank_paths):
         super().__init__()
         self.adb = adb
         self.serial = serial
-        self.rooted = rooted
+        self.ank_paths = ank_paths
         self._running = True
 
     def run(self):
-        import subprocess
+        rooted = self.ank_paths.get("rooted", True) if self.ank_paths else True
+        log_file = self.ank_paths.get("log_file", "/data/local/ank/logs/service.log") if self.ank_paths else "/data/local/ank/logs/service.log"
+
         while self._running:
             try:
-                # Check if server process is running
-                if self.rooted:
+                if rooted:
                     out, _ = self.adb.shell_su(self.serial,
                         "pgrep -f 'python3.*server.py' 2>/dev/null")
                 else:
@@ -44,10 +92,10 @@ class StatusPollThread(QThread):
                 else:
                     self.status_update.emit("stopped", "Server not running")
 
-                # Fetch last log lines
-                log_cmd = "tail -5 /data/local/ank/logs/service.log 2>/dev/null"
-                if not self.rooted:
-                    log_cmd = "cat /data/local/ank/logs/service.log 2>/dev/null | tail -5"
+                if rooted:
+                    log_cmd = f"tail -5 {log_file} 2>/dev/null"
+                else:
+                    log_cmd = f"tail -5 {log_file} 2>/dev/null"
                 log_out, _ = self.adb.shell(self.serial, log_cmd)
                 if log_out.strip():
                     for line in log_out.strip().split("\n")[-3:]:
@@ -73,6 +121,7 @@ class StepManager(QWidget):
         super().__init__(parent)
         self.app = app
         self._thread = None
+        self._ank_paths = None
         self._create_ui()
 
     def _create_ui(self):
@@ -80,7 +129,6 @@ class StepManager(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(16)
 
-        # Header
         header = QHBoxLayout()
         title = QLabel("ANK Manager")
         title.setObjectName("title")
@@ -88,7 +136,6 @@ class StepManager(QWidget):
         header.addStretch()
         layout.addLayout(header)
 
-        # Status card
         self.status_frame = QFrame()
         self.status_frame.setObjectName("card")
         status_layout = QHBoxLayout(self.status_frame)
@@ -111,7 +158,6 @@ class StepManager(QWidget):
 
         layout.addWidget(self.status_frame)
 
-        # Control buttons
         btn_row = QHBoxLayout()
         btn_row.setSpacing(10)
 
@@ -136,7 +182,6 @@ class StepManager(QWidget):
         btn_row.addStretch()
         layout.addLayout(btn_row)
 
-        # Log area
         log_label = QLabel("Live Logs")
         log_label.setStyleSheet(f"color: {COLORS['text_secondary']}; font-size: 12px; font-weight: 600;")
         layout.addWidget(log_label)
@@ -157,7 +202,6 @@ class StepManager(QWidget):
         self.log_area.setMinimumHeight(200)
         layout.addWidget(self.log_area, 1)
 
-        # Back button
         back_row = QHBoxLayout()
         back_row.addStretch()
         self.btn_back = QPushButton("\u2190 Back to Installer")
@@ -180,12 +224,10 @@ class StepManager(QWidget):
         layout.addLayout(back_row)
 
     def on_show(self):
-        """Called when this step becomes visible."""
         self.log_area.clear()
         self._poll_status()
 
     def _poll_status(self):
-        """Start polling device status."""
         if self._thread and self._thread.isRunning():
             self._thread.stop()
             self._thread.wait(1000)
@@ -196,8 +238,22 @@ class StepManager(QWidget):
             self.status_dot.setStyleSheet(f"color: {COLORS['danger']}; font-size: 16px;")
             return
 
-        self._thread = StatusPollThread(
-            self.app._adb, device.serial, getattr(device, 'is_rooted', False))
+        adb = self.app._adb
+        self._ank_paths = _detect_ank_paths(adb, device.serial)
+
+        if not self._ank_paths:
+            self.status_label.setText("ANK not installed")
+            self.status_detail.setText("Run the installer first")
+            self.status_dot.setStyleSheet(f"color: {COLORS['danger']}; font-size: 16px;")
+            self.btn_start.setEnabled(True)
+            self.btn_stop.setEnabled(False)
+            self.btn_restart.setEnabled(False)
+            return
+
+        mode_label = f"{self._ank_paths['mode']} mode"
+        self.status_detail.setText(mode_label)
+
+        self._thread = StatusPollThread(adb, device.serial, self._ank_paths)
         self._thread.status_update.connect(self._on_status)
         self._thread.log_line.connect(self._on_log)
         self._thread.start()
@@ -260,87 +316,75 @@ class StepManager(QWidget):
         self._exec_cmd("restart")
 
     def _exec_cmd(self, cmd):
-        """Execute start/stop/restart via ADB signals."""
+        """Execute start/stop/restart. Uses scripts for lite, server.py CLI for rooted."""
         device = self.app.device_data
-        if not device:
+        if not device or not self._ank_paths:
             return
-        rooted = getattr(device, 'is_rooted', False)
+
         serial = device.serial
-
-        class CmdThread(QThread):
-            done = Signal()
-            def __init__(self):
-                super().__init__()
-            def run(self):
-                try:
-                    # Find server PID
-                    if rooted:
-                        out, _ = adb.shell_su(serial,
-                            "pgrep -f 'python3.*server.py' 2>/dev/null")
-                    else:
-                        out, _ = adb.shell(serial,
-                            "pgrep -f 'python3.*server.py' 2>/dev/null")
-                    pid = out.strip().split("\n")[0] if out.strip() else ""
-
-                    if cmd == "start":
-                        if pid and pid.isdigit():
-                            return  # already running
-                        # Launch server
-                        if rooted:
-                            adb.shell_su(serial,
-                                "cd /data/local/ank/ankfs && "
-                                "LD_LIBRARY_PATH=/data/local/ank/ankfs/lib:/data/local/ank/ankfs/usr/lib "
-                                "nohup /data/local/ank/ankfs/lib/ld-musl-*.so* "
-                                "/data/local/ank/ankfs/usr/bin/python3 /opt/ank/server.py "
-                                ">> /data/local/ank/logs/service.log 2>&1 &")
-                        else:
-                            adb.shell(serial,
-                                "cd /data/local/ank/ankfs && "
-                                "nohup /data/local/ank/proot -0 -r /data/local/ank/ankfs "
-                                "-b /dev -b /proc -w /root "
-                                "/usr/bin/python3 /opt/ank/server.py "
-                                ">> /data/local/ank/logs/service.log 2>&1 &")
-                    elif cmd == "stop":
-                        if pid and pid.isdigit():
-                            if rooted:
-                                adb.shell_su(serial, f"kill {pid}")
-                            else:
-                                adb.shell(serial, f"kill {pid}")
-                    elif cmd == "restart":
-                        if pid and pid.isdigit():
-                            if rooted:
-                                adb.shell_su(serial, f"kill -HUP {pid}")
-                            else:
-                                adb.shell(serial, f"kill -HUP {pid}")
-                        else:
-                            # Not running — just start
-                            if rooted:
-                                adb.shell_su(serial,
-                                    "cd /data/local/ank/ankfs && "
-                                    "LD_LIBRARY_PATH=/data/local/ank/ankfs/lib:/data/local/ank/ankfs/usr/lib "
-                                    "nohup /data/local/ank/ankfs/lib/ld-musl-*.so* "
-                                    "/data/local/ank/ankfs/usr/bin/python3 /opt/ank/server.py "
-                                    ">> /data/local/ank/logs/service.log 2>&1 &")
-                            else:
-                                adb.shell(serial,
-                                    "cd /data/local/ank/ankfs && "
-                                    "nohup /data/local/ank/proot -0 -r /data/local/ank/ankfs "
-                                    "-b /dev -b /proc -w /root "
-                                    "/usr/bin/python3 /opt/ank/server.py "
-                                    ">> /data/local/ank/logs/service.log 2>&1 &")
-                except Exception:
-                    pass
-                self.done.emit()
-
         adb = self.app._adb
+        ank = self._ank_paths
+
+        if ank["mode"] == "lite":
+            if cmd == "start":
+                run_cmd = f"sh {ank['start_script']}"
+            elif cmd == "stop":
+                run_cmd = f"sh {ank['stop_script']}"
+            else:
+                run_cmd = f"sh {ank['stop_script']}; sleep 2; sh {ank['start_script']}"
+
+            class CmdThread(QThread):
+                done = Signal()
+                def run(self):
+                    try:
+                        adb.shell(serial, run_cmd)
+                    except Exception:
+                        pass
+                    self.done.emit()
+
+        else:
+            PYTHON_BASE = "/data/local/ank/ankfs/usr/bin/python3"
+            SERVER_SCRIPT = "/opt/ank/server.py"
+            WORK_DIR = "/data/local/ank/ankfs"
+            LIB_PATH = "/data/local/ank/ankfs/lib:/data/local/ank/ankfs/usr/lib"
+            MUSL = "/data/local/ank/ankfs/lib/ld-musl-*.so*"
+            LOG = "/data/local/ank/logs/service.log"
+
+            if cmd == "start":
+                out, _ = adb.shell_su(serial, "pgrep -f 'python3.*server.py' 2>/dev/null")
+                pid = out.strip().split("\n")[0] if out.strip() else ""
+                if pid and pid.isdigit():
+                    return
+
+                subcmd = "ankengine.startserver"
+                run_cmd = (
+                    f"cd {WORK_DIR} && "
+                    f"LD_LIBRARY_PATH={LIB_PATH} "
+                    f"nohup {MUSL} {PYTHON_BASE} {SERVER_SCRIPT} {subcmd} "
+                    f">> {LOG} 2>&1 &"
+                )
+            else:
+                subcmd = f"ankengine.{cmd}server"
+                run_cmd = (
+                    f"cd {WORK_DIR} && "
+                    f"{MUSL} {PYTHON_BASE} {SERVER_SCRIPT} {subcmd}"
+                )
+
+            class CmdThread(QThread):
+                done = Signal()
+                def run(self):
+                    try:
+                        adb.shell_su(serial, run_cmd)
+                    except Exception:
+                        pass
+                    self.done.emit()
+
         t = CmdThread()
         t.done.connect(lambda: self._poll_status())
         t.start()
-        # Keep reference to prevent GC
         self._cmd_thread = t
 
     def _on_back(self):
-        """Return to mode selector."""
         if self._thread and self._thread.isRunning():
             self._thread.stop()
             self._thread.wait(1000)

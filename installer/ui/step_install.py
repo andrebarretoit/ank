@@ -379,8 +379,11 @@ class InstallThread(QThread):
         self._retry_result = False
 
         def callback(step, message, progress_val):
-            self.progress.emit(progress_val, message)
-            self.log.emit(message)
+            if progress_val < 0:
+                self.log.emit(message)
+            else:
+                self.progress.emit(progress_val, message)
+                self.log.emit(message)
 
         def retry_callback(url, error):
             self._retry_event = threading.Event()

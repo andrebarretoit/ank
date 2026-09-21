@@ -332,8 +332,20 @@ class LiteInstaller:
     # ------------------------------------------------------------------
     # Main install flow
     # ------------------------------------------------------------------
+    def _log(self, msg: str):
+        """Emit a timestamped log line like the rooted installer."""
+        ts = time.strftime("%H:%M:%S")
+        self._notify("_log", f"[{ts}] {msg}", -1)
+
     def install(self) -> bool:
-        # --- Clean previous install ---
+        # Header
+        self._log("[ANK-INSTALLER] Starting lite installation, please wait...")
+        self._log("  ================================")
+        self._log("   ANK - Android Konteiner v2.0.0")
+        self._log("  ================================")
+
+        # --- Step 1: Clean ---
+        self._log("[STEP] 1/4 > Clean...")
         self._notify("clean", "Cleaning previous installation...", 0.01)
         self._sh(
             "pkill -9 -f 'proot.*ank' 2>/dev/null; "
@@ -343,105 +355,114 @@ class LiteInstaller:
             "rm -rf /data/local/tmp/ank 2>/dev/null; "
             "rm -rf /data/local/tmp/ank_extract 2>/dev/null"
         )
-        self._notify("clean", "Clean complete", 0.02)
+        self._log("[OK] Done")
 
-        # --- Arch ---
+        # --- Step 2: ANK-Engine ---
+        self._log("[STEP] 2/4 > ANK-Engine...")
+
         self._notify("arch", "Detecting architecture...", 0.02)
         arch = self._get_arch()
         prebuild = self._prebuild_arch(arch)
         proot_a = self._proot_arch(arch)
-        self._notify("arch", f"Device: {arch} | rootfs: {prebuild} | proot: {proot_a}", 0.05)
+        self._log(f"  Device: {arch} | rootfs: {prebuild} | proot: {proot_a}")
 
-        # --- Push ZIP ---
         self._notify("push", "Locating ZIP...", 0.06)
         zip_path = self._find_zip()
         if not zip_path:
-            self._notify("error", "ank-magisk.zip not found", 0)
+            self._log("[FAIL] ank-magisk.zip not found")
             return False
         zip_mb = os.path.getsize(zip_path) / (1024 * 1024)
+        self._log(f"  Pushing ZIP ({zip_mb:.1f} MB)...")
         self._notify("push", f"Pushing ZIP ({zip_mb:.1f} MB)...", 0.08)
         if not self.adb.push(self.serial, zip_path, "/sdcard/Download/ank-magisk.zip"):
-            self._notify("error", "Failed to push ZIP", 0)
+            self._log("[FAIL] Failed to push ZIP")
             return False
         self._notify("push", "ZIP pushed", 0.25)
+        self._log("[OK] ZIP pushed")
 
-        # --- Unzip ---
-        self._notify("extract", "Extracting ZIP on device...", 0.26)
+        self._notify("extract", "Extracting ZIP...", 0.26)
         self._sh(f"rm -rf {EXTRACT_DIR} && mkdir -p {EXTRACT_DIR}")
         out, code = self._sh(f"cd {EXTRACT_DIR} && unzip -o /sdcard/Download/ank-magisk.zip", timeout=300)
         if code != 0:
-            self._notify("error", f"unzip failed: {out.strip()[:200]}", 0)
+            self._log(f"[FAIL] unzip failed: {out.strip()[:200]}")
             return False
-        self._notify("extract", "ZIP extracted", 0.35)
+        self._log("[OK] ZIP extracted")
 
-        # --- PRoot ---
         self._notify("proot", "Resolving PRoot...", 0.36)
         self._sh(f"mkdir -p {ANK_DIR} {REMOTE_LOGS} {REMOTE_TMP}")
         if not self._resolve_proot(proot_a):
+            self._log("[FAIL] PRoot not found")
             return False
         out, _ = self._sh(f"{REMOTE_PROOT} --version 2>&1")
         if "5.1.0" not in out and "PRoot" not in out and "proot" not in out.lower():
-            self._notify("error", f"PRoot broken: {out.strip()[:100]}", 0)
+            self._log(f"[FAIL] PRoot broken: {out.strip()[:100]}")
             return False
-        self._notify("proot", "PRoot verified", 0.54)
+        self._log("[OK] PRoot ready")
 
-        # --- Extract rootfs ---
         self._notify("rootfs", f"Extracting rootfs ({prebuild})...", 0.55)
         tarball = f"{EXTRACT_DIR}/ankfs/ank-prebuild-{prebuild}.tar.gz"
         out, _ = self._sh(f"test -f {tarball} && echo OK")
         if "OK" not in out:
-            self._notify("error", f"Prebuild not found: {tarball}", 0)
-            self._sh(f"ls {EXTRACT_DIR}/ankfs/")
+            self._log(f"[FAIL] Prebuild not found: {tarball}")
             return False
         self._sh(f"mkdir -p {REMOTE_ROOTFS} {REMOTE_TMP}")
         out, _ = self._sh(f"cd {REMOTE_ROOTFS} && tar xzf {tarball} 2>&1", timeout=300)
-        # tar may return non-zero (dev nodes as shell user) — verify rootfs works
         out, _ = self._sh(f"test -f {REMOTE_ROOTFS}/bin/busybox && test -f {REMOTE_ROOTFS}/usr/bin/python3 && echo OK")
         if "OK" not in out:
-            self._notify("error", "Rootfs extraction failed (no busybox or python3)", 0)
+            self._log("[FAIL] Rootfs extraction failed (no busybox or python3)")
             return False
-        self._notify("rootfs", "Rootfs ready", 0.62)
+        self._log("[OK] ANKFS ready")
+
+        self._log("[STEP] 2.5/4 > Building ANK-ALPINEBASE...")
+        ankbase = f"{REMOTE_IMAGES}/ank-alpinebase-3.20"
+        self._sh(f"mkdir -p {ankbase}")
+        out, _ = self._sh(f"cd {ankbase} && tar xzf {tarball} 2>&1", timeout=300)
+        self._push_apk_repos_http(f"{ankbase}/etc/apk/repositories")
+        self._push_resolv_conf(f"{ankbase}/etc/resolv.conf")
+        self._push_text("127.0.0.1 localhost\n", f"{ankbase}/etc/hosts")
+        self._sh(f"sed -i 's|^root:[^:]*:[^:]*:[^:]*:[^:]*:[^:]*:.*|root:x:0:0:root:/root:/bin/bash|' {ankbase}/etc/passwd 2>/dev/null")
+        self._sh(f"mkdir -p {ankbase}/etc/ssh {ankbase}/run/sshd {ankbase}/root/.ssh")
+        self._sh(f"chmod 700 {ankbase}/root/.ssh && touch {ankbase}/root/.ssh/authorized_keys && chmod 600 {ankbase}/root/.ssh/authorized_keys")
+        self._push_ankbase_sshd_config()
+        self._guest("ssh-keygen -A 2>/dev/null", rootfs=ankbase, timeout=60)
+        for k in [f"{ankbase}/etc/ssh/ssh_host_rsa_key", f"{ankbase}/etc/ssh/ssh_host_ed25519_key"]:
+            self._sh(f"chmod 600 {k} 2>/dev/null")
+        for k in [f"{ankbase}/etc/ssh/ssh_host_rsa_key.pub", f"{ankbase}/etc/ssh/ssh_host_ed25519_key.pub"]:
+            self._sh(f"chmod 644 {k} 2>/dev/null")
+        self._sh(f"rm -rf {ankbase}/opt/ank 2>/dev/null")
+        self._log("[OK] ANK-ALPINEBASE built")
 
         # --- Server files ---
+        self._log("[STEP] 3/4 > Configuring ANK Core addons...")
         self._notify("server", "Copying server files...", 0.63)
         server_dir = f"{EXTRACT_DIR}/server"
         remote_opt = f"{REMOTE_ROOTFS}/opt/ank"
         self._sh(f"mkdir -p {remote_opt}/static {remote_opt}/ankd {remote_opt}/bin {remote_opt}/scripts")
 
-        # .py files
         out, _ = self._sh(f"ls {server_dir}/*.py 2>/dev/null")
         if out.strip():
             self._sh(f"cp {server_dir}/*.py {remote_opt}/")
-
-        # static/
         out, _ = self._sh(f"ls {server_dir}/static/ 2>/dev/null")
         if out.strip():
             self._sh(f"cp -r {server_dir}/static/* {remote_opt}/static/")
-
-        # ankd/
         out, _ = self._sh(f"ls {server_dir}/ankd/ 2>/dev/null")
         if out.strip():
             self._sh(f"cp -r {server_dir}/ankd/* {remote_opt}/ankd/")
-
-        # ankcoreshell + ank-shell → rootfs root
         for name in ["ankcoreshell.sh", "ank-shell.sh"]:
             out, _ = self._sh(f"test -f {server_dir}/{name} && echo OK")
             if "OK" in out:
                 self._sh(f"cp {server_dir}/{name} {REMOTE_ROOTFS}/{name} && chmod 755 {REMOTE_ROOTFS}/{name}")
 
-        self._notify("server", "Server files ready", 0.67)
+        py_count = len(out.strip().split("\n")) if out.strip() else 0
+        self._log(f"[OK] Server files ready")
 
-        # --- Scripts ---
-        self._notify("scripts", "Copying scripts...", 0.68)
+        # Scripts
         self._sh(f"mkdir -p {ANK_DIR}/core")
         out, _ = self._sh(f"ls {EXTRACT_DIR}/scripts/*.sh 2>/dev/null")
         if out.strip():
             self._sh(f"cp {EXTRACT_DIR}/scripts/*.sh {ANK_DIR}/core/")
             self._sh(f"chmod 755 {ANK_DIR}/core/*.sh")
-            # Also inside rootfs for server
             self._sh(f"cp {EXTRACT_DIR}/scripts/*.sh {remote_opt}/scripts/ 2>/dev/null")
-
-        # ank-cli + ank-profile
         for src, dst in [
             (f"{server_dir}/static/ank-cli.py", f"{remote_opt}/bin/ank"),
             (f"{server_dir}/static/ank-cli.py", f"{remote_opt}/bin/ank-core"),
@@ -450,86 +471,41 @@ class LiteInstaller:
             out, _ = self._sh(f"test -f {src} && echo OK")
             if "OK" in out:
                 self._sh(f"cp {src} {dst} && chmod 755 {dst}")
+        self._log("[OK] Scripts installed")
 
-        self._notify("scripts", "Scripts ready", 0.70)
-
-        # --- DNS + APK repos (ANKFS) ---
+        # DNS + repos
         self._notify("dns", "Configuring DNS + repos...", 0.71)
         self._push_resolv_conf(f"{REMOTE_ROOTFS}/etc/resolv.conf")
         self._push_apk_repos_https(f"{REMOTE_ROOTFS}/etc/apk/repositories")
 
-        # --- SSH device config ---
-        self._notify("ssh", "Configuring device SSH...", 0.73)
+        # SSH device
         self._sh(f"mkdir -p {REMOTE_ROOTFS}/etc/ssh {REMOTE_ROOTFS}/run/sshd {REMOTE_ROOTFS}/run/ankd")
         self._sh(f"mkdir -p {REMOTE_ROOTFS}/root/.ssh && chmod 700 {REMOTE_ROOTFS}/root/.ssh")
         self._sh(f"touch {REMOTE_ROOTFS}/root/.ssh/authorized_keys && chmod 600 {REMOTE_ROOTFS}/root/.ssh/authorized_keys")
         self._push_device_sshd_config()
-
-        # Root shell → ankcoreshell
         self._sh(f"sed -i 's|^root:[^:]*:[^:]*:[^:]*:[^:]*:[^:]*:.*|root:x:0:0:root:/root:/ankcoreshell.sh|' {REMOTE_ROOTFS}/etc/passwd 2>/dev/null")
-
-        # Admin user
         out, _ = self._sh(f"grep -q '^admin:' {REMOTE_ROOTFS}/etc/passwd && echo EXISTS")
         if "EXISTS" not in out:
             self._sh(f"echo 'admin:x:1000:1000::/root:/ankcoreshell.sh' >> {REMOTE_ROOTFS}/etc/passwd")
-
-        # Shadow (locked — chpasswd sets real passwords in guest one-shot)
         self._push_text("root:*:0:0:99999:7:::\nadmin:*:0:0:99999:7:::\n", f"{REMOTE_ROOTFS}/etc/shadow")
         self._sh(f"chmod 644 {REMOTE_ROOTFS}/etc/shadow")
-
-        # /etc/shells (sshd rejects login if shell not listed)
         out, _ = self._sh(f"grep -q ankcoreshell {REMOTE_ROOTFS}/etc/shells 2>/dev/null && echo OK")
         if "OK" not in out:
             self._sh(f"echo '/ankcoreshell.sh' >> {REMOTE_ROOTFS}/etc/shells 2>/dev/null || true")
+        self._log("[OK] SSH configured (port 2200)")
 
-        self._notify("ssh", "SSH device config ready", 0.76)
-
-        # --- MOTD ---
-        self._notify("motd", "Setting up MOTD...", 0.77)
+        # MOTD
         self._sh(f"mkdir -p {REMOTE_ROOTFS}/etc/profile.d")
         self._push_motd_script()
-        # Clear Alpine default motd
         self._sh(f"cat /dev/null > {REMOTE_ROOTFS}/etc/motd 2>/dev/null || true")
+        self._log("[OK] ANK Shell installed")
 
-        # --- Guest one-shot: host keys + passwords ---
-        self._notify("keys", "Generating SSH host keys + setting passwords...", 0.78)
+        # Host keys + passwords
         self._guest("ssh-keygen -A 2>/dev/null; echo root:admin123 | chpasswd; echo admin:admin123 | chpasswd; cat /dev/null > /etc/motd", timeout=180)
+        self._log("[OK] Shadow configured")
 
-        self._notify("keys", "Keys and passwords configured", 0.82)
-
-        # --- ank-alpinebase-3.20 (container base image) ---
-        self._notify("base", "Building ank-alpinebase-3.20...", 0.83)
-        ankbase = f"{REMOTE_IMAGES}/ank-alpinebase-3.20"
-        self._sh(f"mkdir -p {ankbase}")
-        out, _ = self._sh(f"cd {ankbase} && tar xzf {tarball} 2>&1", timeout=300)
-
-        # Container image config (http repos, DNS, sshd port 22)
-        self._push_apk_repos_http(f"{ankbase}/etc/apk/repositories")
-        self._push_resolv_conf(f"{ankbase}/etc/resolv.conf")
-        self._push_text("127.0.0.1 localhost\n", f"{ankbase}/etc/hosts")
-
-        # Root shell → /bin/bash in container image
-        self._sh(f"sed -i 's|^root:[^:]*:[^:]*:[^:]*:[^:]*:[^:]*:.*|root:x:0:0:root:/root:/bin/bash|' {ankbase}/etc/passwd 2>/dev/null")
-
-        self._sh(f"mkdir -p {ankbase}/etc/ssh {ankbase}/run/sshd {ankbase}/root/.ssh")
-        self._sh(f"chmod 700 {ankbase}/root/.ssh && touch {ankbase}/root/.ssh/authorized_keys && chmod 600 {ankbase}/root/.ssh/authorized_keys")
-        self._push_ankbase_sshd_config()
-
-        # Generate host keys inside ANKBASE (different from device keys)
-        self._guest("ssh-keygen -A 2>/dev/null", rootfs=ankbase, timeout=60)
-
-        # Set permissions on keys
-        for k in [f"{ankbase}/etc/ssh/ssh_host_rsa_key", f"{ankbase}/etc/ssh/ssh_host_ed25519_key"]:
-            self._sh(f"chmod 600 {k} 2>/dev/null")
-        for k in [f"{ankbase}/etc/ssh/ssh_host_rsa_key.pub", f"{ankbase}/etc/ssh/ssh_host_ed25519_key.pub"]:
-            self._sh(f"chmod 644 {k} 2>/dev/null")
-
-        # No server files in container base
-        self._sh(f"rm -rf {ankbase}/opt/ank 2>/dev/null")
-
-        self._notify("base", "ank-alpinebase-3.20 ready", 0.87)
-
-        # --- config.json ---
+        # --- Step 4: Server + scripts ---
+        self._log("[STEP] 4/4 > Server + scripts...")
         self._notify("config", "Writing configuration...", 0.88)
         device_model = self._get_device_model()
         config = {
@@ -546,7 +522,6 @@ class LiteInstaller:
         }
         self._push_text(json.dumps(config, separators=(",", ":")) + "\n", f"{ANK_DIR}/config.json")
 
-        # CREDENCIAIS.txt
         self._sh(f"mkdir -p /sdcard/AndroidKonteiner")
         self._push_text(
             "ANK v2.0.0 (Lite)\n"
@@ -556,38 +531,41 @@ class LiteInstaller:
             "/sdcard/AndroidKonteiner/CREDENCIAIS.txt",
         )
 
-        # --- Mode file ---
-        self._notify("mode", "Saving mode...", 0.89)
         self._push_text('{"mode":"lite"}\n', f"{ANK_DIR}/mode")
-
-        # --- Start scripts ---
-        self._notify("scripts", "Writing start scripts...", 0.90)
         self._push_run_server_sh()
         self._push_start_lite_sh()
         self._push_stop_lite_sh()
+        self._log("[OK] Server + scripts installed")
 
-        # --- Start server ---
+        # --- Start ---
         self._notify("start", "Starting ANK server...", 0.92)
         self._sh(f"{ANK_DIR}/start-lite.sh")
+        self._log("[OK] Server starting...")
         time.sleep(5)
 
         # --- Verify ---
         self._notify("verify", "Verifying server...", 0.94)
         server_ok = self._verify_server(port=8001, timeout=30)
         if not server_ok:
-            self._notify("error", "Server did not start on port 8001", 0)
+            self._log("[FAIL] Server did not start on port 8001")
             return False
-
         ssh_ok = self._verify_server(port=2200, timeout=10)
-        status = "server OK" + (" + SSH OK" if ssh_ok else " (SSH pending)")
-        self._notify("verify", status, 0.97)
 
         # --- Cleanup ---
         self._notify("cleanup", "Cleaning up...", 0.98)
         self._sh(f"rm -rf {EXTRACT_DIR} /sdcard/Download/ank-magisk.zip")
+        self._log("[OK] Cleanup complete")
 
         # --- Done ---
         device_ip = self._get_device_ip()
+        self._log("[OK] Installation complete!")
+        self._log(f"  DONE > {arch} > lite")
+        self._log(f"  Panel: https://{device_ip}:8001")
+        self._log(f"  Login: admin / admin123")
+        self._log(f"  Device: {device_model}")
+        self._log("[OK] ANK installed")
+        self._log("Installation completed successfully!")
+
         self._notify("done", f"Lite install complete! https://{device_ip}:8001", 1.0)
         return True
 
