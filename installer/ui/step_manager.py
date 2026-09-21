@@ -88,7 +88,16 @@ class StatusPollThread(QThread):
 
                 pid = out.strip().split("\n")[0] if out.strip() else ""
                 if pid and pid.isdigit():
-                    self.status_update.emit("running", f"PID: {pid}")
+                    port_check, _ = self.adb.shell(self.serial,
+                        "netstat -tln 2>/dev/null | grep -c ':8001 '")
+                    try:
+                        listening = int(port_check.strip()) > 0
+                    except (ValueError, AttributeError):
+                        listening = False
+                    if listening:
+                        self.status_update.emit("running", f"PID: {pid} | Port 8001 OK")
+                    else:
+                        self.status_update.emit("stopped", f"PID: {pid} but port 8001 not listening")
                 else:
                     self.status_update.emit("stopped", "Server not running")
 

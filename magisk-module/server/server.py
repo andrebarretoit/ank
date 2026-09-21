@@ -2430,16 +2430,26 @@ small{color:#334155}
                         lf.flush()
                     ok, result = ank_lite.create_container(
                         name, image, root_password, ssh_port, ankd_port)
-                    with open(log_path, "a") as lf:
-                        lf.write(str(result) + "\n")
                     if not ok:
+                        with open(log_path, "a") as lf:
+                            lf.write(f"ERROR: {result}\n")
                         log(f"ERROR: lite create {name}: {result}")
                         cfg = load_container_config(name)
                         if cfg:
                             cfg["status"] = "failed"
                             save_container_config(name, cfg)
                     else:
-                        log(f"Container {name} created (lite)")
+                        start_ok, start_result = ank_lite.start_container(name)
+                        cfg = load_container_config(name)
+                        if cfg:
+                            if start_ok:
+                                cfg["status"] = "running"
+                            else:
+                                cfg["status"] = "stopped"
+                            save_container_config(name, cfg)
+                        with open(log_path, "a") as lf:
+                            lf.write(f"Container '{name}' created ({'running' if start_ok else 'stopped'})\n")
+                        log(f"Container {name} created (lite, {'running' if start_ok else 'stopped'})")
                 except Exception as e:
                     log(f"ERROR: lite create thread {name}: {e}")
                     cfg = load_container_config(name)
@@ -3849,16 +3859,19 @@ small{color:#334155}
                         lf.flush()
                     ok, result = ank_lite.create_container(
                         container_name, base_image, root_password, ssh_port, ankd_port, packages=pkgs)
-                    with open(log_path, "a") as lf:
-                        lf.write(str(result) + "\n")
-                        lf.flush()
                     if not ok:
+                        with open(log_path, "a") as lf:
+                            lf.write(f"ERROR: {result}\n")
+                            lf.flush()
                         log(f"ERROR: lite create {container_name}: {result}")
                         cfg = load_container_config(container_name)
                         if cfg:
                             cfg["status"] = "failed"
                             save_container_config(container_name, cfg)
                         return
+                    with open(log_path, "a") as lf:
+                        lf.write(f"Container created (ssh={ssh_port}, ankd={ankd_port})\n")
+                        lf.flush()
 
                     cfg = load_container_config(container_name)
                     if cfg:
@@ -4039,7 +4052,18 @@ small{color:#334155}
 
                 cfg = load_container_config(container_name)
                 if cfg:
-                    cfg["status"] = "stopped"
+                    if is_lite_mode:
+                        start_ok, start_result = ank_lite.start_container(container_name)
+                        if start_ok:
+                            cfg["status"] = "running"
+                            with open(log_path, "a") as lf:
+                                lf.write(f"Container started.\n")
+                        else:
+                            cfg["status"] = "stopped"
+                            with open(log_path, "a") as lf:
+                                lf.write(f"Container created but not started: {start_result}\n")
+                    else:
+                        cfg["status"] = "stopped"
                     save_container_config(container_name, cfg)
                 log(f"Template '{template['name']}' deployed as '{container_name}'")
                 with open(log_path, "a") as lf:
