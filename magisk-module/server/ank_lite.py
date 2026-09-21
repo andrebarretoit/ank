@@ -146,7 +146,7 @@ def create_container(name, image="alpine-3.20", root_password="ank123",
     # Copy rootfs
     _log(f"Creating '{name}' from {base}...")
     try:
-        shutil.copytree(base, merged, dirs_exist_ok=True)
+        shutil.copytree(base, merged, dirs_exist_ok=True, symlinks=True)
     except Exception as e:
         return False, f"Failed to copy rootfs: {e}"
 

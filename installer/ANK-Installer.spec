@@ -11,7 +11,6 @@ a = Analysis(
         ('E:/Ank/dist/ank-magisk.zip', '.'),
         ('E:/Ank/ANK.ico', '.'),
         ('E:/Ank/ank-launcher.apk', '.'),
-        ('E:/Ank/dist/proot', '.'),
     ],
     hiddenimports=['adbutils', 'PySide6'],
     hookspath=[],

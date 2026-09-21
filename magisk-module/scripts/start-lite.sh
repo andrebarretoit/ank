@@ -1,8 +1,8 @@
 #!/system/bin/sh
-# ANK Lite Server Starter
-# Starts the ANK server using PRoot (non-root mode)
+# ANK Lite Server Starter (non-root, via PRoot)
+# Validated flow: tested on SM-M127F / aarch64
 
-ANK_DIR="/data/local/ank"
+ANK_DIR="/data/local/tmp/ank"
 ROOTFS="$ANK_DIR/ankfs"
 PROOT="$ANK_DIR/proot"
 
@@ -17,35 +17,32 @@ if [ ! -e "$ROOTFS/usr/bin/python3" ]; then
     exit 1
 fi
 
+if [ ! -e "$ROOTFS/run_server.sh" ]; then
+    echo "ERRO: run_server.sh nao encontrado no rootfs"
+    exit 1
+fi
+
 # Check if already running
-if pgrep -f "proot.*server.py" > /dev/null 2>&1; then
+if pgrep -f "python3 server.py" > /dev/null 2>&1; then
     echo "Servidor ANK ja esta rodando"
-    pgrep -f "proot.*server.py"
     exit 0
 fi
 
 echo "Iniciando servidor ANK (Lite mode via PRoot)..."
 
 # Create necessary directories
-mkdir -p "$ANK_DIR/logs"
-mkdir -p "$ANK_DIR/containers"
-mkdir -p "$ANK_DIR/images"
+mkdir -p "$ANK_DIR/logs" "$ANK_DIR/tmp" "$ROOTFS/tmp"
 
 # Write mode file
-echo '{"mode":"lite"}' > "$ANK_DIR/mode"
+echo '{"mode":"lite"}' > "$ANK_DIR/mode" 2>/dev/null
 
-# Setup DNS
-echo "nameserver 8.8.8.8" > "$ROOTFS/etc/resolv.conf"
-echo "nameserver 8.8.4.4" >> "$ROOTFS/etc/resolv.conf"
-
-# Start server via PRoot
-cd "$ROOTFS"
-LD_LIBRARY_PATH="$ROOTFS/lib:$ROOTFS/usr/lib" \
-"$PROOT" -0 -r "$ROOTFS" \
+# Start server via PRoot (validated command)
+nohup sh -c "PROOT_TMP_DIR=$ANK_DIR/tmp \
+$PROOT -0 -r $ROOTFS \
 -b /dev -b /proc -b /sys \
+-b $ANK_DIR:/ank \
 -w /root \
-/usr/bin/python3 /opt/ank/server.py &
+/bin/sh /run_server.sh" > "$ANK_DIR/logs/server.log" 2>&1 &
 
-SERVER_PID=$!
-echo "Servidor ANK iniciado (PID: $SERVER_PID)"
+echo "Servidor ANK iniciado"
 echo "Acesse: http://localhost:8001"

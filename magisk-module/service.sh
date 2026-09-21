@@ -115,7 +115,7 @@ cd "$ROOTFS"
 env LD_LIBRARY_PATH="$PYLIB" nohup "$MUSL" "$ROOTFS/usr/bin/python3" "$SERVER" > "$ANK_DIR/logs/server.log" 2>&1 &
 echo $! > "$SERVER_PID_FILE"
 
-log "Server started (PID: $(cat $SERVER_PID_FILE)) | Arch: $ARCH | Musl: $MUSL"
+log "Server started (PID: $(cat $SERVER_PID_FILE)) | Arch: $ARCH"
 log "Panel: http://localhost:8001"
 
 # One-time password fix: if shadow has locked hash (* or !), regenerate via chroot
@@ -128,13 +128,13 @@ if grep -q "^root:\*:" "$ROOTFS/etc/shadow" 2>/dev/null || grep -q "^root:!:" "$
         SP_CHG=$(( $(date +%s) / 86400 ))
         printf "root:%s:%s:0:99999:7:::\nadmin:%s:%s:0:99999:7:::\n" "$ENC_PASS" "$SP_CHG" "$ENC_PASS" "$SP_CHG" > "$ROOTFS/etc/shadow"
         chmod 644 "$ROOTFS/etc/shadow"
-        log "Password fix: shadow regenerated via chroot"
+        log "Password configured"
     fi
 fi
 # Ensure admin user exists in passwd
 if ! grep -q "^admin:" "$ROOTFS/etc/passwd" 2>/dev/null; then
     echo "admin:x:1000:1000::/root:/ankcoreshell.sh" >> "$ROOTFS/etc/passwd"
-    log "Password fix: admin user created"
+    log "Admin user created"
 fi
 # Fix admin home permissions (uid 1000 needs access to /root)
 chmod 755 "$ROOTFS/root" 2>/dev/null
@@ -171,13 +171,14 @@ if [ "$SSH_ENABLED" = "1" ] && [ -f "$ROOTFS/usr/sbin/sshd" ]; then
     ln -sf pts/ptmx "$ROOTFS/dev/ptmx" 2>/dev/null
     chmod 666 "$ROOTFS/dev/pts/ptmx" 2>/dev/null
     mount -t proc proc "$ROOTFS/proc" 2>/dev/null
-    log "sshd config: port=$SSH_PORT rootfs=$ROOTFS"
-    log "  sshd binary: $(ls -la "$ROOTFS/usr/sbin/sshd" 2>/dev/null || echo 'MISSING')"
-    log "  host keys: rsa=$(ls "$ROOTFS/etc/ssh/ssh_host_rsa_key" 2>/dev/null || echo 'no') ed25519=$(ls "$ROOTFS/etc/ssh/ssh_host_ed25519_key" 2>/dev/null || echo 'no')"
-    log "  shadow: $(head -1 "$ROOTFS/etc/shadow" 2>/dev/null | cut -d: -f1 || echo 'MISSING')"
-    log "  devpts: $(mount | grep "$ROOTFS/dev/pts" 2>/dev/null)"
-    log "  ptmx: $(ls -la "$ROOTFS/dev/ptmx" "$ROOTFS/dev/pts/ptmx" 2>/dev/null)"
-    chroot "$ROOTFS" /usr/sbin/sshd -t 2>&1 | while IFS= read -r line; do log "  sshd -t: $line"; done || true
+    # Seed entropy on old kernels (armv7l/kernel 3.10: /dev/urandom lacks entropy at boot)
+    case "$ARCH" in
+        armv7*)
+            dd if=/dev/urandom of="$ROOTFS/dev/urandom" bs=1024 count=1 2>/dev/null
+            ;;
+    esac
+    log "sshd starting on port $SSH_PORT"
+    chroot "$ROOTFS" /usr/sbin/sshd -t 2>&1 | while IFS= read -r line; do log "  sshd config: $line"; done || true
     nohup chroot "$ROOTFS" /usr/sbin/sshd \
         -p "$SSH_PORT" \
         -o "PidFile=/run/ankd/sshd.pid" \
@@ -189,11 +190,9 @@ if [ "$SSH_ENABLED" = "1" ] && [ -f "$ROOTFS/usr/sbin/sshd" ]; then
     sleep 2
     SSHD_PID=$(cat "$ROOTFS/run/ankd/sshd.pid" 2>/dev/null)
     if [ -n "$SSHD_PID" ] && kill -0 "$SSHD_PID" 2>/dev/null; then
-        log "sshd started on port $SSH_PORT (PID: $SSHD_PID)"
+        log "sshd running on port $SSH_PORT (PID: $SSHD_PID)"
     else
         log "ERROR: sshd failed to start on port $SSH_PORT"
-        log "  sshd -t (config test):"
-        chroot "$ROOTFS" /usr/sbin/sshd -t 2>&1 | while IFS= read -r line; do log "    $line"; done || true
     fi
 else
     log "sshd disabled or sshd not found"

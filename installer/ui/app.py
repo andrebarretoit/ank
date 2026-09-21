@@ -338,8 +338,8 @@ class InstallerWindow(QMainWindow):
 
         try:
             output, _ = self._adb.shell(device.serial,
-                "ls /data/local/ank/ankfs/usr/bin/python3 /data/local/ank/mode 2>/dev/null")
-            if output and "python3" in output:
+                "ls /data/local/ank/mode /data/local/tmp/ank/mode 2>/dev/null")
+            if output and "mode" in output:
                 self.ank_manager_btn.show()
                 return True
         except Exception:

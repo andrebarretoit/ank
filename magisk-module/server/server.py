@@ -96,6 +96,13 @@ CONFIG_FILE = os.path.join(ANK_DIR, "config.json")
 STATIC_DIR = os.path.join(ANK_DIR, "ankfs/opt/ank/static")
 PORT = 8001
 
+# --- Shell detection ---------------------------------------------------------
+# Rooted/host Android always has /system/bin/sh.  In Lite mode the server runs
+# inside a PRoot guest where only the rootfs busybox exists.  Existence check
+# means: rooted behavior is unchanged; lite automatically gets /bin/sh.
+HOST_SH = next((s for s in ("/system/bin/sh", "/system/xbin/sh", "/bin/sh")
+                if os.path.exists(s)), "/bin/sh")
+
 _device_cache = None
 
 _cpu_usage_cache = 0.0
@@ -436,7 +443,7 @@ def _ank_stop_service_pgid(container_name, service_name, mark_stopped=True):
 
 def run_script(script, *args, timeout=60):
     script_path = os.path.join(SCRIPTS_DIR, script)
-    cmd_parts = ["/system/bin/sh", script_path] + list(args)
+    cmd_parts = [HOST_SH, script_path] + list(args)
     cmd_str = " ".join(f"'{a}'" for a in cmd_parts)
     try:
         if os.geteuid() != 0:
@@ -458,7 +465,7 @@ def run_script(script, *args, timeout=60):
 def run_script_stream(script, *args, output_list=None, timeout=300):
     """Run a script line-by-line, appending each line to output_list. Returns return code."""
     script_path = os.path.join(SCRIPTS_DIR, script)
-    cmd_parts = ["/system/bin/sh", script_path] + list(args)
+    cmd_parts = [HOST_SH, script_path] + list(args)
     cmd_str = " ".join(f"'{a}'" for a in cmd_parts)
     try:
         if os.geteuid() != 0:
@@ -1329,7 +1336,7 @@ def _ws_shell_session(handler, cols=80, rows=24):
                 else:
                     os.execv(shell, [shell])
             except Exception:
-                os.execv("/system/bin/sh", ["/system/bin/sh"])
+                os.execv(HOST_SH, [HOST_SH])
         else:
             log(f"WS_SHELL: child pid={pid}, master_fd={master_fd}")
             import fcntl
@@ -1924,9 +1931,6 @@ small{color:#334155}
             self.api_backup_history(rid, limit)
         elif path == "/api/backups/battery":
             self.api_backup_battery()
-        elif path == "/api/backups/test-connection":
-            data = self.read_body()
-            self.api_backup_test_connection(data)
         elif path.startswith("/api/backups/") and "/browse" in path:
             qs = parsed.query
             self.api_backup_browse(path.split("/")[3], qs)
@@ -2080,6 +2084,8 @@ small{color:#334155}
             self.api_rolling_update(path.split("/")[3], data)
         elif path.startswith("/api/stacks/") and path.endswith("/healing"):
             self.api_start_healing(path.split("/")[3])
+        elif path == "/api/backups/test-connection":
+            self.api_backup_test_connection(data)
         elif path == "/api/backups":
             self.api_create_backup_routine(data)
         elif path.startswith("/api/backups/") and path.endswith("/execute"):
@@ -3163,7 +3169,7 @@ small{color:#334155}
             )
             shell_cmd = 'chroot ' + merged + ' /bin/sh -c ' + repr(wrapped)
             result = subprocess.run(
-                ["/system/bin/sh", "-c", shell_cmd],
+                [HOST_SH, "-c", shell_cmd],
                 capture_output=True, text=True, timeout=30
             )
             self.send_json({"stdout": result.stdout, "stderr": result.stderr, "code": result.returncode})
@@ -3798,29 +3804,31 @@ small{color:#334155}
         root_password = data.get("root_password") or load_config().get("default_container_password", "ank123")
 
         # Write stub config with "building" status immediately
-        stub_dir = os.path.join(CONTAINERS_DIR, container_name)
-        os.makedirs(stub_dir, exist_ok=True)
         ssh_port = self._find_free_port(2201)
         ankd_port = self._find_free_ankd_port()
-        stub_config = {
-            "name": container_name,
-            "status": "building",
-            "image": base_image,
-            "mode": get_mode().get("mode", "shared_host"),
-            "autostart": False,
-            "ip_address": "",
-            "ssh_port": ssh_port,
-            "ankd_port": ankd_port,
-            "created_at": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "pid": None,
-            "policies": {"inter_container_p2p": False, "allow_host_access": False, "allow_internet": True},
-            "resources": {"memory_limit": "256M", "cpu_limit_percent": 50},
-            "port_mappings": [],
-            "root_password": root_password,
-            "template": template_id,
-            "template_name": template["name"]
-        }
-        save_container_config(container_name, stub_config)
+
+        if not is_lite():
+            stub_dir = os.path.join(CONTAINERS_DIR, container_name)
+            os.makedirs(stub_dir, exist_ok=True)
+            stub_config = {
+                "name": container_name,
+                "status": "building",
+                "image": base_image,
+                "mode": get_mode().get("mode", "shared_host"),
+                "autostart": False,
+                "ip_address": "",
+                "ssh_port": ssh_port,
+                "ankd_port": ankd_port,
+                "created_at": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "pid": None,
+                "policies": {"inter_container_p2p": False, "allow_host_access": False, "allow_internet": True},
+                "resources": {"memory_limit": "256M", "cpu_limit_percent": 50},
+                "port_mappings": [],
+                "root_password": root_password,
+                "template": template_id,
+                "template_name": template["name"]
+            }
+            save_container_config(container_name, stub_config)
 
         def _do_deploy():
             global _building
@@ -3831,64 +3839,125 @@ small{color:#334155}
                     lf.write(f"Deploying template '{template['name']}' as '{container_name}'...\n")
                     lf.flush()
 
-                pkgs = " ".join(template.get("packages", []))
-                output, code = run_script("container.sh", "create", container_name, base_image, str(root_password), str(ssh_port), pkgs, template_id, timeout=300)
-                with open(log_path, "a") as lf:
-                    lf.write(output + "\n")
-                    lf.flush()
-
                 merged = os.path.join(CONTAINERS_DIR, container_name, "merged")
+                is_lite_mode = is_lite()
 
-                # Check if container was actually created
-                if not os.path.isdir(merged):
-                    log(f"ERROR: container.sh create failed for {container_name} (code={code})")
+                if is_lite_mode:
+                    pkgs = " ".join(template.get("packages", []))
                     with open(log_path, "a") as lf:
-                        lf.write(f"ERROR: Container creation failed (merged dir not found)\n")
+                        lf.write(f"Creating container (lite mode)...\n")
+                        lf.flush()
+                    ok, result = ank_lite.create_container(
+                        container_name, base_image, root_password, ssh_port, ankd_port, packages=pkgs)
+                    with open(log_path, "a") as lf:
+                        lf.write(str(result) + "\n")
+                        lf.flush()
+                    if not ok:
+                        log(f"ERROR: lite create {container_name}: {result}")
+                        cfg = load_container_config(container_name)
+                        if cfg:
+                            cfg["status"] = "failed"
+                            save_container_config(container_name, cfg)
+                        return
+
                     cfg = load_container_config(container_name)
                     if cfg:
-                        cfg["status"] = "failed"
+                        cfg["status"] = "building"
+                        cfg["template"] = template_id
+                        cfg["template_name"] = template["name"]
                         save_container_config(container_name, cfg)
-                    return
 
-                def _chroot(cmd, timeout=30):
-                    wrapped = "export PATH=/bin:/sbin:/usr/bin:/usr/sbin; " + cmd
-                    full = f"chroot {merged} /bin/sh -c '{wrapped}'"
-                    try:
-                        return subprocess.run(
-                            ["/system/bin/sh", "-c", full],
-                            capture_output=True, text=True, timeout=timeout
-                        )
-                    except subprocess.TimeoutExpired as e:
-                        out = e.stdout
-                        err = e.stderr
-                        if isinstance(out, bytes):
-                            out = out.decode("utf-8", errors="replace")
-                        if isinstance(err, bytes):
-                            err = err.decode("utf-8", errors="replace")
-                        partial_out = (out or "") + (err or "")
-                        class _Result:
-                            pass
-                        r = _Result()
-                        r.returncode = -1
-                        r.stdout = partial_out
-                        r.stderr = f"TIMEOUT after {timeout}s"
-                        return r
+                    host_ank = "/data/local/tmp/ank" if ANK_DIR == "/ank" else ANK_DIR
+                    proot_bin = os.path.join(host_ank, "proot")
+                    host_merged = os.path.join(host_ank, "containers", container_name, "merged")
 
-                def _chroot_bg(cmd):
-                    """Run command in chroot without waiting (for daemons)."""
-                    wrapped = "export PATH=/bin:/sbin:/usr/bin:/usr/sbin; " + cmd
-                    full = f"chroot {merged} /bin/sh -c '{wrapped}'"
-                    try:
-                        p = subprocess.Popen(
-                            ["/system/bin/sh", "-c", full],
-                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                            start_new_session=True
-                        )
-                        log(f"Background chroot PID: {p.pid} cmd: {cmd}")
-                    except Exception as e:
-                        log(f"WARNING: _chroot_bg failed: {e}")
+                    def _proot(cmd, timeout=30):
+                        env = "HOME=/root TERM=xterm-256color LANG=C.UTF-8 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+                        wrapped = f"{env} {cmd}"
+                        full = f"PROOT_TMP_DIR={host_ank}/tmp {proot_bin} -0 -r {host_merged} -b /dev -b /proc -b /sys -w /root /bin/sh -c '{wrapped}'"
+                        try:
+                            return subprocess.run(
+                                [HOST_SH, "-c", full],
+                                capture_output=True, text=True, timeout=timeout
+                            )
+                        except subprocess.TimeoutExpired as e:
+                            out = e.stdout
+                            err = e.stderr
+                            if isinstance(out, bytes):
+                                out = out.decode("utf-8", errors="replace")
+                            if isinstance(err, bytes):
+                                err = err.decode("utf-8", errors="replace")
+                            partial_out = (out or "") + (err or "")
+                            class _Result:
+                                pass
+                            r = _Result()
+                            r.returncode = -1
+                            r.stdout = partial_out
+                            r.stderr = f"TIMEOUT after {timeout}s"
+                            return r
 
-                _chroot('mkdir -p /etc; echo "nameserver 8.8.8.8" > /etc/resolv.conf; echo "nameserver 8.8.4.4" >> /etc/resolv.conf')
+                    _proot('echo "nameserver 8.8.8.8" > /etc/resolv.conf; echo "nameserver 8.8.4.4" >> /etc/resolv.conf')
+
+                    merged = host_merged
+
+                else:
+                    pkgs = " ".join(template.get("packages", []))
+                    output, code = run_script("container.sh", "create", container_name, base_image, str(root_password), str(ssh_port), pkgs, template_id, timeout=300)
+                    with open(log_path, "a") as lf:
+                        lf.write(output + "\n")
+                        lf.flush()
+
+                    if not os.path.isdir(merged):
+                        log(f"ERROR: container.sh create failed for {container_name} (code={code})")
+                        with open(log_path, "a") as lf:
+                            lf.write(f"ERROR: Container creation failed (merged dir not found)\n")
+                        cfg = load_container_config(container_name)
+                        if cfg:
+                            cfg["status"] = "failed"
+                            save_container_config(container_name, cfg)
+                        return
+
+                    def _chroot(cmd, timeout=30):
+                        wrapped = "export PATH=/bin:/sbin:/usr/bin:/usr/sbin; " + cmd
+                        full = f"chroot {merged} /bin/sh -c '{wrapped}'"
+                        try:
+                            return subprocess.run(
+                                [HOST_SH, "-c", full],
+                                capture_output=True, text=True, timeout=timeout
+                            )
+                        except subprocess.TimeoutExpired as e:
+                            out = e.stdout
+                            err = e.stderr
+                            if isinstance(out, bytes):
+                                out = out.decode("utf-8", errors="replace")
+                            if isinstance(err, bytes):
+                                err = err.decode("utf-8", errors="replace")
+                            partial_out = (out or "") + (err or "")
+                            class _Result:
+                                pass
+                            r = _Result()
+                            r.returncode = -1
+                            r.stdout = partial_out
+                            r.stderr = f"TIMEOUT after {timeout}s"
+                            return r
+
+                    def _chroot_bg(cmd):
+                        """Run command in chroot without waiting (for daemons)."""
+                        wrapped = "export PATH=/bin:/sbin:/usr/bin:/usr/sbin; " + cmd
+                        full = f"chroot {merged} /bin/sh -c '{wrapped}'"
+                        try:
+                            p = subprocess.Popen(
+                                [HOST_SH, "-c", full],
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                start_new_session=True
+                            )
+                            log(f"Background chroot PID: {p.pid} cmd: {cmd}")
+                        except Exception as e:
+                            log(f"WARNING: _chroot_bg failed: {e}")
+
+                    _chroot('mkdir -p /etc; echo "nameserver 8.8.8.8" > /etc/resolv.conf; echo "nameserver 8.8.4.4" >> /etc/resolv.conf')
+
+                run_cmd = _proot if is_lite_mode else _chroot
 
                 config = load_container_config(container_name)
                 if config:
@@ -3916,8 +3985,8 @@ small{color:#334155}
                     apk_output = ""
                     apk_rc = 1
                     for attempt in range(1, 3):
-                        log(f"apk add attempt 2/{attempt}...")
-                        r = _chroot(f"apk update && apk add --allow-untrusted {pkg_list}", timeout=180)
+                        log(f"apk add attempt {attempt}/2...")
+                        r = run_cmd(f"apk update && apk add --allow-untrusted {pkg_list}", timeout=180)
                         apk_output = (r.stdout or "") + (r.stderr or "")
                         apk_rc = r.returncode
                         if apk_rc == 0:
@@ -3937,34 +4006,34 @@ small{color:#334155}
 
                 if template_id == "nginx":
                     static_dir = template["static_path"]
-                    _chroot(f'mkdir -p {static_dir} /run/nginx')
+                    run_cmd(f'mkdir -p {static_dir} /run/nginx')
                     _write_file(os.path.join(merged, static_dir.lstrip('/'), 'index.html'), ANK_NGINX_HTML)
                     _write_file(os.path.join(merged, 'etc/nginx/nginx.conf'), ANK_NGINX_CONF.replace('{port}', str(actual_port)))
                     _write_ank_config(merged, 'nginx', actual_port, static_dir)
 
                 elif template_id == "apache":
                     static_dir = template["static_path"]
-                    _chroot(f'mkdir -p {static_dir}')
-                    _chroot(f'sed -i "s/^Listen 80/Listen {actual_port}/" /etc/apache2/httpd.conf 2>/dev/null')
+                    run_cmd(f'mkdir -p {static_dir}')
+                    run_cmd(f'sed -i "s/^Listen 80/Listen {actual_port}/" /etc/apache2/httpd.conf 2>/dev/null')
                     _write_file(os.path.join(merged, static_dir.lstrip('/'), 'index.html'), ANK_APACHE_HTML)
                     _write_ank_config(merged, 'apache', actual_port, static_dir)
 
                 elif template_id == "php":
                     php_dir = "/var/www/php"
-                    _chroot(f'mkdir -p {php_dir}')
+                    run_cmd(f'mkdir -p {php_dir}')
                     _write_file(os.path.join(merged, php_dir.lstrip('/'), 'index.php'), ANK_PHP_INDEX)
                     _write_ank_config(merged, 'php', actual_port, php_dir)
 
                 elif template_id == "node":
                     node_dir = "/var/www/app"
-                    _chroot(f'mkdir -p {node_dir}')
+                    run_cmd(f'mkdir -p {node_dir}')
                     _write_file(os.path.join(merged, node_dir.lstrip('/'), 'server.js'), ANK_NODE_SERVER.replace('{port}', str(actual_port)))
                     _write_file(os.path.join(merged, node_dir.lstrip('/'), 'package.json'), '{"name":"ank-node-app","version":"1.0.0","main":"server.js"}')
                     _write_ank_config(merged, 'node', actual_port, node_dir)
 
                 elif template_id == "python":
                     py_dir = "/var/www/app"
-                    _chroot(f'mkdir -p {py_dir}')
+                    run_cmd(f'mkdir -p {py_dir}')
                     _write_file(os.path.join(merged, py_dir.lstrip('/'), 'server.py'), ANK_PYTHON_SERVER.replace('{port}', str(actual_port)))
                     _write_ank_config(merged, 'python', actual_port, py_dir)
 
@@ -4118,7 +4187,7 @@ small{color:#334155}
                     full = f"chroot {merged} /bin/sh -c '{wrapped}'"
                     try:
                         return subprocess.run(
-                            ["/system/bin/sh", "-c", full],
+                            [HOST_SH, "-c", full],
                             capture_output=True, text=True, timeout=timeout
                         )
                     except subprocess.TimeoutExpired as e:
@@ -4259,7 +4328,7 @@ small{color:#334155}
         else:
             try:
                 result = subprocess.run(
-                    ["/system/bin/sh", "-c", cmd],
+                    [HOST_SH, "-c", cmd],
                     capture_output=True, text=True, timeout=30
                 )
                 self.send_json({"stdout": result.stdout, "stderr": result.stderr, "code": result.returncode})
@@ -4386,7 +4455,7 @@ small{color:#334155}
             try:
                 wrapped = f"export PATH=/bin:/sbin:/usr/bin:/usr/sbin; hostname {name} 2>/dev/null; {cmd}"
                 result = subprocess.run(
-                    ["/system/bin/sh", "-c", f"chroot {merged} /bin/sh -c '{wrapped}'"],
+                    [HOST_SH, "-c", f"chroot {merged} /bin/sh -c '{wrapped}'"],
                     capture_output=True, text=True, timeout=30
                 )
                 self.send_json({"stdout": result.stdout, "stderr": result.stderr, "code": result.returncode})
@@ -4523,7 +4592,7 @@ small{color:#334155}
             return
 
         if args[0] == "info":
-            device = os.popen("getprop ro.product.model 2>/dev/null").read().strip() or "unknown"
+            device = load_config().get("device_model", "") or os.popen("getprop ro.product.model 2>/dev/null").read().strip() or "unknown"
             kernel = os.popen("uname -r 2>/dev/null").read().strip() or "unknown"
             mem_total = 0
             try:
@@ -4572,7 +4641,7 @@ small{color:#334155}
             cmd = " ".join(args[1:]) if len(args) > 1 else "sh"
             try:
                 result = subprocess.run(
-                    ["/system/bin/sh", "-c", cmd],
+                    [HOST_SH, "-c", cmd],
                     capture_output=True, text=True, timeout=30
                 )
                 self.send_json({"stdout": result.stdout, "stderr": result.stderr, "code": result.returncode})
@@ -5771,7 +5840,10 @@ small{color:#334155}
                 pass
             device = "unknown"
             try:
-                device = os.popen("getprop ro.product.model 2>/dev/null").read().strip() or "unknown"
+                config = load_config()
+                device = config.get("device_model", "")
+                if not device:
+                    device = os.popen("getprop ro.product.model 2>/dev/null").read().strip() or "unknown"
             except Exception:
                 pass
             _device_cache = {"kernel": kernel, "device": device}
@@ -7223,5 +7295,65 @@ def main():
     finally:
         server.server_close()
 
+def _cli_command():
+    """Handle CLI subcommands: ankengine.startserver, ankengine.stopserver, ankengine.restartserver."""
+    arg = sys.argv[1] if len(sys.argv) > 1 else ""
+    if not arg.startswith("ankengine."):
+        return False
+
+    pid_file = os.path.join(ANK_DIR, "logs", "server.pid")
+
+    def _read_pid():
+        try:
+            with open(pid_file, "r") as f:
+                pid = f.read().strip()
+            if pid and pid.isdigit():
+                return int(pid)
+        except Exception:
+            pass
+        return None
+
+    cmd = arg.split(".", 1)[1] if "." in arg else ""
+
+    if cmd == "startserver":
+        return False  # let main() run normally
+
+    if cmd == "stopserver":
+        pid = _read_pid()
+        if pid:
+            try:
+                os.kill(pid, signal.SIGUSR1)
+                print(f"[CLI] Sent SIGUSR1 to PID {pid} — server stopping")
+            except ProcessLookupError:
+                print(f"[CLI] PID {pid} not found — server already stopped")
+            except PermissionError:
+                print(f"[CLI] No permission to signal PID {pid}")
+            except Exception as e:
+                print(f"[CLI] Error sending signal: {e}")
+        else:
+            print("[CLI] No PID found — server not running")
+        sys.exit(0)
+
+    if cmd == "restartserver":
+        pid = _read_pid()
+        if pid:
+            try:
+                os.kill(pid, signal.SIGHUP)
+                print(f"[CLI] Sent SIGHUP to PID {pid} — server restarting")
+            except ProcessLookupError:
+                print(f"[CLI] PID {pid} not found — server not running")
+            except PermissionError:
+                print(f"[CLI] No permission to signal PID {pid}")
+            except Exception as e:
+                print(f"[CLI] Error sending signal: {e}")
+        else:
+            print("[CLI] No PID found — server not running")
+        sys.exit(0)
+
+    print(f"[CLI] Unknown command: {arg}")
+    sys.exit(1)
+
+
 if __name__ == "__main__":
-    main()
+    if _cli_command() is False:
+        main()

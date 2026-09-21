@@ -294,6 +294,14 @@ class ADB:
         output, _ = self.shell(serial, "ls /data/data/com.termux 2>/dev/null")
         return bool(output and "com.termux" in output)
 
+    def forward(self, serial: str, local_port: int, remote_port: int) -> bool:
+        result = self._run_device(serial, ["forward", f"tcp:{local_port}", f"tcp:{remote_port}"])
+        return result.returncode == 0
+
+    def forward_remove(self, serial: str, local_port: int) -> bool:
+        result = self._run_device(serial, ["forward", "--remove", f"tcp:{local_port}"])
+        return result.returncode == 0
+
     def push(self, serial: str, local_path: str, remote_path: str) -> bool:
         """Push a file to the device."""
         result = self._run_device(serial, ["push", local_path, remote_path], timeout=120)
@@ -363,21 +371,29 @@ class ADB:
         return None
 
     def check_ank_installed(self, serial: str) -> bool:
-        """Check if ANK is installed on the device."""
-        output, _ = self.shell(serial, "ls /data/local/ank/mode 2>/dev/null")
+        """Check if ANK is installed on the device (rooted or lite)."""
+        output, _ = self.shell(serial, "ls /data/local/ank/mode 2>/dev/null; ls /data/local/tmp/ank/mode 2>/dev/null")
         return bool(output and "mode" in output)
 
     def get_ank_mode(self, serial: str) -> Optional[str]:
         """Get ANK installation mode."""
-        output, _ = self.shell(serial, "cat /data/local/ank/mode 2>/dev/null")
-        if output:
-            try:
-                import json
-                data = json.loads(output.strip())
-                return data.get("mode")
-            except Exception:
-                pass
+        for path in ("/data/local/ank/mode", "/data/local/tmp/ank/mode"):
+            output, _ = self.shell(serial, f"cat {path} 2>/dev/null")
+            if output and output.strip().startswith("{"):
+                try:
+                    import json
+                    data = json.loads(output.strip())
+                    return data.get("mode")
+                except Exception:
+                    pass
         return None
+
+    def get_ank_base_dir(self, serial: str) -> str:
+        """Get the ANK base directory (/data/local/ank or /data/local/tmp/ank)."""
+        output, _ = self.shell(serial, "ls /data/local/ank/mode 2>/dev/null")
+        if output and "mode" in output:
+            return "/data/local/ank"
+        return "/data/local/tmp/ank"
 
     def check_ank_ui_installed(self, serial: str) -> bool:
         """Check if ANK UI (launcher) is installed."""
@@ -407,7 +423,9 @@ class ADB:
                 "pkill -9 -f 'ld-musl.*python3.*server.py' 2>/dev/null; "
                 "pkill -9 -f 'ld-musl.*server.py' 2>/dev/null; "
                 "pkill -9 -f 'sshd.*PidFile' 2>/dev/null; "
-                "pkill -9 -f 'sshd.*-p.*22[0-9][0-9]' 2>/dev/null"
+                "pkill -9 -f 'sshd.*-p.*22[0-9][0-9]' 2>/dev/null; "
+                "pkill -9 -f 'proot.*-r.*/ank' 2>/dev/null; "
+                "pkill -9 -f 'python3.*server.py' 2>/dev/null"
             )),
             ("Unmounting bind mounts...", lambda: _sh(
                 "for m in /data/local/ank/ankfs/dev/null /data/local/ank/ankfs/dev/urandom "
@@ -436,6 +454,7 @@ class ADB:
                 "ip netns delete \"$ns\" 2>/dev/null; done"
             )),
             ("Removing /data/local/ank...", lambda: _sh("rm -rf /data/local/ank")),
+            ("Removing /data/local/tmp/ank...", lambda: _sh("rm -rf /data/local/tmp/ank")),
             ("Removing /sdcard/AndroidKonteiner...", lambda: _sh("rm -rf /sdcard/AndroidKonteiner")),
             ("Removing Magisk module...", lambda: _sh("rm -rf /data/adb/modules/ank* /data/adb/service.d/ank*")),
             ("Removing ANK UI...", lambda: self.uninstall_ank_ui(serial, callback)),

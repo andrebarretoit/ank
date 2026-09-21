@@ -118,6 +118,128 @@ document.getElementById('backup-modal-overlay')?.addEventListener('click', e => 
 document.getElementById('upload-modal-overlay')?.addEventListener('click', e => { if (e.target === e.currentTarget) closeModalById('upload-modal-overlay'); });
 function closeCreateModal() { closeModalById('create-modal-overlay'); const f = document.getElementById('create-form'); if (f) f.reset(); }
 
+/* ═══════ RESTART PROGRESS MODAL ═══════ */
+function showRestartModal(type) {
+  const overlay = document.getElementById('restart-modal-overlay');
+  const titleEl = document.getElementById('restart-modal-title');
+  const stepsEl = document.getElementById('restart-modal-steps');
+  const barEl = document.getElementById('restart-progress-bar');
+  const pctEl = document.getElementById('restart-progress-pct');
+  const statusEl = document.getElementById('restart-modal-status');
+
+  const isServer = type === 'server';
+  const steps = isServer
+    ? ['Desligando containers...', 'Parando serviços...', 'Reiniciando ANK...', 'Aguardando ANK iniciar...']
+    : ['Desligando containers...', 'Parando serviços...', 'Rebootando device...', 'Aguardando device iniciar...'];
+
+  titleEl.textContent = isServer ? 'Reiniciando ANK...' : 'Reiniciando Device...';
+  barEl.style.width = '0%';
+  pctEl.textContent = '0%';
+  statusEl.textContent = '';
+
+  stepsEl.innerHTML = steps.map((s, i) => `
+    <div class="restart-step pending" id="restart-step-${i}">
+      <div class="restart-step-icon"></div>
+      <span>${s}</span>
+    </div>
+  `).join('');
+
+  overlay.classList.add('active');
+
+  function setStep(idx, state) {
+    const el = document.getElementById(`restart-step-${idx}`);
+    if (!el) return;
+    el.className = `restart-step ${state}`;
+  }
+
+  function updateProgress(pct, label) {
+    barEl.style.width = pct + '%';
+    pctEl.textContent = pct + '%';
+    if (label) statusEl.textContent = label;
+  }
+
+  function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+  async function pollServerReady(timeoutMs) {
+    const start = Date.now();
+    const interval = 2000;
+    while (Date.now() - start < timeoutMs) {
+      try {
+        const res = await fetch(`${API}/system/status`, { headers: { 'X-ANK-Client': 'ank-panel' } });
+        if (res.ok) return true;
+      } catch (e) {}
+      await sleep(interval);
+    }
+    return false;
+  }
+
+  async function pollDeviceReady(timeoutMs) {
+    const start = Date.now();
+    const interval = 5000;
+    while (Date.now() - start < timeoutMs) {
+      try {
+        const res = await fetch(`${API}/system/status`, { headers: { 'X-ANK-Client': 'ank-panel' } });
+        if (res.ok) return true;
+      } catch (e) {}
+      updateProgress(Math.min(90, 50 + Math.round((Date.now() - start) / timeoutMs * 40)), 'Aguardando device...');
+      await sleep(interval);
+    }
+    return false;
+  }
+
+  (async () => {
+    try {
+      // Step 1: Desligando containers
+      setStep(0, 'active');
+      updateProgress(10, 'Desligando containers...');
+      await sleep(1000);
+      setStep(0, 'done');
+
+      // Step 2: Parando serviços
+      setStep(1, 'active');
+      updateProgress(25, 'Parando serviços...');
+      await sleep(1000);
+      setStep(1, 'done');
+
+      // Step 3: Reiniciando
+      setStep(2, 'active');
+      updateProgress(40, isServer ? 'Reiniciando ANK...' : 'Rebootando device...');
+      if (isServer) {
+        api('POST', '/ank-manager/restart-server').catch(() => {});
+      } else {
+        api('POST', '/ank-manager/restart-device').catch(() => {});
+      }
+      await sleep(2000);
+      setStep(2, 'done');
+
+      // Step 4: Aguardando
+      setStep(3, 'active');
+      updateProgress(50, isServer ? 'Aguardando ANK iniciar...' : 'Aguardando device iniciar...');
+      const timeoutMs = isServer ? 60000 : 300000;
+      const ready = await (isServer ? pollServerReady(timeoutMs) : pollDeviceReady(timeoutMs));
+
+      if (ready) {
+        setStep(3, 'done');
+        updateProgress(100, isServer ? 'ANK reiniciado com sucesso!' : 'Device reiniciado!');
+        titleEl.textContent = isServer ? 'ANK Reiniciado!' : 'Device Reiniciado!';
+        statusEl.textContent = 'Recarregando página...';
+        await sleep(1500);
+        location.reload();
+      } else {
+        setStep(3, 'error');
+        updateProgress(100, 'Tempo esgotado — verifique manualmente');
+        statusEl.innerHTML = '<span style="color:var(--danger)">Timeout. A página recarregará em 5s.</span>';
+        await sleep(5000);
+        location.reload();
+      }
+    } catch (e) {
+      statusEl.innerHTML = `<span style="color:var(--danger)">Erro: ${esc(e.message)}</span>`;
+      await sleep(3000);
+      overlay.classList.remove('active');
+    }
+  })();
+}
+
 function refreshTab(btn, loadFn) {
   const icon = btn.querySelector('i');
   if (icon) icon.classList.add('spin');
@@ -2004,6 +2126,12 @@ function showSettingsSection(section) {
         <div class="form-group"><label class="form-label">Default Container Password</label><input type="password" class="form-input" id="setting-default-pass" placeholder="ank123" minlength="4"><small class="form-hint">Used when creating containers without specifying a password</small></div>
         <button type="submit" class="btn btn-primary"><i class="bi bi-check-lg"></i> Save</button>
       </form>
+      <hr style="border-color:var(--border);margin:16px 0">
+      <div style="display:flex;gap:10px;flex-wrap:wrap">
+        <button class="btn btn-primary btn-sm" id="restart-server-btn"><i class="bi bi-arrow-clockwise"></i> Restart Server</button>
+        <button class="btn btn-ghost btn-sm" id="restart-device-btn"><i class="bi bi-phone"></i> Restart Device</button>
+        <button class="btn btn-danger btn-sm" id="uninstall-btn"><i class="bi bi-trash3"></i> Uninstall ANK</button>
+      </div>
     </div></div>`;
     document.getElementById('setting-bind').value = cfg.bind_address || '0.0.0.0';
     document.getElementById('setting-refresh').value = cfg.refresh_interval != null ? cfg.refresh_interval : 10;
@@ -2029,13 +2157,12 @@ function showSettingsSection(section) {
     document.getElementById('restart-device-btn')?.addEventListener('click', async () => {
       const ok = await confirmAction('Restart Device', 'This will reboot the Android device. Continue?');
       if (!ok) return;
-      document.body.innerHTML = '<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;background:var(--bg-primary);color:var(--text-primary);font-family:system-ui"><i class="bi bi-arrow-clockwise spin" style="font-size:48px;color:var(--accent);margin-bottom:16px"></i><h2>Device Rebooting...</h2><p style="color:var(--text-secondary);margin-top:8px">Please wait for the device to come back online.</p></div>';
-      try { await api('POST', '/system/restart-device'); } catch(e) {}
+      showRestartModal('device');
     });
     document.getElementById('restart-server-btn')?.addEventListener('click', async () => {
       const ok = await confirmAction('Restart Server', 'Restart the ANK server?');
       if (!ok) return;
-      try { await api('POST', '/system/restart-server'); toast('Restarting...', 'success'); } catch(e) { toast(`Failed: ${e.message}`, 'error'); }
+      showRestartModal('server');
     });
     document.getElementById('uninstall-btn')?.addEventListener('click', async () => {
       const ok = await confirmAction('Uninstall ANK', 'This will PERMANENTLY delete ALL containers, images, data, and ANK itself. This cannot be undone!');
@@ -2149,7 +2276,7 @@ function showSettingsSection(section) {
     document.getElementById('ank-mgr-restart-server')?.addEventListener('click', async () => {
       const ok = await confirmAction('Restart Server', 'Restart the ANK server process?');
       if (!ok) return;
-      try { await api('POST', '/ank-manager/restart-server'); toast('Server restarting...', 'success'); } catch(e) { toast(`Failed: ${e.message}`, 'error'); }
+      showRestartModal('server');
     });
     document.getElementById('ank-mgr-stop')?.addEventListener('click', async () => {
       const ok = await confirmAction('Stop Server', 'Stop all containers and the ANK server?');
@@ -2159,7 +2286,7 @@ function showSettingsSection(section) {
     document.getElementById('ank-mgr-reboot')?.addEventListener('click', async () => {
       const ok = await confirmAction('Restart Device', 'This will reboot the Android device. Continue?');
       if (!ok) return;
-      try { await api('POST', '/ank-manager/restart-device'); toast('Rebooting...', 'info'); } catch(e) { toast(`Failed: ${e.message}`, 'error'); }
+      showRestartModal('device');
     });
     document.getElementById('ank-mgr-uninstall')?.addEventListener('click', async () => {
       const ok = await confirmAction('Uninstall ANK', 'This will PERMANENTLY delete ALL containers, images, data, and ANK itself. This cannot be undone!');
