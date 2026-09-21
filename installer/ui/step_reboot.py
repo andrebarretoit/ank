@@ -37,6 +37,7 @@ class RebootThread(QThread):
 
         self.status.emit("Waiting for the ANK server...")
 
+        _started_lite = False
         for i in range(60):
             time.sleep(2)
             for scheme in ("http", "https"):
@@ -52,6 +53,19 @@ class RebootThread(QThread):
                     if e.code in (200, 301, 302, 401):
                         self.done.emit(True)
                         return
+                except Exception:
+                    pass
+
+            if not _started_lite and i >= 5:
+                try:
+                    from core.adb import ADB
+                    _adb = ADB()
+                    out, _ = _adb.shell(self.serial, "ls /data/local/tmp/ank/mode 2>/dev/null")
+                    if out and "mode" in out:
+                        self.status.emit("Starting ANK server (lite)...")
+                        _adb.shell(self.serial, "sh /data/local/tmp/ank/start-lite.sh")
+                        _started_lite = True
+                        time.sleep(10)
                 except Exception:
                     pass
 
