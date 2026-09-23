@@ -3241,7 +3241,15 @@ function applyLiteOverlay() {
 
 /* ═══════ THEME TOGGLE ═══════ */
 function getTheme() { return localStorage.getItem('ank_theme') || document.documentElement.getAttribute('data-theme') || 'dark'; }
-function setTheme(theme) { document.documentElement.setAttribute('data-theme', theme); localStorage.setItem('ank_theme', theme); document.querySelector('meta[name="theme-color"]')?.setAttribute('content', theme === 'dark' ? '#0a0d12' : '#ffffff'); }
+function setTheme(theme) {
+  document.documentElement.setAttribute('data-theme', theme);
+  localStorage.setItem('ank_theme', theme);
+  document.querySelector('meta[name="theme-color"]')?.setAttribute('content', theme === 'dark' ? '#0a0d12' : '#ffffff');
+  const icon = theme === 'dark' ? 'bi-moon-stars' : 'bi-sun';
+  document.querySelectorAll('#theme-toggle-login i, #theme-toggle-mobile i, #theme-toggle-desktop i, .theme-toggle-page i').forEach(i => {
+    i.className = 'bi ' + icon;
+  });
+}
 function toggleTheme() { setTheme(getTheme() === 'dark' ? 'light' : 'dark'); }
 // Apply saved theme on boot
 setTheme(getTheme());
