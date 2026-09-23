@@ -179,10 +179,19 @@ class LiteInstaller:
 
     def _resolve_proot(self, proot_arch: str) -> bool:
         """Get correct-arch PRoot onto device. Returns True on success."""
-        bundled = f"{EXTRACT_DIR}/ankfs/anklite-proot-{proot_arch}"
+        # Bundled filenames use armv7 (not armv7l): anklite-proot-armv7
+        bundled_arch = "armv7" if proot_arch in ("armv7l", "armv6l", "armv7") else proot_arch
+        bundled = f"{EXTRACT_DIR}/ankfs/anklite-proot-{bundled_arch}"
         out, _ = self._sh(f"test -f {bundled} && echo OK")
         if "OK" in out:
             self._sh(f"cp {bundled} {REMOTE_PROOT} && chmod 755 {REMOTE_PROOT}")
+            self._notify("proot", f"PRoot ({proot_arch}) from ZIP", 0.52)
+            return True
+        # Fallback: also try the exact arch name
+        bundled_exact = f"{EXTRACT_DIR}/ankfs/anklite-proot-{proot_arch}"
+        out, _ = self._sh(f"test -f {bundled_exact} && echo OK")
+        if "OK" in out:
+            self._sh(f"cp {bundled_exact} {REMOTE_PROOT} && chmod 755 {REMOTE_PROOT}")
             self._notify("proot", f"PRoot ({proot_arch}) from ZIP", 0.52)
             return True
         local = self._download_proot(proot_arch)

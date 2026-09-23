@@ -179,7 +179,7 @@ _history_save() {
     local count=$(_history_count)
     if [ "$count" -gt "$HIST_MAX" ]; then
         local tmp="$ANK_TMP/history_trim.tmp"
-        tail -n "$HISTORY_MAX" "$HIST_FILE" > "$tmp" 2>/dev/null
+        tail -n "$HIST_MAX" "$HIST_FILE" > "$tmp" 2>/dev/null
         mv "$tmp" "$HIST_FILE" 2>/dev/null
     fi
     HIST_IDX=$(_history_count)
@@ -201,11 +201,11 @@ _history_show() {
 # HELPER: Tab completion
 # ============================================================
 _cmds="ank ank-core exit help history"
-_ank_subcmds="ps start stop restart rm logs exec inspect images list-images templates deploy pull build npad ls copy ren erase stack backup node ping traceroute nslookup ip ifconfig route netstat ss --version help history --man exit"
+_ank_subcmds="ps start stop restart rm logs exec inspect ssh images list-images templates deploy pull build npad ls copy ren erase stack backup node ping traceroute nslookup ip ifconfig route netstat ss --version help history --man exit"
 _ank_stack_subcmds="ls inspect create scale rm"
 _ank_backup_subcmds="ls inspect run rm"
 _ank_node_subcmds="ls inspect add rm"
-_ank_core_subcmds="status restart info network clean logs help --man"
+_ank_core_subcmds="status restart info network clean logs shell help --man"
 
 _complete_input() {
     local input="$1"
@@ -484,13 +484,6 @@ EOF
 }
 
 # ============================================================
-# ANK: exit
-# ============================================================
-ank_exit() {
-    exit 0
-}
-
-# ============================================================
 # ANK: history
 # ============================================================
 ank_history() {
@@ -708,6 +701,56 @@ ank_exec() {
         fi
         local merged="$CONTAINERS_DIR/$name/merged"
         chroot "$merged" /bin/sh -c "export PATH=/bin:/sbin:/usr/bin:/usr/sbin; hostname $name 2>/dev/null; $cmd"
+    fi
+}
+
+# ============================================================
+# ANK: ssh into container
+# ============================================================
+ank_ssh() {
+    local name="$1"
+    if [ -z "$name" ]; then
+        echo "Usage: ank ssh <name>"
+        return 1
+    fi
+    local config="$CONTAINERS_DIR/$name/config.json"
+    if [ ! -f "$config" ]; then
+        # Remote node?
+        local node=$(_find_container_node "$name")
+        if [ "$node" != "local" ]; then
+            echo "Container '$name' is on node '$node'. SSH is only supported for local containers."
+            return 1
+        fi
+        echo "Container '$name' not found"
+        return 1
+    fi
+    local status=$(_json_val "$config" "status")
+    if [ "$status" != "running" ]; then
+        echo "Container '$name' not running (status: $status)"
+        return 1
+    fi
+    local ssh_port=$(_json_val "$config" "ssh_port")
+    [ -z "$ssh_port" ] || [ "$ssh_port" = "null" ] && ssh_port=2201
+    if command -v ssh >/dev/null 2>&1; then
+        echo "Connecting to $name on port $ssh_port (password: same as container root)..."
+        ssh -p "$ssh_port" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@127.0.0.1
+    else
+        echo "ssh client not found on host. Use: ank exec $name /bin/sh"
+        return 1
+    fi
+}
+
+# ============================================================
+# ANK-CORE: open host shell
+# ============================================================
+ank_core_shell() {
+    echo "Opening host shell (root). Type 'exit' to return."
+    if [ -n "$SHELL" ] && [ -x "$SHELL" ]; then
+        exec "$SHELL"
+    elif [ -x /system/bin/sh ]; then
+        exec /system/bin/sh
+    else
+        exec /bin/sh
     fi
 }
 
@@ -2055,13 +2098,30 @@ ank_core_status() {
 # ============================================================
 ank_core_restart() {
     echo "Restarting ANK server..."
-    # Kill existing server
+    local restart_sh="$ANK_DIR/scripts/restart-server.sh"
+    [ ! -f "$restart_sh" ] && restart_sh="$ANKFS/opt/ank/restart-server.sh"
+    [ ! -f "$restart_sh" ] && restart_sh="$ANK_DIR/ankfs/opt/ank/restart-server.sh"
+    # Kill existing server (canonical + legacy PID files)
     kill $(cat "$LOGS_DIR/server.pid" 2>/dev/null) 2>/dev/null
-    pkill -f "ld-musl.*python3.*server.py" 2>/dev/null
+    kill $(cat "$ANK_DIR/server.pid" 2>/dev/null) 2>/dev/null
+    pkill -f "python3.*server.py" 2>/dev/null
     sleep 1
-    # Restart
-    sh "$ANK_DIR/ankfs/opt/ank/start-server.sh" >/dev/null 2>&1 &
-    echo "Server restarted"
+    # Restart via the robust restart script (writes both PID files)
+    if [ -f "$restart_sh" ]; then
+        sh "$restart_sh" >/dev/null 2>&1
+        echo "Server restarted"
+        return
+    fi
+    # Fallback: start directly
+    local start_sh="$ANKFS/opt/ank/start-server.sh"
+    [ ! -f "$start_sh" ] && start_sh="$ANKFS/opt/ank/start-lite.sh"
+    if [ -f "$start_sh" ]; then
+        sh "$start_sh" >/dev/null 2>&1 &
+        echo "Server restarted"
+    else
+        echo "ERROR: neither restart-server.sh nor start-server.sh found" >&2
+        return 1
+    fi
 }
 
 # ============================================================
@@ -3369,8 +3429,7 @@ mkdir -p "$ANK_TMP" 2>/dev/null
 _history_load
 
 while true; do
-    printf "(root@ank-shell) ~ [/ank-engine] > " >&2
-    read -r input 2>/dev/null
+    input=$(_read_line)
 
     # Skip empty input
     [ -z "$input" ] && continue
@@ -3381,9 +3440,9 @@ while true; do
     # Handle !{NUM} - re-execute history command
     case "$input" in
         \!*)
-            local hist_num="${input#!}"
+            hist_num="${input#!}"
             if [ "$hist_num" -ge 1 ] 2>/dev/null; then
-                local hist_cmd=$(_history_get "$hist_num")
+                hist_cmd=$(_history_get "$hist_num")
                 if [ -n "$hist_cmd" ]; then
                     echo "  $hist_cmd" >&2
                     input="$hist_cmd"
@@ -3470,6 +3529,10 @@ while true; do
                 pull)
                     arg1=$(echo "$args" | cut -d' ' -f1)
                     ank_pull "$arg1"
+                    ;;
+                ssh)
+                    arg1=$(echo "$args" | cut -d' ' -f1)
+                    ank_ssh "$arg1"
                     ;;
                 build)
                     arg1=$(echo "$args" | cut -d' ' -f1)
@@ -3650,6 +3713,9 @@ while true; do
                     ;;
                 logs)
                     ank_core_logs
+                    ;;
+                shell)
+                    ank_core_shell
                     ;;
                 *)
                     echo "Unknown ank-core command: $subcmd"

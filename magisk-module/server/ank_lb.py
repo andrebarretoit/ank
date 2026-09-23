@@ -111,6 +111,9 @@ class LoadBalancer:
 
     def __init__(self, port: int, backends: list, algo: str = "round_robin",
                  stack_name: str = ""):
+        # Accept UI/docs alias "least_conn" alongside canonical "least_connections"
+        if algo == "least_conn":
+            algo = "least_connections"
         if algo not in VALID_ALGOS:
             raise ValueError(f"algo must be one of {VALID_ALGOS}, got {algo!r}")
 
@@ -417,6 +420,25 @@ class LBHandler(http.server.BaseHTTPRequestHandler):
 
     def _handle(self):
         if self.path == "/_lb/metrics":
+            # Metrics expose backend list — require local-only or Bearer token
+            client_ip = self.client_address[0] if self.client_address else ""
+            auth = self.headers.get("Authorization", "")
+            token_ok = False
+            if auth.startswith("Bearer "):
+                try:
+                    import server as _srv
+                    _vt = getattr(_srv, "_validate_token", None)
+                    token_ok = (_vt(auth[7:].strip()) == "admin") if _vt else False
+                except Exception:
+                    token_ok = False
+            if client_ip not in ("127.0.0.1", "::1") and not token_ok:
+                self.send_response(403)
+                self.send_header("Content-Type", "application/json")
+                body = b'{"error":"forbidden"}'
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
             self._serve_metrics()
             return
         if self.path == "/_lb/health":

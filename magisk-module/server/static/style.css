@@ -36,6 +36,32 @@
   --glass-blur: blur(16px);
 }
 
+/* ═══════ LIGHT THEME ═══════ */
+[data-theme="light"] {
+  --bg: #f4f7fb;
+  --bg-deep: #eef2f7;
+  --bg-base: #ffffff;
+  --bg-surface: rgba(255, 255, 255, 0.85);
+  --bg-elevated: rgba(255, 255, 255, 0.95);
+  --bg-hover: rgba(230, 237, 245, 0.8);
+  --border: rgba(15, 40, 80, 0.1);
+  --border-focus: rgba(59, 130, 246, 0.55);
+  --primary: #2563eb;
+  --primary-dim: rgba(37, 99, 235, 0.12);
+  --primary-glow: rgba(37, 99, 235, 0.25);
+  --accent: #7c3aed;
+  --text: #153a6b;
+  --text-secondary: #475569;
+  --text-muted: #64748b;
+  --shadow: 0 4px 24px rgba(15, 23, 42, 0.1);
+  --shadow-lg: 0 8px 40px rgba(15, 23, 42, 0.14);
+  --glass-bg: rgba(255, 255, 255, 0.75);
+  --glass-border: rgba(15, 40, 80, 0.1);
+}
+[data-theme="light"] body::before { opacity: 0.25; }
+[data-theme="light"] .bg-flares { opacity: 0.35; }
+[data-theme="light"] .login-visual { background: linear-gradient(160deg, #dbeafe, #ede9fe); }
+
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 html { font-size: 14px; -webkit-text-size-adjust: 100%; }
 body {

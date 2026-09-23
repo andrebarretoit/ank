@@ -638,9 +638,6 @@ umount "$ANKFS/proc" 2>/dev/null
 
 # Install ANK shell + set root shell
 if [ -f "$ANKFS/usr/sbin/sshd" ]; then
-    cp "$SRC/server/ank-shell.sh" "$ANKFS/ank-shell.sh" 2>/dev/null
-    chmod 755 "$ANKFS/ank-shell.sh" 2>/dev/null
-    sed -i '1s|#!/system/bin/sh|#!/bin/sh|' "$ANKFS/ank-shell.sh" 2>/dev/null
     sed -i 's|^\(root:[^:]*:[^:]*:[^:]*:[^:]*:[^:]*:\).*|\1/bin/sh|' "$ANKFS/etc/passwd" 2>/dev/null
     log OK "ANK Shell installed"
 fi
@@ -719,6 +716,7 @@ fi
 if [ -f "$SRC/scripts/ank-shell.sh" ]; then
     cp "$SRC/scripts/ank-shell.sh" "$ANKFS/ank-shell.sh"
     chmod 755 "$ANKFS/ank-shell.sh"
+    sed -i '1s|#!/system/bin/sh|#!/bin/sh|' "$ANKFS/ank-shell.sh" 2>/dev/null
 fi
 # Create MOTD (dynamic CPU/MEM/UPTIME)
 mkdir -p "$ANKFS/etc/profile.d" 2>/dev/null

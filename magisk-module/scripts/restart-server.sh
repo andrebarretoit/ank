@@ -8,15 +8,26 @@ ANKFS="$ANK_DIR/ankfs"
 LOG_DIR="$ANK_DIR/logs"
 SERVER_LOG="$LOG_DIR/server.log"
 START_SCRIPT="$ANKFS/opt/ank/start-server.sh"
-PID_FILE="$ANK_DIR/server.pid"
+# Canonical PID location (server.py writes logs/server.pid)
+PID_FILE="$LOG_DIR/server.pid"
+# Legacy fallback
+LEGACY_PID_FILE="$ANK_DIR/server.pid"
 
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] [restart.sh] Restart requested" >> "$SERVER_LOG"
 
 # Find server PID
 find_pid() {
-    # Try PID file first
+    # Prefer canonical PID file
     if [ -f "$PID_FILE" ]; then
         pid=$(cat "$PID_FILE" 2>/dev/null)
+        if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+            echo "$pid"
+            return
+        fi
+    fi
+    # Legacy PID file
+    if [ -f "$LEGACY_PID_FILE" ]; then
+        pid=$(cat "$LEGACY_PID_FILE" 2>/dev/null)
         if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
             echo "$pid"
             return
@@ -61,13 +72,18 @@ sleep 5
 # ── Step 3: Start ────────────────────────────────────────────────────────────
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] [restart.sh] Starting server..." >> "$SERVER_LOG"
 
-# Detect mode: rooted (chroot) or lite (proot)
-if [ -f "$ANKFS/usr/bin/python3" ] && [ -f "$ANKFS/lib/ld-musl-"* ]; then
-    # Rooted mode
+if [ -x "$START_SCRIPT" ] || [ -f "$START_SCRIPT" ]; then
+    sh "$START_SCRIPT" >> "$SERVER_LOG" 2>&1
+elif [ -x "$ANKFS/opt/ank/start-lite.sh" ] || [ -f "$ANKFS/opt/ank/start-lite.sh" ]; then
+    sh "$ANKFS/opt/ank/start-lite.sh" >> "$SERVER_LOG" 2>&1
+elif [ -f "$ANKFS/usr/bin/python3" ] && ls "$ANKFS/lib/ld-musl-"* >/dev/null 2>&1; then
+    # Rooted mode fallback
     cd "$ANKFS"
     LD_LIBRARY_PATH="$ANKFS/lib:$ANKFS/usr/lib" \
     nohup "$ANKFS/lib/ld-musl-"* "$ANKFS/usr/bin/python3" /opt/ank/server.py \
         >> "$SERVER_LOG" 2>&1 &
+    echo "$!" > "$PID_FILE"
+    echo "$!" > "$LEGACY_PID_FILE"
 elif [ -f "$ANK_DIR/proot" ]; then
     # Lite/PRoot mode
     cd "$ANKFS"
@@ -75,13 +91,30 @@ elif [ -f "$ANK_DIR/proot" ]; then
         -b /dev -b /proc -w /root \
         /usr/bin/python3 /opt/ank/server.py \
         >> "$SERVER_LOG" 2>&1 &
+    echo "$!" > "$PID_FILE"
+    echo "$!" > "$LEGACY_PID_FILE"
 else
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] [restart.sh] ERROR: No server binary found" >> "$SERVER_LOG"
     exit 1
 fi
 
-NEW_PID=$!
-echo "$NEW_PID" > "$PID_FILE"
-echo "[$(date '+%Y-%m-%d %H:%M:%S')] [restart.sh] Server restarted (PID $NEW_PID)" >> "$SERVER_LOG"
+NEW_PID=""
+for i in 1 2 3 4 5 6 7 8 9 10; do
+    if [ -s "$PID_FILE" ]; then
+        NEW_PID=$(cat "$PID_FILE" 2>/dev/null)
+        [ -n "$NEW_PID" ] && kill -0 "$NEW_PID" 2>/dev/null && break
+    fi
+    NEW_PID=$(pgrep -f 'python3.*server.py' 2>/dev/null | head -1)
+    [ -n "$NEW_PID" ] && kill -0 "$NEW_PID" 2>/dev/null && break
+    sleep 1
+    NEW_PID=""
+done
+if [ -n "$NEW_PID" ]; then
+    echo "$NEW_PID" > "$PID_FILE"
+    echo "$NEW_PID" > "$LEGACY_PID_FILE"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] [restart.sh] Server restarted (PID $NEW_PID)" >> "$SERVER_LOG"
+else
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] [restart.sh] WARNING: restart may have failed (no PID)" >> "$SERVER_LOG"
+fi
 
 exit 0

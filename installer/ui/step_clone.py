@@ -318,16 +318,21 @@ class CloneThread(QThread):
         if config is not None:
             changed = False
             if not self.app.migrate_keep_network:
-                config["server_port"] = 8001
+                config["panel_port"] = 8001
+                config["server_port"] = 8001  # legacy alias
                 changed = True
                 self.log.emit("Reset network configuration to defaults")
             if self.app.migrate_remap_ports:
-                config["server_port"] = self.app.migrate_server_port
+                config["panel_port"] = self.app.migrate_server_port
+                config["server_port"] = self.app.migrate_server_port  # legacy alias
                 changed = True
                 self.log.emit(f"Remapped server port to {self.app.migrate_server_port}")
             if changed:
                 config_str = json.dumps(config).replace("'", "'\\''")
                 tgt_shell(target.serial, f"echo '{config_str}' > {ANK_DIR}/config.json")
+                # Keep port.conf in sync for CLI/scripts that read it
+                port_val = config.get("panel_port", 8001)
+                tgt_shell(target.serial, f"mkdir -p {ANK_DIR}/logs && echo {port_val} > {ANK_DIR}/logs/port.conf")
         else:
             self.log.emit("WARN: could not read config.json, skipping network options")
 

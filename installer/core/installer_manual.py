@@ -233,7 +233,10 @@ class ManualInstaller:
 
     def _setup_services(self):
         """Setup boot service for ANK server (non-Magisk rooted devices)."""
-        self.adb.shell_su(self.serial, "mkdir -p /adb/services.d")
+        # Magisk/SU boot scripts live in /data/adb/service.d (NOT /adb/services.d)
+        self.adb.shell_su(self.serial, "mkdir -p /data/adb/service.d")
+        # Clean up any wrong path from older versions
+        self.adb.shell_su(self.serial, "rm -rf /adb/services.d")
 
         # Detect architecture for musl linker
         arch_output, _ = self.adb.shell(self.serial, "uname -m")
@@ -316,8 +319,8 @@ if [ -f "$ROOTFS/usr/sbin/sshd" ]; then
 fi
 """
         self.adb.shell_su(self.serial,
-            f"echo '{service_content}' > /adb/services.d/ank.sh")
-        self.adb.shell_su(self.serial, "chmod 755 /adb/services.d/ank.sh")
+            f"echo '{service_content}' > /data/adb/service.d/ank.sh")
+        self.adb.shell_su(self.serial, "chmod 755 /data/adb/service.d/ank.sh")
 
     def _create_config(self):
         """Create default config.json."""

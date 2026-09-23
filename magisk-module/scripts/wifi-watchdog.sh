@@ -111,10 +111,32 @@ ensure_services() {
         local pid=$(cat "$pid_file")
         if ! kill -0 "$pid" 2>/dev/null; then
             log "ANK server died (PID $pid), restarting..."
-            sh "$ANK_DIR/core/../temp/restart-server.sh" 2>/dev/null
-            # Manual restart fallback
+            # Try known restart-script locations
+            local restart_sh=""
+            for candidate in \
+                "$ANK_DIR/scripts/restart-server.sh" \
+                "$ANK_DIR/core/restart-server.sh" \
+                "/data/adb/modules/ank/scripts/restart-server.sh" \
+                "$ANK_DIR/ankfs/opt/ank/restart-server.sh"; do
+                if [ -f "$candidate" ]; then
+                    restart_sh="$candidate"
+                    break
+                fi
+            done
+            if [ -n "$restart_sh" ]; then
+                sh "$restart_sh" 2>/dev/null
+            fi
+            # Manual restart fallback (arch-aware musl linker)
             local ROOTFS="$ANK_DIR/ankfs"
-            local MUSL="$ROOTFS/lib/ld-musl-armhf.so.1"
+            local MUSL=""
+            local arch
+            arch=$(uname -m 2>/dev/null)
+            case "$arch" in
+                aarch64|arm64) MUSL="$ROOTFS/lib/ld-musl-aarch64.so.1" ;;
+                x86_64)        MUSL="$ROOTFS/lib/ld-musl-x86_64.so.1" ;;
+                armv7*|armhf)  MUSL="$ROOTFS/lib/ld-musl-armhf.so.1" ;;
+                *)             MUSL="$ROOTFS/lib/ld-musl-armhf.so.1" ;;
+            esac
             if [ -f "$MUSL" ]; then
                 export LD_LIBRARY_PATH="$ROOTFS/usr/lib:$ROOTFS/lib"
                 nohup "$MUSL" "$ROOTFS/usr/bin/python3" "$ROOTFS/opt/ank/server.py" > "$ANK_DIR/logs/server.log" 2>&1 &

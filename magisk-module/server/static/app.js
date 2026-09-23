@@ -25,7 +25,7 @@ async function btnLoading(btn, fn) {
   try { return await fn(); } finally { btn.disabled = origDisabled; btn.innerHTML = orig; }
 }
 
-function esc(s) { return s ? String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;') : ''; }
+function esc(s) { return s ? String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;') : ''; }
 function fmtBytes(b) { if (!b || b === 0) return '0 B'; const k = 1024, s = ['B','KB','MB','GB']; const i = Math.floor(Math.log(b)/Math.log(k)); return (b/Math.pow(k,i)).toFixed(1)+' '+s[i]; }
 function fmtUptime(sec) { const d = Math.floor(sec/86400), h = Math.floor((sec%86400)/3600), m = Math.floor((sec%3600)/60); if (d>0) return `${d}d ${h}h`; if (h>0) return `${h}h ${m}m`; return `${m}m`; }
 function copyText(text) { if (navigator.clipboard&&navigator.clipboard.writeText) navigator.clipboard.writeText(text); else { const ta=document.createElement('textarea'); ta.value=text; ta.style.cssText='position:fixed;opacity:0'; document.body.appendChild(ta); ta.select(); try{document.execCommand('copy')}catch(e){} document.body.removeChild(ta); } }
@@ -115,7 +115,6 @@ document.getElementById('create-modal-overlay')?.addEventListener('click', e => 
 document.getElementById('network-modal-overlay')?.addEventListener('click', e => { if (e.target === e.currentTarget) closeModalById('network-modal-overlay'); });
 document.getElementById('stack-modal-overlay')?.addEventListener('click', e => { if (e.target === e.currentTarget) closeModalById('stack-modal-overlay'); });
 document.getElementById('backup-modal-overlay')?.addEventListener('click', e => { if (e.target === e.currentTarget) closeModalById('backup-modal-overlay'); });
-document.getElementById('upload-modal-overlay')?.addEventListener('click', e => { if (e.target === e.currentTarget) closeModalById('upload-modal-overlay'); });
 function closeCreateModal() { closeModalById('create-modal-overlay'); const f = document.getElementById('create-form'); if (f) f.reset(); }
 
 /* ═══════ RESTART PROGRESS MODAL ═══════ */
@@ -612,11 +611,11 @@ async function renderDashboardNodes() {
 /* ═══════ CONTAINERS ═══════ */
 function isTransientStatus(s) { return /ing$/i.test(String(s || '')); }
 function containerActionDisabled(s) {
-  if (s === 'running') return { start: true, stop: false, restart: false, delete: true };
-  if (isTransientStatus(s)) return { start: true, stop: true, restart: true, delete: true };
-  if (s === 'stopped') return { start: false, stop: true, restart: true, delete: false };
-  if (s === 'failed') return { start: false, stop: true, restart: true, delete: false };
-  return { start: false, stop: true, restart: true, delete: true };
+  if (s === 'running') return { start: true, stop: false, restart: false, delete: true, exec: false };
+  if (isTransientStatus(s)) return { start: true, stop: true, restart: true, delete: true, exec: true };
+  if (s === 'stopped') return { start: false, stop: true, restart: true, delete: false, exec: true };
+  if (s === 'failed') return { start: false, stop: true, restart: true, delete: false, exec: true };
+  return { start: false, stop: true, restart: true, delete: true, exec: true };
 }
 let cachedContainers = [];
 let containersRenderedOnce = false;
@@ -720,6 +719,7 @@ async function showContainerDetail(name, nodeId) {
             <button class="btn btn-success btn-sm" id="detail-start" onclick="startContainer('${esc(name)}')" ${dis.start?'disabled':''}><i class="bi bi-play-fill"></i> Start</button>
             <button class="btn btn-secondary btn-sm" id="detail-stop" onclick="stopContainer('${esc(name)}')" ${dis.stop?'disabled':''}><i class="bi bi-stop-fill"></i> Stop</button>
             <button class="btn btn-primary btn-sm" id="detail-restart" onclick="restartContainer('${esc(name)}')" ${dis.restart?'disabled':''}><i class="bi bi-arrow-repeat"></i></button>
+            <button class="btn btn-secondary btn-sm" onclick="execInContainer('${esc(name)}')" ${dis.exec||s!=='running'?'disabled':''} title="Run command"><i class="bi bi-terminal"></i> Exec</button>
             <button class="btn btn-danger btn-sm" id="detail-delete" onclick="deleteContainer('${esc(name)}')" ${dis.delete?'disabled':''}><i class="bi bi-trash3"></i></button>
           `}
         </div>
@@ -1066,6 +1066,14 @@ function removePort(idx) {
 async function startContainer(name) { setContainerLoading(name,'start'); try { await api('POST',`/containers/${name}/start`); toast(`Starting "${name}"...`,'info'); pollContainerStatus(name,0); } catch(e) { toast(`Failed: ${e.message}`,'error'); clearContainerLoading(name); } }
 async function stopContainer(name) { setContainerLoading(name,'stop'); try { await api('POST',`/containers/${name}/stop`); toast(`Stopping "${name}"...`,'info'); pollContainerStatus(name,0); } catch(e) { toast(`Failed: ${e.message}`,'error'); clearContainerLoading(name); } }
 async function restartContainer(name) { setContainerLoading(name,'restart'); try { await api('POST',`/containers/${name}/restart`); toast(`Restarting "${name}"...`,'info'); pollContainerStatus(name,0); } catch(e) { toast(`Failed: ${e.message}`,'error'); clearContainerLoading(name); } }
+async function execInContainer(name) {
+  const cmd = prompt(`Run command in "${name}":`);
+  if (!cmd || !cmd.trim()) return;
+  try {
+    const data = await api('POST', `/containers/${encodeURIComponent(name)}/exec`, { command: cmd });
+    openModal(`Exec — ${name}`, `<pre style="max-height:400px;overflow:auto;font-size:11px;font-family:monospace;white-space:pre-wrap;margin:0">${esc((data.stdout||'') + (data.stderr||'') || '(no output)')}</pre>`);
+  } catch(e) { toast(`Failed: ${e.message}`, 'error'); }
+}
 async function deleteContainer(name) { const ok = await confirmAction('Delete Container',`Delete "${name}"? This cannot be undone.`); if (!ok) return; try { await api('DELETE',`/containers/${name}`); if(detailLogTimer){clearInterval(detailLogTimer);detailLogTimer=null;} closeContainerTerminal(); currentContainer=null; toast(`Deleted "${name}"`,'success'); loadContainers(); document.getElementById('container-detail').innerHTML='<div class="split-right-empty"><div><i class="bi bi-box-seam"></i><p>Select a container to manage</p></div></div>'; } catch(e) { toast(`Failed: ${e.message}`,'error'); } }
 
 let containerBusy = {};
@@ -1339,6 +1347,7 @@ function showImageDetail(name, node) {
       <h2><i class="bi bi-hdd-stack" style="color:var(--accent)"></i>${esc(name)}</h2>
       <div class="sr-actions">
         <button class="btn btn-ghost btn-sm" onclick="showImageSection('images')"><i class="bi bi-arrow-left"></i> Back</button>
+        <button class="btn btn-sm" onclick="transferImage('${esc(name)}')" title="Transfer to node"><i class="bi bi-send"></i> Transfer</button>
         <button class="btn btn-danger btn-sm" onclick="deleteImage('${esc(name)}')"><i class="bi bi-trash3"></i></button>
       </div>
     </div>
@@ -1350,8 +1359,10 @@ function showImageDetail(name, node) {
 }
 
 async function pullImage() {
+  let versionOpts = ['3.22','3.21','3.20','3.19','3.18'];
+  try { const v = await api('GET', '/images/alpine-versions'); if (Array.isArray(v) && v.length) versionOpts = v; } catch(e) {}
   const result = await customModal('Pull Image', [
-    { id: 'version', label: 'Alpine Version', type: 'text', value: '3.20', hint: 'Enter version: 3.18, 3.19, 3.20, 3.21, 3.22, etc.' }
+    { id: 'version', label: 'Alpine Version', type: 'select', options: versionOpts.map(v => `<option value="${esc(v)}"${v==='3.20'?' selected':''}>${esc(v)}</option>`).join(''), hint: 'Fetch available versions from Alpine CDN' }
   ]);
   if (!result) return;
   const version = result.version.trim();
@@ -1670,6 +1681,10 @@ function showStackDetail(name) {
           <button class="btn btn-secondary btn-sm" onclick="scaleStackUp('${esc(s.name)}')" title="Scale Up"><i class="bi bi-plus-lg"></i></button>
           <button class="btn btn-secondary btn-sm" onclick="scaleStackDown('${esc(s.name)}')" title="Scale Down"><i class="bi bi-dash-lg"></i></button>
           <button class="btn btn-secondary btn-sm" onclick="rollingUpdateStack('${esc(s.name)}')" title="Rolling Update"><i class="bi bi-arrow-clockwise"></i></button>
+          <button class="btn btn-secondary btn-sm" onclick="healStack('${esc(s.name)}')" title="Start Healing"><i class="bi bi-heart-pulse"></i></button>
+          <button class="btn btn-secondary btn-sm" onclick="viewStackLogs('${esc(s.name)}')" title="Logs"><i class="bi bi-journal-text"></i></button>
+          <button class="btn btn-secondary btn-sm" onclick="viewStackMetrics('${esc(s.name)}')" title="Metrics"><i class="bi bi-graph-up"></i></button>
+          <button class="btn btn-secondary btn-sm" onclick="inspectStack('${esc(s.name)}')" title="Inspect"><i class="bi bi-info-circle"></i></button>
           <button class="btn btn-danger btn-sm" onclick="deleteStack('${esc(s.name)}')"><i class="bi bi-trash3"></i></button>
         </div>
       </div>
@@ -1696,6 +1711,32 @@ async function rollingUpdateStack(name) {
   const ok = await confirmAction('Rolling Update', `Perform rolling update on stack "${name}"? This will replace containers one by one.`);
   if (!ok) return;
   try { await api('POST', `/stacks/${encodeURIComponent(name)}/rolling-update`, {}); toast('Rolling update started', 'info'); loadStacks(); } catch(e) { toast(`Failed: ${e.message}`, 'error'); }
+}
+
+async function healStack(name) {
+  try { await api('POST', `/stacks/${encodeURIComponent(name)}/healing`, {}); toast(`Healing started for "${name}"`, 'success'); loadStacks(); } catch(e) { toast(`Failed: ${e.message}`, 'error'); }
+}
+
+async function viewStackLogs(name) {
+  try {
+    const data = await api('GET', `/stacks/${encodeURIComponent(name)}/logs`);
+    const lines = data.lines || data.logs || [];
+    openModal(`Stack Logs — ${name}`, `<pre style="max-height:400px;overflow:auto;font-size:11px;font-family:monospace;white-space:pre-wrap;margin:0">${esc(lines.join('\n') || 'No logs')}</pre>`);
+  } catch(e) { toast(`Failed: ${e.message}`, 'error'); }
+}
+
+async function viewStackMetrics(name) {
+  try {
+    const data = await api('GET', `/stacks/${encodeURIComponent(name)}/metrics`);
+    openModal(`Stack Metrics — ${name}`, `<pre style="max-height:400px;overflow:auto;font-size:11px;font-family:monospace;white-space:pre-wrap;margin:0">${esc(JSON.stringify(data, null, 2))}</pre>`);
+  } catch(e) { toast(`Failed: ${e.message}`, 'error'); }
+}
+
+async function inspectStack(name) {
+  try {
+    const data = await api('GET', `/stacks/${encodeURIComponent(name)}`);
+    openModal(`Inspect — ${name}`, `<pre style="max-height:400px;overflow:auto;font-size:11px;font-family:monospace;white-space:pre-wrap;margin:0">${esc(JSON.stringify(data, null, 2))}</pre>`);
+  } catch(e) { toast(`Failed: ${e.message}`, 'error'); }
 }
 
 document.getElementById('btn-create-stack')?.addEventListener('click', () => {
@@ -1773,6 +1814,7 @@ async function showBackupDetail(id) {
           <button class="btn btn-success btn-sm" onclick="executeBackup('${esc(id)}')"><i class="bi bi-play-fill"></i> Run</button>
           <button class="btn btn-secondary btn-sm" onclick="showBackupHistory('${esc(id)}')"><i class="bi bi-clock-history"></i> History</button>
           <button class="btn btn-secondary btn-sm" onclick="browseBackupFiles('${esc(id)}')"><i class="bi bi-folder2-open"></i> Browse</button>
+          <button class="btn btn-secondary btn-sm" onclick="checkBackupBattery()" title="Battery guard status"><i class="bi bi-battery-half"></i> Battery</button>
           <button class="btn btn-danger btn-sm" onclick="deleteBackup('${esc(id)}')"><i class="bi bi-trash3"></i></button>
         </div>
       </div>
@@ -1844,6 +1886,8 @@ function renderBackupFileBrowser(container, routineId, files, currentPath) {
         <span style="flex:1;font-size:12px">${esc(f.name)}</span>
         <span style="font-size:11px;color:var(--text-muted)">${size}</span>
         ${f.type==='file'?`<button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();restoreBackupFile('${esc(routineId)}','${esc(f.name)}')" title="Restore"><i class="bi bi-arrow-counterclockwise"></i></button>
+        <button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();previewBackupFile('${esc(routineId)}','${esc(f.name)}')" title="Preview"><i class="bi bi-eye"></i></button>
+        <button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();renameBackupFile('${esc(routineId)}','${esc(f.name)}')" title="Rename"><i class="bi bi-pencil"></i></button>
         <button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();deleteBackupFile('${esc(routineId)}','${esc(f.name)}')" title="Delete" style="color:var(--danger)"><i class="bi bi-trash3"></i></button>`:''}
       </div>`;
     }).join('') : '<div style="padding:12px;color:var(--text-muted)">Empty</div>'}
@@ -1867,6 +1911,27 @@ async function restoreBackupFile(routineId, fileName) {
     toast('Restoring...', 'info');
     const data = await api('POST', `/backups/${encodeURIComponent(routineId)}/restore`, { file: fileName });
     toast(`Restored to: ${data.restored_to}`, 'success');
+  } catch(e) { toast(`Failed: ${e.message}`, 'error'); }
+}
+
+async function previewBackupFile(routineId, fileName) {
+  try {
+    const data = await api('POST', `/backups/${encodeURIComponent(routineId)}/preview`, { file: fileName });
+    openModal(`Preview — ${fileName}`, `<pre style="max-height:400px;overflow:auto;font-size:11px;font-family:monospace;white-space:pre-wrap;margin:0">${esc(data.preview || data.content || JSON.stringify(data, null, 2))}</pre>`);
+  } catch(e) { toast(`Failed: ${e.message}`, 'error'); }
+}
+
+async function renameBackupFile(routineId, fileName) {
+  const result = await customModal('Rename Backup File', [
+    { id: 'newname', label: 'New Name', type: 'text', value: fileName }
+  ]);
+  if (!result) return;
+  const newname = result.newname.trim();
+  if (!newname || newname === fileName) return;
+  try {
+    await api('POST', `/backups/${encodeURIComponent(routineId)}/rename`, { old_name: fileName, new_name: newname });
+    toast('File renamed', 'success');
+    browseBackupFiles(routineId);
   } catch(e) { toast(`Failed: ${e.message}`, 'error'); }
 }
 
@@ -1938,13 +2003,9 @@ async function testBackupConnection() {
       path: document.getElementById('backup-remote-path')?.value || '/backups/ank'
     };
     const data = await api('POST', '/backups/test-connection', body);
-    // TEMP-DEBUG: remove after root cause fixed
-    console.log('[ANK-DEBUG][backup-test]', JSON.stringify(data));
     if (data.connected) { result.textContent = '✓ Connected'; result.style.color = 'var(--green)'; backupTestPassed = true; }
     else { result.textContent = '✗ Could not connect — check host, port and credentials'; result.style.color = 'var(--red)'; backupTestPassed = false; }
   } catch(e) {
-    // TEMP-DEBUG: remove after root cause fixed
-    console.log('[ANK-DEBUG][backup-test] request failed:', e && (e.stack || e.message || e));
     result.textContent = '✗ Could not connect — check host, port and credentials'; result.style.color = 'var(--red)'; backupTestPassed = false;
   }
   btn.disabled = false;
@@ -2006,7 +2067,14 @@ async function createBackup() {
 }
 
 async function executeBackup(id) { try { toast('Running backup...','info'); await api('POST',`/backups/${encodeURIComponent(id)}/execute`); toast('Backup complete','success'); loadBackups(); } catch(e) { toast(`Failed: ${e.message}`,'error'); } }
-async function deleteBackup(id) { const ok = await confirmAction('Delete Backup','Delete this routine and all its history?'); if(!ok) return; try { await api('POST',`/backups/${encodeURIComponent(id)}/delete`); toast('Deleted','success'); loadBackups(); } catch(e) { toast(`Failed: ${e.message}`,'error'); } }
+
+async function checkBackupBattery() {
+  try {
+    const data = await api('GET', '/backups/battery');
+    openModal('Battery Guard', `<pre style="font-size:12px;font-family:monospace;white-space:pre-wrap;margin:0">${esc(JSON.stringify(data, null, 2))}</pre>`);
+  } catch(e) { toast(`Failed: ${e.message}`, 'error'); }
+}
+async function deleteBackup(id) { const ok = await confirmAction('Delete Backup','Delete this routine and all its history?'); if(!ok) return; try { await api('DELETE',`/backups/${encodeURIComponent(id)}`); toast('Deleted','success'); loadBackups(); } catch(e) { toast(`Failed: ${e.message}`,'error'); } }
 
 /* ═══════ NETWORKS ═══════ */
 async function loadNetworks() {
@@ -2077,6 +2145,7 @@ let settingsInfo = {};
 
 function showSettingsSection(section) {
   if (_ankMgrPoll) { clearInterval(_ankMgrPoll); _ankMgrPoll = null; }
+  if (window._ankMgrLogPoll) { clearInterval(window._ankMgrLogPoll); window._ankMgrLogPoll = null; }
   document.querySelectorAll('#settings-sidebar .split-list-card').forEach(n => {
     n.classList.toggle('selected', n.dataset.section === section);
   });
@@ -2208,7 +2277,6 @@ function showSettingsSection(section) {
         <div class="info-item"><span class="info-label">Free Storage</span><span>${diskFree}</span></div>
         <div class="info-item"><span class="info-label">Mode</span><span>${esc((sysInfo.mode||{}).mode||'unknown')}</span></div>
         <div class="info-item"><span class="info-label">Node Name</span><span>${esc(sysInfo.node_name||'local')}</span></div>
-        <div class="info-item" style="grid-column:span 2"><span class="info-label">Credentials</span><span style="font-size:11px">/sdcard/AndroidKonteiner/CREDENCIAIS.txt</span></div>
       </div>
       <hr style="border-color:var(--border);margin:16px 0">
       <div style="text-align:center;padding:12px 0">
@@ -2220,6 +2288,29 @@ function showSettingsSection(section) {
         </div>
       </div>
     </div></div>`;
+  } else if (section === 'danger') {
+    el.innerHTML = `<div class="card" style="border-color:var(--danger)"><div class="card-header"><h3 style="color:var(--danger)"><i class="bi bi-exclamation-triangle"></i> Danger Zone</h3></div><div class="card-body">
+      <p style="font-size:13px;color:var(--text-secondary);margin-bottom:16px">These actions are destructive and cannot be undone.</p>
+      <div style="display:flex;flex-direction:column;gap:12px">
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:12px;border:1px solid var(--border);border-radius:8px">
+          <div><div style="font-size:13px;font-weight:600">Restart Server</div><div style="font-size:11px;color:var(--text-secondary)">Restart the ANK server process</div></div>
+          <button class="btn btn-secondary btn-sm" onclick="showRestartModal('server')"><i class="bi bi-arrow-clockwise"></i> Restart</button>
+        </div>
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:12px;border:1px solid var(--border);border-radius:8px">
+          <div><div style="font-size:13px;font-weight:600">Reboot Device</div><div style="font-size:11px;color:var(--text-secondary)">Reboot the Android device</div></div>
+          <button class="btn btn-secondary btn-sm" onclick="showRestartModal('device')"><i class="bi bi-power"></i> Reboot</button>
+        </div>
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:12px;border:1px solid var(--danger);border-radius:8px">
+          <div><div style="font-size:13px;font-weight:600;color:var(--danger)">Uninstall ANK</div><div style="font-size:11px;color:var(--text-secondary)">Delete ALL containers, images, data, and ANK itself</div></div>
+          <button class="btn btn-danger btn-sm" id="danger-uninstall"><i class="bi bi-trash3"></i> Uninstall</button>
+        </div>
+      </div>
+    </div></div>`;
+    document.getElementById('danger-uninstall')?.addEventListener('click', async () => {
+      const ok = await confirmAction('Uninstall ANK', 'This will PERMANENTLY delete ALL containers, images, data, and ANK itself. This cannot be undone!');
+      if (!ok) return;
+      try { await api('POST', '/system/uninstall'); toast('Uninstalling... device will reboot.', 'info'); } catch(e) { toast(`Failed: ${e.message}`, 'error'); }
+    });
   } else if (section === 'ank-manager') {
     el.innerHTML = `<div class="card"><div class="card-header"><h3><i class="bi bi-speedometer2"></i> ANK Manager</h3></div><div class="card-body">
       <div id="ank-mgr-status" style="display:flex;align-items:center;gap:12px;margin-bottom:20px;padding:16px;background:var(--bg-base);border-radius:8px">
@@ -2359,6 +2450,8 @@ async function initCoreTerminal() {
     if (titleEl) titleEl.textContent = 'root@' + nodeLabel;
     coreTerminal.focus();
     connectCoreWs();
+    const dcBtn = document.getElementById('btn-shell-disconnect');
+    if (dcBtn) dcBtn.style.display = '';
     const resize = () => { const rect = el.getBoundingClientRect(); const cols = Math.floor(rect.width/8.4); const rows = Math.floor(rect.height/18); if (cols>0&&rows>0) { coreTerminal.resize(cols,rows); if (coreWs&&coreWs.readyState===WebSocket.OPEN) coreWs.send(JSON.stringify({type:'resize',cols,rows})); } };
     window.addEventListener('resize', resize);
     setTimeout(resize, 100);
@@ -2397,6 +2490,8 @@ document.getElementById('btn-shell-disconnect')?.addEventListener('click', () =>
   if (coreWs) { try { coreWs.close(); } catch(e){} coreWs = null; }
   if (coreTerminal) { try { coreTerminal.dispose(); } catch(e){} coreTerminal = null; }
   document.getElementById('terminal').innerHTML = '';
+  const dcBtn = document.getElementById('btn-shell-disconnect');
+  if (dcBtn) dcBtn.style.display = 'none';
 });
 document.getElementById('btn-shell-pip')?.addEventListener('click', () => {
   if (coreTerminal && coreWs && coreWs.readyState === WebSocket.OPEN) {
@@ -2580,13 +2675,27 @@ async function renameFilePrompt(oldPath) {
 
 async function downloadFile(path) {
   if (!fileContainerName) return;
-  const a = document.createElement('a');
-  a.href = API + `/containers/${fileContainerName}/files/download?path=${encodeURIComponent(path)}`;
-  a.target = '_blank';
-  a.download = path.split('/').pop();
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
+  try {
+    const headers = { 'X-ANK-Client': 'ank-panel' };
+    if (ankToken) headers['Authorization'] = 'Bearer ' + ankToken;
+    const res = await fetch(`${API}/containers/${fileContainerName}/files/download?path=${encodeURIComponent(path)}`, { headers });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const blob = await res.blob();
+    const cd = res.headers.get('Content-Disposition') || '';
+    let name = path.split('/').pop();
+    const m = cd.match(/filename\*?=(?:UTF-8'')?"?([^";]+)"?/i);
+    if (m) name = decodeURIComponent(m[1]);
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  } catch (e) {
+    toast(`Download failed: ${e.message}`, 'error');
+  }
 }
 
 async function createNewFile() {
@@ -3134,6 +3243,8 @@ function applyLiteOverlay() {
 function getTheme() { return localStorage.getItem('ank_theme') || document.documentElement.getAttribute('data-theme') || 'dark'; }
 function setTheme(theme) { document.documentElement.setAttribute('data-theme', theme); localStorage.setItem('ank_theme', theme); document.querySelector('meta[name="theme-color"]')?.setAttribute('content', theme === 'dark' ? '#0a0d12' : '#ffffff'); }
 function toggleTheme() { setTheme(getTheme() === 'dark' ? 'light' : 'dark'); }
+// Apply saved theme on boot
+setTheme(getTheme());
 
 /* ═══════ PICTURE-IN-PICTURE TERMINAL ═══════ */
 let pipState = {

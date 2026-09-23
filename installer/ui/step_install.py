@@ -185,21 +185,27 @@ class InstallThread(QThread):
                         if content:
                             zf.writestr(f"static/{f}", content)
 
-            # Pull the file to the user's Downloads
+            # Copy the export file to the user's Downloads (zip was built locally)
             user_downloads = os.path.expanduser("~/Downloads")
             os.makedirs(user_downloads, exist_ok=True)
             dest = os.path.join(user_downloads, "ank-export.ankengine")
 
             self.progress.emit(0.8, "Saving export file...")
-            result = self.adb._run_device(self.serial,
-                ["pull", tmp_file, dest], timeout=60)
+            try:
+                import shutil
+                shutil.copyfile(tmp_file, dest)
+                result_ok = True
+                result_err = ""
+            except Exception as copy_err:
+                result_ok = False
+                result_err = str(copy_err)
 
-            if result.returncode == 0:
+            if result_ok:
                 self.progress.emit(1.0, "Export complete!")
                 self.log.emit(f"Exported to: {dest}")
                 self.done.emit(True, f"Exported to {dest}")
             else:
-                self.done.emit(False, f"Failed to save: {result.stderr}")
+                self.done.emit(False, f"Failed to save: {result_err}")
 
             # Cleanup
             try:

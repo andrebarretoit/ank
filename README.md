@@ -59,9 +59,9 @@ Docker-like container platform for Android — runs Linux containers via chroot/
 - **Shell** — `ank` and `ank-core` commands from the web terminal + real host commands
 - **Realtime log streaming** — Build/deploy/start/stop output via 1s polling
 - **Realtime stats** — CPU, memory, uptime, container status
-- **Port mapping** — Forward device ports to containers (TCP/UDP)
+- **Port mapping** — Forward device ports to containers (TCP)
 - **Auto port increment** — Conflicting ports auto-increment (+1)
-- **Auto-start** — Containers restore on boot via Magisk
+- **Auto-start** — ANK server and services restore on boot via Magisk (`service.d`)
 - **ankd service daemon** — Lightweight service management via shell scripts
 - **Security** — Token Bearer auth, self-signed HTTPS, rate limiting, security headers
 - **Complete uninstall** — Uninstall via panel with full removal
@@ -77,38 +77,7 @@ Docker-like container platform for Android — runs Linux containers via chroot/
 
 ## Screenshots
 
-### Login
-![Login](docs/screenshots/login.png)
-
-### Dashboard
-![Dashboard](docs/screenshots/dashboard.png)
-
-### Containers
-![Containers](docs/screenshots/containers.png)
-
-### Shell
-![Shell](docs/screenshots/shell.png)
-
-### Images
-![Images](docs/screenshots/images.png)
-
-### Networks
-![Networks](docs/screenshots/networks.png)
-
-### Logs
-![Logs](docs/screenshots/logs.png)
-
-### Settings
-![Settings](docs/screenshots/settings.png)
-
-### Stacks
-![Stacks](docs/screenshots/stacks.png)
-
-### Backups
-![Backups](docs/screenshots/backups.png)
-
-### Nodes
-![Nodes](docs/screenshots/nodes.png)
+> Screenshots are generated during release builds (`docs/screenshots/`).
 
 ---
 
@@ -165,7 +134,7 @@ Docker-like container platform for Android — runs Linux containers via chroot/
 4. **Pull an image** — Go to Images → Pull `alpine-3.20` or `ank-alpinebase`
 5. **Deploy a container** — Go to Containers → Create, or use a template:
    ```bash
-   ank deploy nginx-static my-site
+   ank deploy nginx my-site
    ```
 6. **Access your container** — Open the terminal in the web panel or use SSH:
    ```bash
@@ -194,8 +163,11 @@ The web panel is the primary interface for managing ANK.
 Each container gets an SSH server. Connect via:
 
 ```bash
-# Default port for container SSH
+# Host ANK SSH (port from config ssh_port, default 2200)
 ssh root@<device-ip> -p 2200
+
+# Container SSH (auto-assigned from 2201+; see ank inspect <name>)
+ssh root@<device-ip> -p <container-ssh-port>
 
 # Password is set per-container (default: the password defined at deploy time)
 ```
@@ -221,7 +193,7 @@ You can also access containers directly from the web terminal — no SSH client 
 | `ank images` | List downloaded images |
 | `ank templates` | List available templates |
 | `ank deploy <template> <name>` | Deploy a template |
-| `ank ankfile <name> <file>` | Build from custom Ankfile |
+| `ank build -i <file>` | Build image from custom Ankfile |
 | `ank pull <image>` | Download base image |
 
 ### `ank-core` — System Administration
@@ -255,7 +227,7 @@ You can also access containers directly from the web terminal — no SSH client 
 Deploy from the web panel or via CLI:
 
 ```bash
-ank deploy nginx-static my-site
+ank deploy nginx my-site
 ```
 
 ### Build Custom Images (Ankfile)
@@ -282,7 +254,7 @@ EXPOSE 8080
 Build with:
 
 ```bash
-ank ankfile my-site ./Ankfile
+ank build -i my-site.ankfile
 ```
 
 ---
@@ -321,7 +293,7 @@ Manage groups of identical containers with load balancing and auto-scaling.
 | Creation | Create stacks from templates or custom Ankfiles |
 | Scale up/down | Add or remove containers manually |
 | Auto-scaling | Automatic scaling by CPU, memory or requests/sec |
-| Load Balancer | Python reverse proxy with round_robin and least_conn algorithms |
+| Load Balancer | Python reverse proxy with `round_robin`, `least_connections` (alias `least_conn`) and `ip_hash` algorithms |
 | Shared Volume | Bind mount from host to share data between containers |
 | Ankfile | Deploy custom images via Ankfile within stacks |
 
@@ -481,7 +453,7 @@ curl -H "Authorization: Bearer <token>" http://localhost:8001/api/containers
 # Deploy a template
 curl -H "Authorization: Bearer <token>" -X POST \
   -H "Content-Type: application/json" \
-  -d '{"template":"nginx-static","name":"my-site"}' \
+  -d '{"template":"nginx","name":"my-site"}' \
   http://localhost:8001/api/images/templates
 
 # List files in a container
@@ -507,8 +479,9 @@ Key options:
 |-------|-------------|---------|
 | `username` | Web panel username | `admin` |
 | `password` | Web panel password | `admin123` |
-| `port` | Server port | `8001` |
-| `subnet` | Container subnet | `172.19.0.0/24` |
+| `panel_port` | Server port | `8001` |
+| `network.subnet` | Container subnet | `10.20.30.0/24` |
+| `network.gateway` | Container gateway | `10.20.30.1` |
 
 Change settings via the web panel under **Settings**, or edit the file directly:
 
@@ -572,23 +545,6 @@ adb shell su -c "sh /data/local/ank/scripts/cleanup.sh"
 
 ```
 ank/
-├── server/
-│   ├── server.py                 # Python3 HTTP server (stdlib, no Flask)
-│   ├── stack_manager.py          # Stack management (CRUD, scale, auto-scale)
-│   ├── ank_orchestrator.py       # Background auto-scaling loop
-│   ├── ank_lb.py                 # Python load balancer (reverse proxy + health check)
-│   ├── node_manager.py           # Multi-node management (heartbeat, HTTP API)
-│   ├── node_proxy.py             # HTTP/WS proxy for remote nodes
-│   ├── backup_manager.py         # Backup routines (CRUD, history)
-│   ├── backup_runner.py          # Backup executor (tar.gz + scp + retention)
-│   ├── backup_browser.py         # Remote file browser via SSH
-│   └── static/
-│       ├── index.html            # Web panel UI
-│       ├── style.css             # Dark/light theme + responsive
-│       ├── app.js                # Client-side JS (xterm.js, WebSocket, modals)
-│       ├── ank-cli.py            # CLI scripts (bin/ank, bin/ank-core)
-│       ├── ank-profile.sh        # WS shell profile
-│       └── favicon.svg           # App icon
 ├── magisk-module/
 │   ├── module.prop               # Module metadata
 │   ├── post-fs-data.sh           # Boot hook (bridge ank0, iptables)
@@ -596,6 +552,22 @@ ank/
 │   ├── install.sh                # Installer (two-path: tarball or build from scratch)
 │   ├── ankfs/                    # Pre-built rootfs (Alpine + Python + openssh)
 │   │   └── ankcore-armv7.tar.gz  # Rootfs tarball
+│   ├── server/
+│   │   ├── server.py             # Python3 HTTP server (stdlib, no Flask)
+│   │   ├── stack_manager.py      # Stack management (CRUD, scale, auto-scale)
+│   │   ├── ank_orchestrator.py   # Background auto-scaling loop
+│   │   ├── ank_lb.py             # Python load balancer (reverse proxy + health check)
+│   │   ├── node_manager.py       # Multi-node management (heartbeat, HTTP API)
+│   │   ├── node_proxy.py         # HTTP/WS proxy for remote nodes
+│   │   ├── backup_manager.py     # Backup routines (CRUD, history)
+│   │   ├── backup_runner.py      # Backup executor (tar.gz + scp + retention)
+│   │   └── static/
+│   │       ├── index.html        # Web panel UI
+│   │       ├── style.css         # Dark/light theme + responsive
+│   │       ├── app.js            # Client-side JS (xterm.js, WebSocket, modals)
+│   │       ├── ank-cli.py        # CLI scripts (bin/ank, bin/ank-core)
+│   │       ├── ank-profile.sh    # WS shell profile
+│   │       └── favicon.svg       # App icon
 │   └── scripts/
 │       ├── container.sh          # Container lifecycle + _ensure_ankbase
 │       ├── network.sh            # Namespaces + iptables
@@ -607,6 +579,8 @@ ank/
 │       ├── uninstall.sh          # Complete uninstaller
 │       ├── ank-lite-bootstrap.sh # PRoot bootstrap (non-root)
 │       ├── start-lite.sh         # Start Lite server
+│       ├── ank-shell.sh          # Interactive host shell (TAB + history)
+│       ├── restart-server.sh     # Server restart helper
 │       └── wifi-watchdog.sh      # WiFi reconnect watchdog
 ├── installer/
 │   ├── main.py                   # GUI installer entry point
@@ -614,16 +588,19 @@ ank/
 │   ├── core/
 │   │   ├── adb.py                # ADB wrapper
 │   │   ├── detector.py           # Capability detection + tier
-│   │   └── installer_lite.py     # Non-root install via PRoot
+│   │   ├── installer_lite.py     # Non-root install via PRoot
+│   │   └── installer_manual.py   # Manual Magisk install helpers
 │   └── ui/
 │       ├── app.py                # Main window + sidebar (PySide6/Qt6)
 │       ├── theme.py              # Colors, fonts, layout
-│       ├── step_connect.py       # Step 1: Connect device
-│       ├── step_detect.py        # Step 2: Detect compatibility
-│       ├── step_confirm.py       # Step 3: Confirm installation
-│       ├── step_install.py       # Step 4: Installing
-│       ├── step_reboot.py        # Step 5: Rebooting
-│       └── step_done.py          # Step 6: Done
+│       ├── step_connect.py       # Connect device
+│       ├── step_detect.py        # Detect compatibility
+│       ├── step_mode_select.py   # Choose install mode
+│       ├── step_clone.py         # Clone/migrate
+│       ├── step_confirm.py       # Confirm installation
+│       ├── step_install.py       # Installing
+│       ├── step_reboot.py        # Rebooting
+│       └── step_done.py          # Done
 ├── LICENSE                       # AKSAL-1.0
 ├── README.md
 └── build_zip.py                  # ank-magisk.zip builder

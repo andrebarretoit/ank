@@ -53,7 +53,7 @@
       </div>
     </div>
     <div class="login-form-side">
-      <div class="login-card">
+      <div class="login-card" style="position:relative">
         <h2>Welcome back</h2>
         <p class="subtitle">Sign in to your ANK panel</p>
         <form id="login-form">
@@ -69,6 +69,7 @@
             <i class="bi bi-box-arrow-in-right"></i> Sign In
           </button>
         </form>
+        <button type="button" class="btn-icon btn-ghost" id="theme-toggle-login" title="Toggle theme" style="position:absolute;top:16px;right:16px"><i class="bi bi-moon-stars"></i></button>
       </div>
       <div class="login-footer">
         <span>ANK · Android Konteiner v2.0.0 · <a href="#" onclick="event.preventDefault();openFooterModal()" style="color:var(--primary);text-decoration:none;cursor:pointer">Powered by ANDREBARRETOIT</a></span>
@@ -106,6 +107,7 @@
         <a class="mobile-bar-item" data-page="nodes"><i class="bi bi-hdd-network"></i><span>Nodes</span></a>
         <a class="mobile-bar-item" data-page="settings"><i class="bi bi-gear"></i><span>Settings</span></a>
         <button class="mobile-bar-more" id="mobile-more-btn"><i class="bi bi-plus-lg"></i></button>
+        <button class="mobile-bar-more" id="theme-toggle-mobile" title="Toggle theme"><i class="bi bi-moon-stars"></i></button>
       </div>
     </div>
     <div class="mobile-bar-expanded" id="mobile-expanded">
@@ -122,6 +124,7 @@
       <div class="page-header">
         <div class="ph-left"><div class="ph-icon"><i class="bi bi-box-seam"></i><span>ANK</span></div><h1>Dashboard</h1></div>
         <div class="header-actions">
+          <button class="btn-icon btn-ghost" id="theme-toggle-desktop" title="Toggle theme"><i class="bi bi-moon-stars"></i></button>
           <button class="btn btn-secondary btn-sm" onclick="refreshTab(this, loadDashboard)"><i class="bi bi-arrow-clockwise"></i></button>
           <button class="btn-logout" onclick="logout()"><i class="bi bi-box-arrow-right"></i> Logout</button>
         </div>
@@ -293,6 +296,7 @@
         <div class="ph-left"><div class="ph-icon"><i class="bi bi-box-seam"></i><span>ANK</span></div><h1>Networks</h1></div>
         <div class="header-actions">
           <button class="btn btn-secondary btn-sm" onclick="refreshTab(this, loadNetworks)"><i class="bi bi-arrow-clockwise"></i></button>
+          <button class="btn btn-secondary btn-sm" id="network-config-btn" title="Configure network"><i class="bi bi-sliders"></i> Configure</button>
           <button class="btn-logout" onclick="logout()"><i class="bi bi-box-arrow-right"></i> Logout</button>
         </div>
       </div>
@@ -344,6 +348,7 @@
           <div class="split-list-card" data-section="remote" onclick="showSettingsSection('remote')"><span class="slc-name"><i class="bi bi-diagram-3" style="color:var(--success)"></i> Remote & SSH</span></div>
           <div class="split-list-card" data-section="cache" onclick="showSettingsSection('cache')"><span class="slc-name"><i class="bi bi-database" style="color:var(--warning)"></i> Cache</span></div>
           <div class="split-list-card" data-section="about" onclick="showSettingsSection('about')"><span class="slc-name"><i class="bi bi-info-circle" style="color:var(--text-muted)"></i> About</span></div>
+          <div class="split-list-card" data-section="danger" onclick="showSettingsSection('danger')"><span class="slc-name"><i class="bi bi-exclamation-triangle" style="color:var(--danger)"></i> Danger Zone</span></div>
         </div>
         <div class="split-right" id="settings-content">
           <div class="split-right-empty"><div><i class="bi bi-gear"></i><p>Select a settings section</p></div></div>
@@ -558,28 +563,6 @@
           <button type="button" class="btn btn-primary" id="backup-next-btn" onclick="backupWizardNav(1)">Next <i class="bi bi-arrow-right"></i></button>
           <button type="button" class="btn btn-primary" id="backup-create-btn" onclick="createBackup()" style="display:none"><i class="bi bi-check-lg"></i> Create</button>
         </div>
-      </div>
-    </div>
-  </div>
-
-  <!-- UPLOAD MODAL -->
-  <div class="modal-overlay" id="upload-modal-overlay">
-    <div class="modal">
-      <div class="modal-header">
-        <h3><i class="bi bi-cloud-upload"></i> Upload to <span id="upload-container-name">-</span></h3>
-        <button class="btn-icon btn-ghost" onclick="closeModalById('upload-modal-overlay')"><i class="bi bi-x-lg"></i></button>
-      </div>
-      <div class="modal-body">
-        <div id="upload-drop-area" class="upload-area">
-          <i class="bi bi-cloud-arrow-up"></i>
-          <p>Drop files here or click to browse</p>
-          <p style="font-size:11px;color:var(--text-muted)">HTML, CSS, JS, images, or ZIP (auto-extracts)</p>
-          <input type="file" id="upload-file-input" multiple accept=".html,.css,.js,.json,.png,.jpg,.svg,.zip,.txt,.md" style="display:none">
-        </div>
-        <div id="upload-result" class="upload-progress"></div>
-      </div>
-      <div class="modal-footer">
-        <button class="btn btn-secondary" onclick="closeModalById('upload-modal-overlay')">Close</button>
       </div>
     </div>
   </div>

@@ -17,21 +17,6 @@ class NodeProxy:
     def __init__(self, node_manager):
         self.node_manager = node_manager
 
-    def handle_api_proxy(self, node_id, method, path, body=None, headers=None):
-        config = self.node_manager._load_node_config(node_id)
-        if not config:
-            return 404, {"error": "Node not found"}, "application/json"
-        ip = config.get("ip", "")
-        port = config.get("port", 8001)
-        token = config.get("token", "")
-        url = f"http://{ip}:{port}{path}"
-        fwd_headers = {"Authorization": f"Bearer {token}"}
-        if headers:
-            for k, v in headers.items():
-                if k.lower() not in ("authorization", "host", "content-length"):
-                    fwd_headers[k] = v
-        return _http_request(url, method=method, data=body, headers=fwd_headers, timeout=30)
-
     def get_node_shell_url(self, node_id):
         config = self.node_manager._load_node_config(node_id)
         if not config:

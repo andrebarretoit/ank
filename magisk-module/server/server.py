@@ -96,6 +96,19 @@ CONFIG_FILE = os.path.join(ANK_DIR, "config.json")
 STATIC_DIR = os.path.join(ANK_DIR, "ankfs/opt/ank/static")
 PORT = 8001
 
+def _load_port_from_config():
+    """Read panel_port from config.json if present (migrate/remap writes it)."""
+    global PORT
+    try:
+        with open(CONFIG_FILE, "r") as f:
+            cfg = json.load(f)
+        p = cfg.get("panel_port") or cfg.get("server_port")
+        if isinstance(p, int) and 1 <= p <= 65535:
+            PORT = p
+    except Exception:
+        pass
+_load_port_from_config()
+
 # --- Shell detection ---------------------------------------------------------
 # Rooted/host Android always has /system/bin/sh.  In Lite mode the server runs
 # inside a PRoot guest where only the rootfs busybox exists.  Existence check
@@ -155,15 +168,22 @@ TOKEN_EXPIRY_HOURS = 24
 def _generate_token():
     return secrets.token_hex(32)
 
-def _check_rate_limit(ip):
+def _check_rate_limit(ip, record=True):
     now = time.time()
     attempts = [t for t in _login_attempts.get(ip, []) if now - t < RATE_LIMIT_WINDOW]
     _login_attempts[ip] = attempts
     if len(attempts) >= RATE_LIMIT_MAX:
         return False
+    if record:
+        attempts.append(now)
+        _login_attempts[ip] = attempts
+    return True
+
+def _record_failed_login(ip):
+    now = time.time()
+    attempts = [t for t in _login_attempts.get(ip, []) if now - t < RATE_LIMIT_WINDOW]
     attempts.append(now)
     _login_attempts[ip] = attempts
-    return True
 
 def _create_token(user):
     token = _generate_token()
@@ -173,6 +193,7 @@ def _create_token(user):
     return token
 
 def _validate_token(token):
+    """Return 'admin' | 'node' | False."""
     if not token:
         return False
     with _tokens_lock:
@@ -181,7 +202,7 @@ def _validate_token(token):
             if time.time() > info["expires"]:
                 del _tokens[token]
                 return False
-            return True
+            return info.get("role", "admin")
     try:
         nodes_dir = os.path.join(ANK_DIR, "nodes")
         if os.path.isdir(nodes_dir):
@@ -192,12 +213,16 @@ def _validate_token(token):
                     with open(os.path.join(nodes_dir, fname)) as f:
                         cfg = json.load(f)
                     if cfg.get("token") == token:
-                        return True
+                        # Node tokens are NOT admin — only valid for node-scoped proxy
+                        return "node"
                 except Exception:
                     pass
     except Exception:
         pass
     return False
+
+def _is_admin_token(token):
+    return _validate_token(token) == "admin"
 
 def _detect_client(handler):
     """Detect client type: browser, panel, cli, installer, unknown"""
@@ -250,8 +275,11 @@ def _check_auth(handler):
     if client == 'browser':
         return 'browser'
     token = _get_client_token(handler)
-    if _validate_token(token):
+    role = _validate_token(token)
+    if role == 'admin':
         return 'authorized'
+    if role == 'node':
+        return 'node'
     return 'unauthorized'
 
 def load_config():
@@ -269,7 +297,8 @@ def save_config(config):
     with open(CONFIG_FILE, "w") as f:
         json.dump(config, f, indent=2)
     try:
-        os.chmod(CONFIG_FILE, 0o666)
+        # Owner-only: config holds password hash/secrets (was 666)
+        os.chmod(CONFIG_FILE, 0o600)
     except Exception:
         pass
 
@@ -1563,11 +1592,21 @@ small{color:#334155}
     def do_OPTIONS(self):
         self.send_response(204)
         origin = self.headers.get("Origin", "")
-        if origin and origin != "null":
+        host = self.headers.get("Host", "")
+        # Only reflect same-origin (or host-matching) origins — never arbitrary sites
+        same_origin = False
+        if origin and host:
+            try:
+                from urllib.parse import urlparse as _uop
+                o = _uop(origin)
+                same_origin = (o.netloc == host)
+            except Exception:
+                same_origin = False
+        if same_origin:
             self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Access-Control-Allow-Credentials", "true")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-ANK-Client")
-        self.send_header("Access-Control-Allow-Credentials", "true")
         self.send_security_headers()
         self.end_headers()
 
@@ -1584,10 +1623,10 @@ small{color:#334155}
             if upgrade != "websocket" or not ws_key:
                 self._ws_send_error(400, "Invalid WebSocket upgrade request")
                 return
-            # Auth: validate token from query param
+            # Auth: host shell requires admin token (not node token)
             qs = parse_qs(parsed.query)
             ws_token = qs.get("token", [None])[0]
-            if not _validate_token(ws_token):
+            if _validate_token(ws_token) != "admin":
                 log(f"WS_SHELL: auth failed from {self.client_address[0]} token={ws_token[:8] if ws_token else 'None'}...")
                 self._ws_send_error(401, "Unauthorized")
                 return
@@ -1625,7 +1664,7 @@ small{color:#334155}
                 return
             qs = parse_qs(parsed.query)
             ws_token = qs.get("token", [None])[0]
-            if not _validate_token(ws_token):
+            if _validate_token(ws_token) != "admin":
                 log(f"WS_NODE_SHELL: auth failed from {self.client_address[0]}")
                 self._ws_send_error(401, "Unauthorized")
                 return
@@ -1661,7 +1700,7 @@ small{color:#334155}
                 return
             qs = parse_qs(parsed.query)
             ws_token = qs.get("token", [None])[0]
-            if not _validate_token(ws_token):
+            if _validate_token(ws_token) != "admin":
                 log(f"WS_NODE_TERMINAL: auth failed from {self.client_address[0]}")
                 self._ws_send_error(401, "Unauthorized")
                 return
@@ -1697,10 +1736,10 @@ small{color:#334155}
             if upgrade != "websocket" or not ws_key:
                 self._ws_send_error(400, "Invalid WebSocket upgrade request")
                 return
-            # Auth: validate token from query param
+            # Auth: host terminal requires admin token (not node token)
             qs = parse_qs(parsed.query)
             ws_token = qs.get("token", [None])[0]
-            if not _validate_token(ws_token):
+            if _validate_token(ws_token) != "admin":
                 log(f"WS_TERMINAL: auth failed from {self.client_address[0]} token={ws_token[:8] if ws_token else 'None'}...")
                 self._ws_send_error(401, "Unauthorized")
                 return
@@ -1749,6 +1788,17 @@ small{color:#334155}
             return
 
         if path.startswith("/api/"):
+            # Readiness/health probes used by the restart modal — must work
+            # without a token (tokens are in-memory and die with the process).
+            if path in ("/api/status", "/api/system/status", "/api/health"):
+                try:
+                    self.route_get(path, parsed)
+                except Exception as e:
+                    try:
+                        self.send_json({"error": str(e)}, 500)
+                    except Exception:
+                        self.send_error(500, str(e))
+                return
             auth = _check_auth(self)
             if auth == 'browser':
                 self.send_404_html()
@@ -1824,7 +1874,13 @@ small{color:#334155}
             if not _check_manager_ip(self):
                 self.send_error(403, "Forbidden: IP not allowed")
                 return
-            self.route_delete(path, parsed)
+            try:
+                self.route_delete(path, parsed)
+            except Exception as e:
+                try:
+                    self.send_json({"error": str(e)}, 500)
+                except Exception:
+                    self.send_error(500, str(e))
             return
         self.send_404_html()
 
@@ -1834,6 +1890,8 @@ small{color:#334155}
 
     def route_get(self, path, parsed):
         if path == "/api/status":
+            self.api_status()
+        elif path == "/api/system/status":
             self.api_status()
         elif path == "/api/mode":
             self.api_get_mode()
@@ -1871,7 +1929,12 @@ small{color:#334155}
             name = parts[3]
             qs = parsed.query
             self.api_files_stat(name, qs)
-        elif "/services" in path and path.startswith("/api/containers/"):
+        elif path.startswith("/api/containers/") and "/services/" in path and path.endswith("/logs"):
+            parts = path.split("/")
+            qs = parse_qs(parsed.query)
+            lines = int(qs.get("lines", ["50"])[0])
+            self.api_svc_logs(parts[3], parts[5], lines)
+        elif path.endswith("/services") and path.startswith("/api/containers/"):
             name = path.split("/")[3]
             self.api_list_services(name)
         elif path.endswith("/health") and path.startswith("/api/containers/"):
@@ -1957,8 +2020,6 @@ small{color:#334155}
             self.api_node_status(path.split("/")[3])
         elif path.startswith("/api/nodes/") and path.endswith("/system/info"):
             self.api_node_system_info(path.split("/")[3])
-        elif path.startswith("/api/nodes/") and path.endswith("/logs"):
-            self.api_node_logs(path.split("/")[3])
         elif path.startswith("/api/nodes/") and "/containers/" in path and path.endswith("/logs"):
             parts = path.split("/")
             self.api_node_container_logs(parts[3], parts[5])
@@ -1968,6 +2029,8 @@ small{color:#334155}
         elif path.startswith("/api/nodes/") and "/containers/" in path and path.endswith("/health"):
             parts = path.split("/")
             self.api_node_container_health(parts[3], parts[5])
+        elif path.startswith("/api/nodes/") and path.endswith("/logs"):
+            self.api_node_logs(path.split("/")[3])
         elif path.startswith("/api/nodes/") and "/containers/" in path:
             parts = path.split("/")
             if len(parts) >= 6 and parts[5]:
@@ -1976,11 +2039,6 @@ small{color:#334155}
                 self.api_node_containers(parts[3])
         elif path.startswith("/api/nodes/"):
             self.api_node_inspect(path.split("/")[3])
-        elif path.startswith("/api/containers/") and "/services/" in path and path.endswith("/logs"):
-            parts = path.split("/")
-            qs = parse_qs(parsed.query)
-            lines = int(qs.get("lines", ["50"])[0])
-            self.api_svc_logs(parts[3], parts[5], lines)
         elif path == "/api/system/dashboard":
             self.api_system_dashboard()
         else:
@@ -1998,16 +2056,6 @@ small{color:#334155}
             self.api_change_password(data)
         elif path == "/api/containers":
             self.api_create_container(data)
-        elif path.startswith("/api/containers/") and path.endswith("/start"):
-            self.api_start_container(path.split("/")[3])
-        elif path.startswith("/api/containers/") and path.endswith("/stop"):
-            self.api_stop_container(path.split("/")[3])
-        elif path.startswith("/api/containers/") and path.endswith("/restart"):
-            self.api_restart_container(path.split("/")[3])
-        elif path.startswith("/api/containers/") and path.endswith("/exec"):
-            self.api_exec_container(path.split("/")[3], data)
-        elif path.startswith("/api/containers/") and path.endswith("/update"):
-            self.api_update_container(path.split("/")[3], data)
         elif "/services" in path and path.startswith("/api/containers/"):
             parts = path.split("/")
             name = parts[3]
@@ -2025,6 +2073,18 @@ small{color:#334155}
                 self.api_service_action(name, parts[5], "disable")
             elif "/services/" in path and path.endswith("/tail"):
                 self.api_service_tail(name, parts[5], data)
+            else:
+                self.send_error(404, "Not Found")
+        elif path.startswith("/api/containers/") and path.endswith("/start"):
+            self.api_start_container(path.split("/")[3])
+        elif path.startswith("/api/containers/") and path.endswith("/stop"):
+            self.api_stop_container(path.split("/")[3])
+        elif path.startswith("/api/containers/") and path.endswith("/restart"):
+            self.api_restart_container(path.split("/")[3])
+        elif path.startswith("/api/containers/") and path.endswith("/exec"):
+            self.api_exec_container(path.split("/")[3], data)
+        elif path.startswith("/api/containers/") and path.endswith("/update"):
+            self.api_update_container(path.split("/")[3], data)
         elif "/files/write" in path and path.startswith("/api/containers/"):
             name = path.split("/")[3]
             self.api_files_write(name, data)
@@ -2092,6 +2152,8 @@ small{color:#334155}
             self.api_execute_backup(path.split("/")[3])
         elif path.startswith("/api/backups/") and path.endswith("/restore"):
             self.api_backup_restore(path.split("/")[3], data)
+        elif path.startswith("/api/backups/") and path.endswith("/preview"):
+            self.api_backup_preview(path.split("/")[3], data)
         elif path.startswith("/api/backups/") and path.endswith("/rename"):
             self.api_backup_rename(path.split("/")[3], data)
         elif path.startswith("/api/backups/") and path.endswith("/delete"):
@@ -2154,6 +2216,8 @@ small{color:#334155}
             self.api_service_action(parts[3], parts[5], "delete")
         elif len(parts) >= 4 and parts[2] == "containers":
             self.api_delete_container(parts[3])
+        elif len(parts) >= 4 and parts[2] == "images":
+            self.api_delete_image(parts[3])
         elif len(parts) >= 4 and parts[2] == "networks":
             self.api_delete_network(parts[3])
         elif len(parts) >= 4 and parts[2] == "backups":
@@ -2173,9 +2237,9 @@ small{color:#334155}
     # ============================================================
 
     def api_login(self, data):
-        # Rate limiting
+        # Rate limiting (only checks threshold; failures are recorded below)
         client_ip = self.client_address[0]
-        if not _check_rate_limit(client_ip):
+        if not _check_rate_limit(client_ip, record=False):
             self.send_error(429, "Too many login attempts. Try again later.")
             return
 
@@ -2199,6 +2263,7 @@ small{color:#334155}
                 "force_change": config.get("first_boot", False)
             })
         else:
+            _record_failed_login(client_ip)
             self.send_error(401, "Invalid credentials")
 
     def api_change_password(self, data):
@@ -2214,16 +2279,6 @@ small{color:#334155}
         config["password"] = new_pass
         config["first_boot"] = False
         save_config(config)
-        try:
-            os.makedirs(ANK_DIR, exist_ok=True)
-            with open(os.path.join(ANK_SDCARD, "CREDENCIAIS.txt"), "w") as f:
-                f.write(f"ANK - Android Konteiner\n")
-                f.write(f"=======================\n")
-                f.write(f"Painel: https://localhost:8001\n")
-                f.write(f"Usuario: {config.get('username', 'admin')}\n")
-                f.write(f"Senha: {new_pass}\n")
-        except Exception:
-            pass
         # Sync password to ankfs sshd
         self._sync_ankfs_password(new_pass)
         self.send_json({"success": True, "message": "Password changed"})
@@ -3254,11 +3309,20 @@ small{color:#334155}
                     self.send_error(500, f"Failed to extract zip: {e}")
                     return
             else:
-                out_path = os.path.join(dest, filename)
+                # Contain non-zip uploads inside dest (no path traversal)
+                safe_name = os.path.basename(filename.replace("\\", "/"))
+                if not safe_name or safe_name in (".", ".."):
+                    self.send_error(400, f"Invalid filename: {filename}")
+                    return
+                out_path = os.path.realpath(os.path.join(dest, safe_name))
+                dest_real = os.path.realpath(dest)
+                if not (out_path == dest_real or out_path.startswith(dest_real + os.sep)):
+                    self.send_error(400, f"Path traversal detected in {filename}")
+                    return
                 os.makedirs(os.path.dirname(out_path), exist_ok=True)
                 with open(out_path, "wb") as f:
                     f.write(file_data)
-                files_saved.append(filename)
+                files_saved.append(safe_name)
 
         self.send_json({"message": f"Uploaded {len(files_saved)} file(s)", "files": files_saved})
 
@@ -4340,6 +4404,22 @@ small{color:#334155}
         if len(cmd) > 4096:
             self.send_error(400, "Command too long (max 4096 characters)")
             return
+        # Guard: block catastrophic patterns (admin shell is intentional; this is belt-and-suspenders)
+        import re as _re
+        _deny = [
+            r"rm\s+-[a-zA-Z]*r[a-zA-Z]*f[a-zA-Z]*\s+/(\s|$)",
+            r"rm\s+-[a-zA-Z]*f[a-zA-Z]*r[a-zA-Z]*\s+/(\s|$)",
+            r">\s*/dev/(sd|mmcblk|block)",
+            r"mkfs\.",
+            r"dd\s+.*of=/dev/",
+            r":\(\)\s*\{.*\};\s*:",  # fork bomb
+            r"chmod\s+-R\s+777\s+/",
+            r"chown\s+-R\s+.*/\s+/",
+        ]
+        for pat in _deny:
+            if _re.search(pat, cmd):
+                self.send_error(403, "Command blocked by safety policy")
+                return
         parts = cmd.strip().split()
         if not parts:
             self.send_json({"stdout": "", "stderr": "", "code": 0})
@@ -4378,7 +4458,7 @@ small{color:#334155}
                 "  ank images                List available images\n"
                 "  ank templates             List deploy templates\n"
                 "  ank deploy <tpl> <name>   Deploy a template\n"
-                "  ank ankfile <name> <file> Build from Ankfile\n\n"
+                "  ank build -i <file>       Build from Ankfile\n\n"
                 "Options:\n"
                 "  ank --help, -h            Show this help\n"
                 "  ank --man <command>       Show detailed help for a command\n",
@@ -4539,7 +4619,7 @@ small{color:#334155}
 
         if args[0] == "ankfile":
             if len(args) < 3:
-                self.send_json({"stdout": "", "stderr": "Usage: ank ankfile <name> <path-to-ankfile>", "code": 1})
+                self.send_json({"stdout": "", "stderr": "Usage: ank build -i <path-to-ankfile>", "code": 1})
                 return
             try:
                 with open(args[2], "r") as f:
@@ -5244,7 +5324,11 @@ small{color:#334155}
 
     def api_get_config(self):
         config = load_config()
-        self.send_json(config)
+        # Never expose the admin password / tokens to the panel GET
+        safe = {k: v for k, v in config.items()
+                if k not in ("password", "token", "ssh_pass")}
+        safe["has_password"] = bool(config.get("password"))
+        self.send_json(safe)
 
     def api_update_config(self, data):
         config = load_config()
@@ -6000,11 +6084,17 @@ small{color:#334155}
     # ============================================================
 
     def _get_stack_manager(self):
+        if getattr(AnkHandler, "_stack_manager_instance", None) is not None:
+            return AnkHandler._stack_manager_instance
         try:
             from stack_manager import StackManager
-            return StackManager()
+            AnkHandler._stack_manager_instance = StackManager()
+            return AnkHandler._stack_manager_instance
         except Exception:
             return None
+
+    _stack_manager_instance = None
+    _backup_manager_instance = None
 
     def api_list_stacks(self):
         sm = self._get_stack_manager()
@@ -6204,9 +6294,19 @@ small{color:#334155}
     # ============================================================
 
     def _get_backup_manager(self):
+        if AnkHandler._backup_manager_instance is not None:
+            return AnkHandler._backup_manager_instance
         try:
             from backup_manager import BackupManager
-            return BackupManager()
+            bm = BackupManager()
+            AnkHandler._backup_manager_instance = bm
+            # Scheduler only starts once, on first access
+            try:
+                bm.start_scheduler(interval=60)
+                log("[BACKUP] Scheduler started (60s interval)")
+            except Exception as se:
+                log(f"[BACKUP] Scheduler start failed: {se}")
+            return bm
         except Exception:
             return None
 
@@ -6416,13 +6516,27 @@ small{color:#334155}
         if not routine:
             self.send_json({"error": "Routine not found"}, 404)
             return
-        remote_name = data.get("file", "")
+        remote_name = (data or {}).get("file", "")
         if not remote_name:
             self.send_json({"error": "file required"}, 400)
             return
         try:
             ok = bm.delete_remote_file(routine.get("remote", {}), remote_name)
             self.send_json({"deleted": ok})
+        except Exception as e:
+            self.send_json({"error": str(e)}, 500)
+
+    def api_delete_backup_routine(self, routine_id):
+        bm = self._get_backup_manager()
+        if not bm:
+            self.send_json({"error": "backup_manager not available"}, 500)
+            return
+        if not bm.get_routine(routine_id):
+            self.send_json({"error": "Routine not found"}, 404)
+            return
+        try:
+            ok = bm.delete_routine(routine_id)
+            self.send_json({"success": ok})
         except Exception as e:
             self.send_json({"error": str(e)}, 500)
 
@@ -6575,6 +6689,10 @@ small{color:#334155}
     # ============================================================
 
     def api_receive_pairing_request(self, data):
+        client_ip = self.client_address[0] if self.client_address else "unknown"
+        if not _check_rate_limit(f"pair:{client_ip}", record=False):
+            self.send_json({"error": "Too many pairing requests"}, 429)
+            return
         nm = self._get_node_manager()
         if not nm:
             self.send_json({"error": "node_manager not available"}, 500)
@@ -6582,7 +6700,11 @@ small{color:#334155}
         if not nm.is_remote_management_enabled():
             self.send_json({"error": "Remote management is disabled"}, 403)
             return
-        req = nm.receive_pairing_request(data)
+        try:
+            req = nm.receive_pairing_request(data)
+        except Exception:
+            _record_failed_login(f"pair:{client_ip}")
+            raise
         self.send_json(req)
 
     def api_list_pairing_requests(self):
@@ -7044,8 +7166,15 @@ small{color:#334155}
     def serve_static(self, path):
         if path == "/":
             path = "/index.html"
-        file_path = os.path.join(STATIC_DIR, path.lstrip("/"))
-        if not os.path.exists(file_path):
+        if ".." in path or "\x00" in path:
+            self.send_error(403, "Forbidden")
+            return
+        file_path = os.path.realpath(os.path.join(STATIC_DIR, path.lstrip("/")))
+        static_real = os.path.realpath(STATIC_DIR)
+        if not file_path.startswith(static_real + os.sep) and file_path != static_real:
+            self.send_error(403, "Forbidden")
+            return
+        if not os.path.exists(file_path) or not os.path.isfile(file_path):
             file_path = os.path.join(STATIC_DIR, "index.html")
         if not os.path.exists(file_path):
             self.send_error(404, "Not Found")
@@ -7274,16 +7403,37 @@ def main():
     if _server_dir not in sys.path:
         sys.path.insert(0, _server_dir)
 
-    # Start auto-scaling orchestrator
+    # Start auto-scaling orchestrator (shares the singleton StackManager)
     try:
         from ank_orchestrator import Orchestrator as _Orchestrator
-        from stack_manager import StackManager as _StackManager
-        _sm = _StackManager()
+        if AnkHandler._stack_manager_instance is None:
+            from stack_manager import StackManager as _SMCls
+            AnkHandler._stack_manager_instance = _SMCls()
+        _sm = AnkHandler._stack_manager_instance
         _orch = _Orchestrator(_sm)
         _orch.start(interval=10)
         print("Orchestrator started (auto-scaling enabled)")
+        try:
+            _sm.start_monitoring(interval=30)
+            print("Stack auto-scale monitor started (30s interval)")
+        except Exception as _me:
+            print(f"Stack monitor not started: {_me}")
     except Exception as _oe:
         print(f"Orchestrator not started: {_oe}")
+
+    # Start backup scheduler singleton (interval=60s)
+    try:
+        from backup_manager import BackupManager as _BMCls
+        if AnkHandler._backup_manager_instance is None:
+            _bm = _BMCls()
+            AnkHandler._backup_manager_instance = _bm
+            _bm.start_scheduler(interval=60)
+            print("Backup scheduler started (60s interval)")
+        else:
+            AnkHandler._backup_manager_instance.start_scheduler(interval=60)
+            print("Backup scheduler started (60s interval)")
+    except Exception as _be:
+        print(f"Backup scheduler not started: {_be}")
 
     # Start background status poller (recovers stopped→running when TCP checks pass)
     _poller = threading.Thread(target=_status_poller, daemon=True)

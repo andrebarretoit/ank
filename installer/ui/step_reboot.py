@@ -38,23 +38,37 @@ class RebootThread(QThread):
         self.status.emit("Waiting for the ANK server...")
 
         _started_lite = False
+        # Prefer panel_port from device config; fall back to common ports
+        ports = [8001]
+        try:
+            from core.adb import ADB as _A
+            _c = _A().shell(self.serial, "cat /data/local/ank/config.json 2>/dev/null")[0]
+            import json as _j, re as _re
+            m = _re.search(r'"panel_port"\s*:\s*(\d+)', _c or '')
+            if m:
+                p = int(m.group(1))
+                if p not in ports:
+                    ports.insert(0, p)
+        except Exception:
+            pass
         for i in range(60):
             time.sleep(2)
             for scheme in ("http", "https"):
-                try:
-                    url = f"{scheme}://{self.device_ip}:8001/"
-                    req = urllib.request.Request(url, method="GET")
-                    resp = urllib.request.urlopen(req, timeout=5)
-                    code = resp.getcode()
-                    if code in (200, 301, 302, 401):
-                        self.done.emit(True)
-                        return
-                except urllib.error.HTTPError as e:
-                    if e.code in (200, 301, 302, 401):
-                        self.done.emit(True)
-                        return
-                except Exception:
-                    pass
+                for port in ports:
+                    try:
+                        url = f"{scheme}://{self.device_ip}:{port}/"
+                        req = urllib.request.Request(url, method="GET")
+                        resp = urllib.request.urlopen(req, timeout=5)
+                        code = resp.getcode()
+                        if code in (200, 301, 302, 401):
+                            self.done.emit(True)
+                            return
+                    except urllib.error.HTTPError as e:
+                        if e.code in (200, 301, 302, 401):
+                            self.done.emit(True)
+                            return
+                    except Exception:
+                        pass
 
             if not _started_lite and i >= 5:
                 try:
@@ -196,3 +210,18 @@ class StepReboot(QWidget):
             self.countdown_label.setStyleSheet(
                 f"color: {COLORS['danger']}; font-size: 24px; font-weight: bold;"
             )
+            # Offer retry instead of hanging forever
+            if not hasattr(self, '_retry_btn'):
+                from PySide6.QtWidgets import QPushButton
+                self._retry_btn = QPushButton("Retry")
+                self._retry_btn.setStyleSheet(
+                    f"background:{COLORS['accent']};color:#fff;border:none;padding:8px 20px;border-radius:6px;font-weight:600;"
+                )
+                self.layout().insertWidget(2, self._retry_btn)
+                self._retry_btn.clicked.connect(self._retry_reboot)
+            self._retry_btn.show()
+
+    def _retry_reboot(self):
+        if hasattr(self, '_retry_btn'):
+            self._retry_btn.hide()
+        self.on_show()

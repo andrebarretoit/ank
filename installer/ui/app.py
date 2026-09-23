@@ -319,9 +319,10 @@ class InstallerWindow(QMainWindow):
 
         # If device is already known (auto-detected on mode selector),
         # skip the connect/clone_connect step and jump to the next one.
+        # Clone/migrate need BOTH source and target selected, so never skip.
         flow = MODE_FLOWS[mode_key]
         start = 0
-        if self.device_data and flow[0] in ("connect", "clone_connect"):
+        if self.device_data and flow[0] in ("connect", "clone_connect") and mode_key not in ("clone", "migrate", "restore"):
             start = 1
 
         self.show_step(start)
@@ -522,14 +523,15 @@ class InstallerWindow(QMainWindow):
         otherwise Qt can abort on a QThread destroyed while still running
         (e.g. an endless device-poll loop that never found a device)."""
         for widget in self.widgets.values():
-            thread = getattr(widget, "_thread", None)
-            if thread is not None and thread.isRunning():
-                try:
-                    if hasattr(thread, "stop"):
-                        thread.stop()
-                    else:
-                        thread.quit()
-                    thread.wait(2000)
-                except Exception:
-                    pass
+            for attr in ("_thread", "_detect_thread"):
+                thread = getattr(widget, attr, None)
+                if thread is not None and thread.isRunning():
+                    try:
+                        if hasattr(thread, "stop"):
+                            thread.stop()
+                        else:
+                            thread.quit()
+                        thread.wait(2000)
+                    except Exception:
+                        pass
         super().closeEvent(event)

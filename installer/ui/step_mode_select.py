@@ -22,10 +22,16 @@ class _DeviceDetectThread(QThread):
         self.retries = retries
         self.delay = delay
         self._device = None
+        self._stop = False
+
+    def stop(self):
+        self._stop = True
 
     def run(self):
         import time
         for attempt in range(self.retries):
+            if self._stop:
+                return
             try:
                 devices = self.adb.devices()
                 if devices:
@@ -44,7 +50,8 @@ class _DeviceDetectThread(QThread):
             except Exception:
                 pass
             time.sleep(self.delay)
-        self.found.emit(False)
+        if not self._stop:
+            self.found.emit(False)
 
 
 class ModeCard(QFrame):
