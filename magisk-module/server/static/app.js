@@ -306,7 +306,11 @@ function navigateTo(page) {
 }
 
 document.querySelectorAll('.notch-item, .mobile-bar-item').forEach(item => {
-  item.addEventListener('click', e => { e.preventDefault(); navigateTo(item.dataset.page); });
+  item.addEventListener('click', e => {
+    e.preventDefault();
+    sessionStorage.setItem('ank_nav_page', item.dataset.page);
+    location.reload();
+  });
 });
 document.getElementById('mobile-more-btn')?.addEventListener('click', () => {
   document.getElementById('mobile-expanded')?.classList.toggle('active');
@@ -2419,7 +2423,7 @@ async function initCoreTerminal() {
   let nodeLabel = 'ank-shell';
   try { const c = await api('GET', '/config'); nodeLabel = c.node_name || 'ank-shell'; } catch(e) {}
   try {
-    coreTerminal = new Terminal({ cursorBlink: true, fontSize: 14, fontFamily: "'Cascadia Code','Fira Code',monospace", theme: { background: '#0a0d12', foreground: '#d3d9e3', cursor: '#58a6ff' }, scrollback: 5000 });
+    coreTerminal = new Terminal({ cursorBlink: true, fontSize: 14, fontFamily: "'Cascadia Code','Fira Code',monospace", theme: getXtermTheme(), scrollback: 5000 });
     coreTerminal.open(el);
     coreTerminal.writeln('\x1b[1;36m  ANK \x1b[1;32m●\x1b[0m \x1b[1;36mAndroid Konteiner\x1b[0m\r\n');
     coreTerminal.writeln('\x1b[90m  root@' + nodeLabel + '\x1b[0m\r\n');
@@ -2509,7 +2513,7 @@ function initContainerTerminal() {
   el.appendChild(termWrap);
 
   try {
-    xtermTerminal = new Terminal({ cursorBlink: true, fontSize: 14, fontFamily: "'Cascadia Code','Fira Code',monospace", theme: { background: '#0a0d12', foreground: '#d3d9e3', cursor: '#58a6ff' }, scrollback: 5000 });
+    xtermTerminal = new Terminal({ cursorBlink: true, fontSize: 14, fontFamily: "'Cascadia Code','Fira Code',monospace", theme: getXtermTheme(), scrollback: 5000 });
     xtermTerminal.open(termWrap);
     xtermTerminal.writeln('\x1b[1;36m  ANK Terminal\x1b[0m');
     xtermTerminal.writeln('\x1b[90m  Connecting to: ' + currentContainer.name + (isRemote ? ' (node: ' + currentContainer._nodeId + ')' : '') + '...\x1b[0m\r\n');
@@ -3129,7 +3133,6 @@ async function loadNotchPreview(page) {
       html += `<div class="np-row" onclick="notchPreviewHide();navigateTo('settings');setTimeout(()=>showSettingsSection('server'),100)" style="cursor:pointer"><i class="bi bi-server" style="color:var(--text-muted);font-size:12px"></i><span class="np-name">Server</span><span class="text-muted text-sm">Bind, refresh, autostart</span></div>`;
       html += `<div class="np-row" onclick="notchPreviewHide();navigateTo('settings');setTimeout(()=>showSettingsSection('remote'),100)" style="cursor:pointer"><i class="bi bi-diagram-3" style="color:var(--text-muted);font-size:12px"></i><span class="np-name">Remote & SSH</span><span class="text-muted text-sm">Management, port</span></div>`;
       html += `<div class="np-row" onclick="notchPreviewHide();navigateTo('settings');setTimeout(()=>showSettingsSection('about'),100)" style="cursor:pointer"><i class="bi bi-info-circle" style="color:var(--text-muted);font-size:12px"></i><span class="np-name">About</span><span class="text-muted text-sm">Cache, storage</span></div>`;
-      html += `<div class="np-row" onclick="notchPreviewHide();navigateTo('settings');setTimeout(()=>showSettingsSection('danger'),100)" style="cursor:pointer"><i class="bi bi-exclamation-triangle" style="color:var(--danger);font-size:12px"></i><span class="np-name" style="color:var(--danger)">Danger Zone</span><span class="text-muted text-sm">Restart, uninstall</span></div>`;
     } else if (page === 'logs') {
       html += `<div class="np-row" onclick="notchPreviewHide();navigateTo('logs')" style="cursor:pointer"><i class="bi bi-terminal" style="color:var(--text-muted);font-size:12px"></i><span class="np-name">Live Log Viewer</span><span class="text-muted text-sm">Colorize · Pause · Filter</span></div>`;
     } else if (page === 'shell') {
@@ -3218,6 +3221,12 @@ function applyLiteOverlay() {
 
 /* ═══════ THEME TOGGLE ═══════ */
 function getTheme() { return localStorage.getItem('ank_theme') || document.documentElement.getAttribute('data-theme') || 'dark'; }
+function getXtermTheme() {
+  if (getTheme() === 'light') {
+    return { background: '#ffffff', foreground: '#1e293b', cursor: '#2563eb', selectionBackground: 'rgba(37,99,236,0.25)' };
+  }
+  return { background: '#0a0d12', foreground: '#d3d9e3', cursor: '#58a6ff', selectionBackground: 'rgba(88,166,255,0.3)' };
+}
 function setTheme(theme) {
   document.documentElement.setAttribute('data-theme', theme);
   localStorage.setItem('ank_theme', theme);
@@ -3226,6 +3235,9 @@ function setTheme(theme) {
   document.querySelectorAll('#theme-toggle-login i, #theme-toggle-mobile i, #theme-toggle-desktop i, .theme-toggle-page i').forEach(i => {
     i.className = 'bi ' + icon;
   });
+  const xt = getXtermTheme();
+  try { if (coreTerminal) coreTerminal.options.theme = xt; } catch(e) {}
+  try { if (xtermTerminal) xtermTerminal.options.theme = xt; } catch(e) {}
 }
 function toggleTheme() { setTheme(getTheme() === 'dark' ? 'light' : 'dark'); }
 // Apply saved theme on boot
@@ -3421,7 +3433,15 @@ function addPipButton(targetEl, sourceType) {
 }
 document.addEventListener('input', (e) => { if (e.target.matches('input,textarea,select')) _formDirty = true; }, true);
 document.addEventListener('change', (e) => { if (e.target.matches('input,textarea,select')) _formDirty = true; }, true);
-if (isLoggedIn) { showApp(); detectWsProtocol().then(() => startRefreshTimer()); }
+if (isLoggedIn) {
+  showApp();
+  detectWsProtocol().then(() => startRefreshTimer());
+  const pendingPage = sessionStorage.getItem('ank_nav_page');
+  if (pendingPage) {
+    sessionStorage.removeItem('ank_nav_page');
+    setTimeout(() => navigateTo(pendingPage), 50);
+  }
+}
 // Theme toggle listeners
 document.getElementById('theme-toggle-login')?.addEventListener('click', toggleTheme);
 document.getElementById('theme-toggle-mobile')?.addEventListener('click', toggleTheme);

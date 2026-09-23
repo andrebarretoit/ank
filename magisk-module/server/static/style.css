@@ -85,6 +85,34 @@
 [data-theme="light"] .form-select {
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' fill='%23475569' viewBox='0 0 16 16'%3E%3Cpath d='M8 11L3 6h10z'/%3E%3C/svg%3E");
 }
+[data-theme="light"] .log-output {
+  background: #f8fafc;
+  color: #334155;
+  border-color: rgba(15, 40, 80, 0.12);
+}
+[data-theme="light"] .detail-stat,
+[data-theme="light"] .sr-info-item,
+[data-theme="light"] .ssh-hint,
+[data-theme="light"] .file-toolbar {
+  background: rgba(241, 245, 249, 0.9);
+  border-color: rgba(15, 40, 80, 0.1);
+}
+[data-theme="light"] .ssh-hint-cmd {
+  background: rgba(255, 255, 255, 0.95);
+  color: var(--text);
+  border: 1px solid rgba(15, 40, 80, 0.1);
+}
+[data-theme="light"] .terminal-container {
+  background: #ffffff;
+  border-color: rgba(15, 40, 80, 0.1);
+}
+[data-theme="light"] .terminal-header {
+  background: rgba(241, 245, 249, 0.95);
+  border-color: rgba(15, 40, 80, 0.1);
+}
+[data-theme="light"] .detail-tab-content #container-terminal {
+  background: #ffffff;
+}
 
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 html { font-size: 14px; -webkit-text-size-adjust: 100%; }
