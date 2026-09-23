@@ -2288,29 +2288,6 @@ function showSettingsSection(section) {
         </div>
       </div>
     </div></div>`;
-  } else if (section === 'danger') {
-    el.innerHTML = `<div class="card" style="border-color:var(--danger)"><div class="card-header"><h3 style="color:var(--danger)"><i class="bi bi-exclamation-triangle"></i> Danger Zone</h3></div><div class="card-body">
-      <p style="font-size:13px;color:var(--text-secondary);margin-bottom:16px">These actions are destructive and cannot be undone.</p>
-      <div style="display:flex;flex-direction:column;gap:12px">
-        <div style="display:flex;align-items:center;justify-content:space-between;padding:12px;border:1px solid var(--border);border-radius:8px">
-          <div><div style="font-size:13px;font-weight:600">Restart Server</div><div style="font-size:11px;color:var(--text-secondary)">Restart the ANK server process</div></div>
-          <button class="btn btn-secondary btn-sm" onclick="showRestartModal('server')"><i class="bi bi-arrow-clockwise"></i> Restart</button>
-        </div>
-        <div style="display:flex;align-items:center;justify-content:space-between;padding:12px;border:1px solid var(--border);border-radius:8px">
-          <div><div style="font-size:13px;font-weight:600">Reboot Device</div><div style="font-size:11px;color:var(--text-secondary)">Reboot the Android device</div></div>
-          <button class="btn btn-secondary btn-sm" onclick="showRestartModal('device')"><i class="bi bi-power"></i> Reboot</button>
-        </div>
-        <div style="display:flex;align-items:center;justify-content:space-between;padding:12px;border:1px solid var(--danger);border-radius:8px">
-          <div><div style="font-size:13px;font-weight:600;color:var(--danger)">Uninstall ANK</div><div style="font-size:11px;color:var(--text-secondary)">Delete ALL containers, images, data, and ANK itself</div></div>
-          <button class="btn btn-danger btn-sm" id="danger-uninstall"><i class="bi bi-trash3"></i> Uninstall</button>
-        </div>
-      </div>
-    </div></div>`;
-    document.getElementById('danger-uninstall')?.addEventListener('click', async () => {
-      const ok = await confirmAction('Uninstall ANK', 'This will PERMANENTLY delete ALL containers, images, data, and ANK itself. This cannot be undone!');
-      if (!ok) return;
-      try { await api('POST', '/system/uninstall'); toast('Uninstalling... device will reboot.', 'info'); } catch(e) { toast(`Failed: ${e.message}`, 'error'); }
-    });
   } else if (section === 'ank-manager') {
     el.innerHTML = `<div class="card"><div class="card-header"><h3><i class="bi bi-speedometer2"></i> ANK Manager</h3></div><div class="card-body">
       <div id="ank-mgr-status" style="display:flex;align-items:center;gap:12px;margin-bottom:20px;padding:16px;background:var(--bg-base);border-radius:8px">
