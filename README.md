@@ -77,7 +77,7 @@ Docker-like container platform for Android — runs Linux containers via chroot/
 
 ## Screenshots
 
-> Screenshots are generated during release builds (`docs/screenshots/`).
+> Screenshots are generated during release builds (`screenshots/`).
 
 ---
 
