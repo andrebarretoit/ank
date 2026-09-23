@@ -89,6 +89,81 @@ class BackupManager:
             json.dump(config, f, indent=2)
         return config
 
+    def ensure_remote_path(self, remote_config):
+        """mkdir -p the remote backup path after routine creation. Returns rich result or None."""
+        host = str(remote_config.get("host", "")).strip()
+        if not host:
+            return None
+        try:
+            port = int(str(remote_config.get("port", 22)).strip() or "22")
+        except (TypeError, ValueError):
+            port = 22
+        user = str(remote_config.get("user", "root")).strip() or "root"
+        password = str(remote_config.get("password", ""))
+        path = str(remote_config.get("path", "/backups/ank")).rstrip("/") or "/backups/ank"
+        target = host if "@" in host else f"{user}@{host}"
+
+        rootfs = os.path.join(ANK_DIR, "ankfs")
+        rootfs_sshpass = os.path.join(rootfs, "usr", "bin", "sshpass")
+        sshpass_bin = shutil.which("sshpass")
+        use_chroot = False
+        if not sshpass_bin:
+            if os.path.isfile(rootfs_sshpass):
+                use_chroot = True
+            else:
+                return {"ok": False, "reason": "sshpass not found on device"}
+
+        ssh_args = [
+            "-p", str(port),
+            "-o", "StrictHostKeyChecking=no",
+            "-o", "UserKnownHostsFile=/dev/null",
+            "-o", "ConnectTimeout=10",
+            "-o", "BatchMode=no",
+            target,
+            "mkdir", "-p", path,
+        ]
+        env = {**os.environ, "SSHPASS": password}
+        run_kwargs = {"capture_output": True, "text": True, "timeout": 30, "env": env}
+
+        try:
+            if use_chroot:
+                env["PATH"] = "/usr/sbin:/usr/bin:/sbin:/bin"
+                env["HOME"] = "/root"
+                chroot_bin = shutil.which("chroot")
+                if not chroot_bin:
+                    for cand in ("/system/bin/chroot", "/system/xbin/chroot", "/sbin/chroot"):
+                        if os.path.isfile(cand) and os.access(cand, os.X_OK):
+                            chroot_bin = cand
+                            break
+                if chroot_bin:
+                    result = subprocess.run(
+                        [chroot_bin, rootfs, "/usr/bin/sshpass", "-e", "ssh"] + ssh_args,
+                        **run_kwargs
+                    )
+                else:
+                    def _preexec(rootfs_path=rootfs):
+                        os.chroot(rootfs_path)
+                        os.chdir("/")
+                    result = subprocess.run(
+                        ["/usr/bin/sshpass", "-e", "ssh"] + ssh_args,
+                        preexec_fn=_preexec, **run_kwargs
+                    )
+            else:
+                result = subprocess.run(
+                    [sshpass_bin, "-e", "ssh"] + ssh_args,
+                    **run_kwargs
+                )
+        except subprocess.TimeoutExpired:
+            return {"ok": False, "reason": "timed out creating remote path", "exit_code": 124}
+        except (OSError, ValueError) as e:
+            return {"ok": False, "reason": f"could not run sshpass: {e}"}
+
+        ok = result.returncode == 0
+        stderr_tail = (result.stderr or result.stdout or "").strip()[-200:]
+        if ok:
+            return {"ok": True, "reason": f"remote path {path} ensured"}
+        return {"ok": False, "reason": self._map_ssh_failure(result.returncode, stderr_tail), "exit_code": result.returncode, "stderr_tail": stderr_tail}
+
     def update_routine(self, routine_id, updates):
         fp = os.path.join(self.routines_dir, f"{routine_id}.json")
         if not os.path.isfile(fp):

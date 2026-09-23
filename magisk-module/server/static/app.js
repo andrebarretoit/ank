@@ -2006,10 +2006,13 @@ async function testBackupConnection() {
       pass: document.getElementById('backup-ssh-pass')?.value || '',
       path: document.getElementById('backup-remote-path')?.value || '/backups/ank'
     };
+    console.log('[Backup] Test connection request:', JSON.stringify(body, null, 2));
     const data = await api('POST', '/backups/test-connection', body);
+    console.log('[Backup] Test connection response:', JSON.stringify(data, null, 2));
     if (data.connected) { result.textContent = '✓ Connected'; result.style.color = 'var(--green)'; backupTestPassed = true; }
-    else { result.textContent = '✗ Could not connect — check host, port and credentials'; result.style.color = 'var(--red)'; backupTestPassed = false; }
+    else { result.textContent = `✗ ${data.reason || 'Could not connect — check host, port and credentials'}`; result.style.color = 'var(--red)'; backupTestPassed = false; if (data.stderr_tail) console.log('[Backup] stderr:', data.stderr_tail); }
   } catch(e) {
+    console.error('[Backup] Test connection error:', e);
     result.textContent = '✗ Could not connect — check host, port and credentials'; result.style.color = 'var(--red)'; backupTestPassed = false;
   }
   btn.disabled = false;
@@ -2047,27 +2050,33 @@ async function createBackup() {
   const name = document.getElementById('backup-name')?.value?.trim();
   if (!name) { toast('Routine name required', 'error'); return; }
   const containers = Array.from(document.querySelectorAll('.backup-source-item input:checked')).map(cb => cb.value);
+  const body = {
+    name,
+    source_type: document.getElementById('backup-source-type')?.value || 'container_full',
+    containers,
+    remote_host: document.getElementById('backup-remote-host')?.value || '',
+    remote_port: parseInt(document.getElementById('backup-remote-port')?.value || '22'),
+    remote_path: document.getElementById('backup-remote-path')?.value || '/backups/ank',
+    ssh_user: document.getElementById('backup-ssh-user')?.value || 'root',
+    ssh_pass: document.getElementById('backup-ssh-pass')?.value || '',
+    schedule: document.getElementById('backup-schedule')?.value || '',
+    retention: parseInt(document.getElementById('backup-retention')?.value || '30'),
+    backup_mode: document.getElementById('backup-mode')?.value || 'full',
+    encryption: document.getElementById('backup-encryption')?.value || 'none',
+    immutable: document.getElementById('backup-immutable')?.checked || false,
+  };
   try {
     toast(`Creating routine "${name}"...`, 'info');
-    await api('POST', '/backups', {
-      name,
-      source_type: document.getElementById('backup-source-type')?.value || 'container_full',
-      containers,
-      remote_host: document.getElementById('backup-remote-host')?.value || '',
-      remote_port: parseInt(document.getElementById('backup-remote-port')?.value || '22'),
-      remote_path: document.getElementById('backup-remote-path')?.value || '/backups/ank',
-      ssh_user: document.getElementById('backup-ssh-user')?.value || 'root',
-      ssh_pass: document.getElementById('backup-ssh-pass')?.value || '',
-      schedule: document.getElementById('backup-schedule')?.value || '',
-      retention: parseInt(document.getElementById('backup-retention')?.value || '30'),
-      backup_mode: document.getElementById('backup-mode')?.value || 'full',
-      encryption: document.getElementById('backup-encryption')?.value || 'none',
-      immutable: document.getElementById('backup-immutable')?.checked || false,
-    });
+    console.log('[Backup] Create routine request:', JSON.stringify(body, null, 2));
+    const res = await api('POST', '/backups', body);
+    console.log('[Backup] Create routine response:', JSON.stringify(res, null, 2));
     closeModalById('backup-modal-overlay');
     toast(`Routine "${name}" created`, 'success');
     loadBackups();
-  } catch (e) { toast(`Failed: ${e.message}`, 'error'); }
+  } catch (e) {
+    console.error('[Backup] Create routine error:', e);
+    toast(`Failed: ${e.message}`, 'error');
+  }
 }
 
 async function executeBackup(id) { try { toast('Running backup...','info'); await api('POST',`/backups/${encodeURIComponent(id)}/execute`); toast('Backup complete','success'); loadBackups(); } catch(e) { toast(`Failed: ${e.message}`,'error'); } }
@@ -3131,6 +3140,7 @@ async function loadNotchPreview(page) {
     } else if (page === 'settings') {
       html += `<div class="np-row" onclick="notchPreviewHide();navigateTo('settings');setTimeout(()=>showSettingsSection('account'),100)" style="cursor:pointer"><i class="bi bi-person-gear" style="color:var(--text-muted);font-size:12px"></i><span class="np-name">Account</span><span class="text-muted text-sm">Change password</span></div>`;
       html += `<div class="np-row" onclick="notchPreviewHide();navigateTo('settings');setTimeout(()=>showSettingsSection('server'),100)" style="cursor:pointer"><i class="bi bi-server" style="color:var(--text-muted);font-size:12px"></i><span class="np-name">Server</span><span class="text-muted text-sm">Bind, refresh, autostart</span></div>`;
+      html += `<div class="np-row" onclick="notchPreviewHide();navigateTo('settings');setTimeout(()=>showSettingsSection('ank-manager'),100)" style="cursor:pointer"><i class="bi bi-speedometer2" style="color:var(--success);font-size:12px"></i><span class="np-name">ANK Manager</span><span class="text-muted text-sm">Status, logs, stop</span></div>`;
       html += `<div class="np-row" onclick="notchPreviewHide();navigateTo('settings');setTimeout(()=>showSettingsSection('remote'),100)" style="cursor:pointer"><i class="bi bi-diagram-3" style="color:var(--text-muted);font-size:12px"></i><span class="np-name">Remote & SSH</span><span class="text-muted text-sm">Management, port</span></div>`;
       html += `<div class="np-row" onclick="notchPreviewHide();navigateTo('settings');setTimeout(()=>showSettingsSection('about'),100)" style="cursor:pointer"><i class="bi bi-info-circle" style="color:var(--text-muted);font-size:12px"></i><span class="np-name">About</span><span class="text-muted text-sm">Cache, storage</span></div>`;
     } else if (page === 'logs') {

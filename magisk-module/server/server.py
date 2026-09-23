@@ -6364,6 +6364,14 @@ small{color:#334155}
             "retention_days": int(data.get("retention", data.get("retention_days", 30))),
         }
         result = bm.create_routine(config)
+        try:
+            ensure = bm.ensure_remote_path(config["remote"])
+            if ensure is not None:
+                result["remote_path_ensured"] = ensure.get("ok", False)
+                if not ensure.get("ok"):
+                    result["remote_path_warning"] = ensure.get("reason", "could not create remote path")
+        except Exception as e:
+            result["remote_path_warning"] = str(e)
         self.send_json(result)
 
     def api_execute_backup(self, routine_id):
