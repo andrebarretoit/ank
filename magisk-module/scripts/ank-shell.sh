@@ -258,7 +258,7 @@ _complete_input() {
             local prefix=$(echo "$parts" | sed "s/${last}$//")
             echo "${prefix}${completions}"
         else
-            printf "\r\n%s\r\n(root@ank-shell) ~ [/ank-engine] > %s" "$completions" "$parts"
+            printf "\r\n%s\r\n(root@ank-shell) ~ [/ank-engine] > %s" "$completions" "$parts" >&2
         fi
     fi
 }
@@ -281,28 +281,34 @@ _read_line() {
     if [ "$raw_ok" -eq 1 ]; then
         while true; do
             local c=""
-            c=$(dd bs=1 count=1 2>/dev/null)
+            c=$(dd bs=1 count=1 2>/dev/null; printf '\001')
+            c=${c%$'\001'}
 
             if [ -z "$c" ]; then
-                # raw mode broken or stdin EOF — restore and fall back
                 stty "$saved_term" 2>/dev/null
-                printf "(root@ank-shell) ~ [/ank-engine] > " >&2
-                read -r result 2>/dev/null
-                echo "$result"
+                if [ -n "$result" ]; then
+                    printf "\n" >&2
+                    echo "$result"
+                else
+                    printf "\n" >&2
+                    echo "exit"
+                fi
                 return
             fi
 
             case "$c" in
-                $'\n')
+                $'\n'|$'\r')
                     printf "\n" >&2
                     break
                     ;;
                 $'\033')
                     local seq1=""
                     local seq2=""
-                    seq1=$(dd bs=1 count=1 2>/dev/null)
+                    seq1=$(dd bs=1 count=1 2>/dev/null; printf '\001')
+                    seq1=${seq1%$'\001'}
                     if [ "$seq1" = "[" ]; then
-                        seq2=$(dd bs=1 count=1 2>/dev/null)
+                        seq2=$(dd bs=1 count=1 2>/dev/null; printf '\001')
+                        seq2=${seq2%$'\001'}
                         case "$seq2" in
                             A)
                                 local total=$(_history_count)
@@ -327,8 +333,6 @@ _read_line() {
                                 fi
                                 ;;
                             C)
-                                result="${result}$(dd bs=1 count=1 2>/dev/null)"
-                                printf "%s" "$(dd bs=1 count=1 2>/dev/null)" >&2
                                 ;;
                             D)
                                 local len=${#result}
@@ -340,7 +344,8 @@ _read_line() {
                         esac
                     elif [ "$seq1" = "O" ]; then
                         local seq2=""
-                        seq2=$(dd bs=1 count=1 2>/dev/null)
+                        seq2=$(dd bs=1 count=1 2>/dev/null; printf '\001')
+                        seq2=${seq2%$'\001'}
                     fi
                     ;;
                 $'\t')
@@ -3430,6 +3435,7 @@ _history_load
 
 while true; do
     input=$(_read_line)
+    input=$(printf '%s' "$input" | tr -d '\r')
 
     # Skip empty input
     [ -z "$input" ] && continue
@@ -3543,7 +3549,7 @@ while true; do
                     arg1=$(echo "$args" | cut -d' ' -f1)
                     ank_npad "$arg1"
                     ;;
-                ls)
+                ls|list)
                     ank_ls
                     ;;
                 copy)
