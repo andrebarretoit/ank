@@ -357,6 +357,8 @@ document.getElementById('login-form').addEventListener('submit', async e => {
 function logout() {
   ankToken = '';
   localStorage.removeItem('ank_token');
+  localStorage.removeItem('ank_tab');
+  sessionStorage.removeItem('ank_nav_page');
   isLoggedIn = false;
   document.getElementById('login-screen').style.display = '';
   document.getElementById('app').classList.add('hidden');
@@ -3633,6 +3635,8 @@ if (isLoggedIn) {
     setTimeout(() => navigateTo(pendingPage), 50);
   }
 } else {
+  localStorage.removeItem('ank_tab');
+  sessionStorage.removeItem('ank_nav_page');
   const bl = document.getElementById('boot-loader');
   if (bl) bl.hidden = true;
 }
