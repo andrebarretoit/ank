@@ -278,7 +278,11 @@ function navigateTo(page) {
   }
   const prevPage = _currentPage;
   _currentPage = page;
-  try { localStorage.setItem('ank_tab', page); } catch (e) {}
+  if (isLoggedIn) {
+    try { localStorage.setItem('ank_tab', page); } catch (e) {}
+  } else {
+    clearSavedTabs();
+  }
 
   if (prevPage === 'shell' && page !== 'shell') hideTerminalContainers();
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
@@ -313,8 +317,12 @@ function navigateTo(page) {
 document.querySelectorAll('.notch-item, .mobile-bar-item').forEach(item => {
   item.addEventListener('click', e => {
     e.preventDefault();
-    try { localStorage.setItem('ank_tab', item.dataset.page); } catch (err) {}
-    sessionStorage.setItem('ank_nav_page', item.dataset.page);
+    if (isLoggedIn) {
+      try { localStorage.setItem('ank_tab', item.dataset.page); } catch (err) {}
+      sessionStorage.setItem('ank_nav_page', item.dataset.page);
+    } else {
+      clearSavedTabs();
+    }
     location.reload();
   });
 });
@@ -341,9 +349,16 @@ loginUsername.addEventListener('keydown', e => {
   }
 });
 
+function clearSavedTabs() {
+  try { localStorage.removeItem('ank_tab'); sessionStorage.removeItem('ank_nav_page'); } catch (e) {}
+}
+
+let pendingNavTimer = null;
+
 document.getElementById('login-form').addEventListener('submit', async e => {
   e.preventDefault();
   if (loginPassGroup.classList.contains('hidden')) return;
+  clearSavedTabs();
   try {
     const res = await fetch(`${API}/auth/login`, {
       method: 'POST', headers: { 'Content-Type': 'application/json', 'X-ANK-Client': 'ank-panel' },
@@ -355,14 +370,15 @@ document.getElementById('login-form').addEventListener('submit', async e => {
     localStorage.setItem('ank_token', ankToken);
     isLoggedIn = true;
     showApp();
+    navigateTo('dashboard');
   } catch (e) { toast(e.message || 'Invalid credentials', 'error'); }
 });
 
 function logout() {
   ankToken = '';
   localStorage.removeItem('ank_token');
-  localStorage.removeItem('ank_tab');
-  sessionStorage.removeItem('ank_nav_page');
+  clearSavedTabs();
+  if (pendingNavTimer) { clearTimeout(pendingNavTimer); pendingNavTimer = null; }
   isLoggedIn = false;
   document.getElementById('login-screen').style.display = '';
   document.getElementById('app').classList.add('hidden');
@@ -1162,6 +1178,11 @@ async function pollContainerStatus(name, attempt) {
     } else {
       clearContainerLoading(name);
       loadContainers();
+      if (c.status === 'failed') {
+        toast(`Container "${name}" failed — check logs`, 'error');
+      } else if (c.status === 'stopped') {
+        toast(`Container "${name}" ready`, 'success');
+      }
       if (currentContainer && currentContainer.name === name) {
         currentContainer = c;
         updateDetailButtons(name, c.status);
@@ -3236,7 +3257,7 @@ document.getElementById('create-form')?.addEventListener('submit', async (e) => 
       }
       closeCreateModal();
       await loadContainers();
-      toast(`Template deployed as "${name}"`, 'success');
+      toast(`Creating "${name}"...`, 'info');
     } catch (e) { toast(`Failed: ${e.message}`, 'error'); }
     return;
   }
@@ -3254,10 +3275,13 @@ document.getElementById('create-form')?.addEventListener('submit', async (e) => 
       await api('POST', `/nodes/${encodeURIComponent(nodeId)}/containers`, data);
       setTimeout(() => { loadContainers(); pollRemoteContainerStatus(nodeId, name, 0); }, 1000);
     }
-    else { await api('POST', '/containers', data); }
+    else {
+      await api('POST', '/containers', data);
+      setTimeout(() => { loadContainers(); pollContainerStatus(name, 0); }, 1000);
+    }
     closeCreateModal();
     await loadContainers();
-    toast(`Container "${data.name}" created`, 'success');
+    toast(`Creating "${data.name}"...`, 'info');
   } catch (e) { toast(`Failed: ${e.message}`, 'error'); }
 });
 
@@ -3638,16 +3662,34 @@ function addPipButton(targetEl, sourceType) {
 document.addEventListener('input', (e) => { if (e.target.matches('input,textarea,select')) _formDirty = true; }, true);
 document.addEventListener('change', (e) => { if (e.target.matches('input,textarea,select')) _formDirty = true; }, true);
 if (isLoggedIn) {
-  showApp();
-  detectWsProtocol().then(() => startRefreshTimer());
-  const pendingPage = sessionStorage.getItem('ank_nav_page') || localStorage.getItem('ank_tab');
-  if (pendingPage) {
-    sessionStorage.removeItem('ank_nav_page');
-    setTimeout(() => navigateTo(pendingPage), 50);
-  }
+  const bl = document.getElementById('boot-loader');
+  if (bl) bl.hidden = false;
+  fetch(`${API}/config`, { headers: { 'X-ANK-Client': 'ank-panel', ...(ankToken ? { 'Authorization': 'Bearer ' + ankToken } : {}) } })
+    .then(r => {
+      if (r.status === 401) throw new Error('unauthorized');
+      if (!r.ok) throw new Error('bad status');
+      showApp();
+      detectWsProtocol().then(() => startRefreshTimer());
+      const pendingPage = sessionStorage.getItem('ank_nav_page') || localStorage.getItem('ank_tab');
+      if (pendingPage) {
+        sessionStorage.removeItem('ank_nav_page');
+        pendingNavTimer = setTimeout(() => {
+          pendingNavTimer = null;
+          if (isLoggedIn) navigateTo(pendingPage);
+        }, 50);
+      }
+    })
+    .catch(() => {
+      ankToken = '';
+      localStorage.removeItem('ank_token');
+      clearSavedTabs();
+      isLoggedIn = false;
+      if (bl) bl.hidden = true;
+      document.getElementById('login-screen').style.display = '';
+      document.getElementById('app').classList.add('hidden');
+    });
 } else {
-  localStorage.removeItem('ank_tab');
-  sessionStorage.removeItem('ank_nav_page');
+  clearSavedTabs();
   const bl = document.getElementById('boot-loader');
   if (bl) bl.hidden = true;
 }
