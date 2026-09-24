@@ -669,11 +669,19 @@ async function loadContainers() {
 function updateContainersInPlace(containers) {
   const el = document.getElementById('containers-list');
   if (!el) return;
-  const cards = el.querySelectorAll('.split-list-card');
-  const names = Array.from(cards).map(c => c.dataset.name);
+  const existing = el.querySelectorAll('.split-list-card');
+  if (!existing.length || containers.length === 0) {
+    renderContainers(containers, 'all');
+    return;
+  }
+  const names = Array.from(existing).map(c => c.dataset.name);
+  const missing = containers.filter(c => names.indexOf(c.name || '') === -1);
+  if (missing.length || containers.length !== existing.length) {
+    renderContainers(containers, 'all');
+    return;
+  }
   containers.forEach(c => {
     const name = c.name || '';
-    const idx = names.indexOf(name);
     const badge = el.querySelector(`.split-list-card[data-name="${CSS.escape(name)}"] .badge`);
     if (badge) {
       const newClass = getStatusBadgeClass(c.status);
