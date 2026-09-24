@@ -576,30 +576,10 @@ class LiteInstaller:
         self._push_stop_lite_sh()
         self._log("[OK] Server + scripts installed")
 
-        # --- Start ---
-        self._notify("start", "Starting ANK server...", 0.92)
-        self._sh(f"{ANK_DIR}/start-lite.sh")
-        self._log("[OK] Server starting...")
-        time.sleep(5)
-
-        # --- Verify ---
-        self._notify("verify", "Verifying server...", 0.94)
-        server_ok = self._verify_server(port=8001, timeout=30)
-        if not server_ok:
-            self._log("[FAIL] Server did not start on port 8001")
-            return False
-        ssh_ok = self._verify_server(port=2200, timeout=20)
-        if not ssh_ok:
-            self._log("[FAIL] SSH is not listening on port 2200")
-            return False
-        self._log("[OK] SSH listening on port 2200")
-        self._sh(
-            f'echo "[SERVICE] [$(date \'+%Y-%m-%d %H:%M:%S\')] '
-            f'sshd running on port 2200" >> {ANK_DIR}/logs/service.log'
-        )
+        # No start/verify here — next step is reboot; start-lite runs after boot.
 
         # --- Cleanup ---
-        self._notify("cleanup", "Cleaning up...", 0.98)
+        self._notify("cleanup", "Cleaning up...", 0.95)
         self._sh(f"rm -rf {EXTRACT_DIR} /sdcard/Download/ank-magisk.zip")
         self._log("[OK] Cleanup complete")
 
