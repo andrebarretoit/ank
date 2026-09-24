@@ -402,32 +402,107 @@ class BackupManager:
         """Make sure sshpass can allocate a PTY inside the ankfs chroot.
 
         sshpass needs /dev/ptmx + a mounted devpts to intercept ssh's
-        password prompt (exit 3 otherwise).  Creates device nodes and
-        mounts devpts if missing — best-effort, failures are non-fatal.
+        password prompt (exit 3 otherwise).  Strategy:
+          1. Bind-mount host /dev into chroot (best — host already has working ptmx)
+          2. Fallback: mknod ptmx + mount devpts
+        Logs every failure to stderr so [Backup] tests can diagnose.
         """
+        import sys
         dev = os.path.join(rootfs, "dev")
         pts = os.path.join(dev, "pts")
         ptmx = os.path.join(dev, "ptmx")
+
+        def _log(msg):
+            print(f"[BACKUP] _ensure_chroot_pty: {msg}", file=sys.stderr, flush=True)
+
         try:
             os.makedirs(pts, exist_ok=True)
-            if not os.path.exists(ptmx):
-                os.mknod(ptmx, 0o666 | stat.S_IFCHR, os.makedev(5, 2))
-            else:
-                os.chmod(ptmx, 0o666)
-            # devpts must be mounted for openpty to succeed
-            mounted = False
+        except OSError as e:
+            _log(f"makedirs pts failed: {e}")
+
+        # 1) Is host /dev already bind-mounted here?
+        already = False
+        try:
+            with open("/proc/mounts") as f:
+                for line in f:
+                    parts = line.split()
+                    if len(parts) >= 2 and parts[1] == dev and parts[2] == "devtmpfs":
+                        already = True
+                        break
+                    # also accept a bind mount of /dev
+                    if len(parts) >= 3 and parts[1] == dev and parts[0] == "/dev":
+                        already = True
+                        break
+        except OSError as e:
+            _log(f"read /proc/mounts failed: {e}")
+
+        if not already:
+            # Primary: bind-mount host /dev (gives ptmx, pts, null, urandom, tty…)
             try:
-                with open("/proc/mounts") as f:
-                    mounted = any(line.split()[1] == pts for line in f if line.strip())
-            except OSError:
-                pass
-            if not mounted:
-                subprocess.run(
-                    ["mount", "-t", "devpts", "devpts", pts],
-                    capture_output=True, timeout=5
+                r = subprocess.run(
+                    ["mount", "--bind", "/dev", dev],
+                    capture_output=True, text=True, timeout=5,
                 )
-        except (OSError, subprocess.SubprocessError):
-            pass  # best-effort — _map_ssh_failure will report if still broken
+                _log(f"bind /dev -> {dev}: rc={r.returncode} stderr={r.stderr.strip()!r}")
+                if r.returncode != 0:
+                    # Secondary: just bind-mount host /dev/pts + ensure ptmx
+                    r2 = subprocess.run(
+                        ["mount", "--bind", "/dev/pts", pts],
+                        capture_output=True, text=True, timeout=5,
+                    )
+                    _log(f"bind /dev/pts -> {pts}: rc={r2.returncode} stderr={r2.stderr.strip()!r}")
+            except (OSError, subprocess.SubprocessError) as e:
+                _log(f"bind mount failed: {e}")
+
+        # 2) Ensure /dev/ptmx exists regardless (mknod fallback if bind failed)
+        if not os.path.exists(ptmx):
+            try:
+                os.mknod(ptmx, 0o666 | stat.S_IFCHR, os.makedev(5, 2))
+                _log(f"mknod {ptmx} ok")
+            except OSError as e:
+                _log(f"mknod {ptmx} failed: {e}")
+                # last resort: copy host's ptmx node via cat/cp -a won't work for devices;
+                # try busybox mknod
+                try:
+                    r = subprocess.run(
+                        ["mknod", ptmx, "c", "5", "2"],
+                        capture_output=True, text=True, timeout=5,
+                    )
+                    _log(f"mknod cmd rc={r.returncode} stderr={r.stderr.strip()!r}")
+                    if r.returncode == 0:
+                        os.chmod(ptmx, 0o666)
+                except (OSError, subprocess.SubprocessError) as e:
+                    _log(f"mknod cmd failed: {e}")
+        else:
+            try:
+                os.chmod(ptmx, 0o666)
+            except OSError as e:
+                _log(f"chmod ptmx failed: {e}")
+
+        # 3) Ensure devpts is mounted (if bind of whole /dev worked, pts is already there)
+        mounted = False
+        try:
+            with open("/proc/mounts") as f:
+                for line in f:
+                    parts = line.split()
+                    if len(parts) >= 2 and parts[1] in (pts, dev):
+                        # devpts on pts, or if parent /dev is bind-mounted with devpts under it
+                        if parts[2] == "devpts" or (parts[1] == dev and parts[2] in ("devtmpfs", "dev")):
+                            mounted = True
+                            break
+        except OSError:
+            pass
+        if not mounted:
+            try:
+                r = subprocess.run(
+                    ["mount", "-t", "devpts", "devpts", pts],
+                    capture_output=True, text=True, timeout=5,
+                )
+                _log(f"mount devpts -> {pts}: rc={r.returncode} stderr={r.stderr.strip()!r}")
+            except (OSError, subprocess.SubprocessError) as e:
+                _log(f"mount devpts failed: {e}")
+
+        _log(f"final: ptmx_exists={os.path.exists(ptmx)} pts_isdir={os.path.isdir(pts)}")
 
     @staticmethod
     def _map_ssh_failure(exit_code, stderr):
