@@ -66,12 +66,62 @@ class StatusPollThread(QThread):
     status_update = Signal(str, str)  # status, detail
     log_line = Signal(str)
 
+    _NOISE = (
+        "Orchestrator started",
+        "Orchestrator not started",
+        "[STACK] Auto-scaling monitor",
+        "Stack auto-scale monitor started",
+        "Stack monitor not started",
+        "Auto-scaling monitor started",
+    )
+
     def __init__(self, adb, serial, ank_paths):
         super().__init__()
         self.adb = adb
         self.serial = serial
         self.ank_paths = ank_paths
         self._running = True
+        self._log_offset = None
+
+    def _shell(self, rooted, cmd):
+        if rooted:
+            return self.adb.shell_su(self.serial, cmd)
+        return self.adb.shell(self.serial, cmd)
+
+    def _is_noise(self, line):
+        return any(n in line for n in self._NOISE)
+
+    def _file_size(self, rooted, log_file):
+        out, _ = self._shell(rooted, f"wc -c < {log_file} 2>/dev/null")
+        try:
+            return int((out or "").strip())
+        except (ValueError, AttributeError):
+            return 0
+
+    def _emit_log_lines(self, text):
+        for line in (text or "").splitlines():
+            line = line.strip()
+            if line and not self._is_noise(line):
+                self.log_line.emit(line)
+
+    def _stream_logs(self, rooted, log_file):
+        size = self._file_size(rooted, log_file)
+        if size <= 0:
+            self._log_offset = None
+            return
+        if self._log_offset is None:
+            out, _ = self._shell(rooted, f"tail -50 {log_file} 2>/dev/null")
+            self._emit_log_lines(out)
+            self._log_offset = size
+            return
+        if size < self._log_offset:
+            self._log_offset = 0
+        if size > self._log_offset:
+            out, _ = self._shell(
+                rooted, f"tail -c +{self._log_offset + 1} {log_file} 2>/dev/null"
+            )
+            self._emit_log_lines(out)
+            self._log_offset = self._file_size(rooted, log_file)
 
     def run(self):
         rooted = self.ank_paths.get("rooted", True) if self.ank_paths else True
@@ -79,16 +129,12 @@ class StatusPollThread(QThread):
 
         while self._running:
             try:
-                if rooted:
-                    out, _ = self.adb.shell_su(self.serial,
-                        "pgrep -f 'python3.*server.py' 2>/dev/null")
-                else:
-                    out, _ = self.adb.shell(self.serial,
-                        "pgrep -f 'python3.*server.py' 2>/dev/null")
+                out, _ = self._shell(rooted,
+                    "pgrep -f 'python3.*server.py' 2>/dev/null")
 
                 pid = out.strip().split("\n")[0] if out.strip() else ""
                 if pid and pid.isdigit():
-                    port_check, _ = self.adb.shell(self.serial,
+                    port_check, _ = self._shell(rooted,
                         "netstat -tln 2>/dev/null | grep -c ':8001 '")
                     try:
                         listening = int(port_check.strip()) > 0
@@ -101,15 +147,7 @@ class StatusPollThread(QThread):
                 else:
                     self.status_update.emit("stopped", "Server not running")
 
-                if rooted:
-                    log_cmd = f"tail -5 {log_file} 2>/dev/null"
-                else:
-                    log_cmd = f"tail -5 {log_file} 2>/dev/null"
-                log_out, _ = self.adb.shell(self.serial, log_cmd)
-                if log_out.strip():
-                    for line in log_out.strip().split("\n")[-3:]:
-                        if line.strip():
-                            self.log_line.emit(line.strip())
+                self._stream_logs(rooted, log_file)
 
             except Exception:
                 self.status_update.emit("error", "Cannot reach device")
