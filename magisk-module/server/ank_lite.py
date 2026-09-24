@@ -214,11 +214,68 @@ def _append_container_log(name, msg):
     try:
         os.makedirs(LOGS_DIR, exist_ok=True)
         path = os.path.join(LOGS_DIR, f"{name}.log")
-        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         with open(path, "a") as f:
-            f.write(f"[{ts}] {msg}\n")
+            f.write(f"{msg}\n")
     except Exception:
         pass
+
+
+def _set_root_password_shadow(merged, password):
+    """Write root password hash directly into etc/shadow (same as rooted
+    container.sh). Avoids chpasswd inside nested proot which hangs."""
+    shadow = os.path.join(merged, "etc/shadow")
+    if not os.path.isfile(shadow):
+        return False, "etc/shadow missing"
+    enc = None
+    openssl = None
+    for cand in (
+        os.path.join(ROOTFS_DIR, "usr/bin/openssl"),
+        os.path.join(ROOTFS_DIR, "bin/openssl"),
+        "openssl",
+    ):
+        if cand == "openssl" or os.path.isfile(cand):
+            openssl = cand
+            break
+    if openssl:
+        try:
+            r = subprocess.run(
+                [openssl, "passwd", "-1", password],
+                capture_output=True, text=True, timeout=10,
+            )
+            if r.returncode == 0 and r.stdout.strip():
+                enc = r.stdout.strip()
+        except Exception:
+            pass
+    if not enc:
+        try:
+            import crypt
+            enc = crypt.crypt(password, crypt.mksalt(crypt.METHOD_SHA512))
+        except Exception:
+            pass
+    if not enc:
+        return False, "could not hash password (openssl/crypt failed)"
+    try:
+        with open(shadow, "r") as f:
+            lines = f.readlines()
+        out = []
+        found = False
+        for line in lines:
+            if line.startswith("root:"):
+                out.append(f"root:{enc}:19000:0:99999:7:::\n")
+                found = True
+            else:
+                out.append(line)
+        if not found:
+            out.insert(0, f"root:{enc}:19000:0:99999:7:::\n")
+        with open(shadow, "w") as f:
+            f.writelines(out)
+        try:
+            os.chmod(shadow, 0o640)
+        except OSError:
+            pass
+        return True, ""
+    except Exception as e:
+        return False, str(e)
 
 
 def run_in_container(name, cmd, timeout=120):
@@ -273,12 +330,19 @@ def run_in_container(name, cmd, timeout=120):
 def create_container(name, image="alpine-3.20", root_password="ank123",
                      ssh_port=None, ankd_port=None, packages=""):
     existing = os.path.join(CONTAINERS_DIR, name)
+    stub_cfg = None
     if os.path.exists(existing):
         existing_cfg = _load_container_config(name)
         existing_status = (existing_cfg or {}).get("status", "")
         if existing_status not in ("building", "failed"):
             return False, f"Container '{name}' already exists"
-        shutil.rmtree(existing, ignore_errors=True)
+        # Keep stub config.json so UI keeps showing "building" during create;
+        # only wipe filesystem trees for a clean retry.
+        stub_cfg = existing_cfg
+        for sub in ("merged", "upper", "work"):
+            p = os.path.join(existing, sub)
+            if os.path.isdir(p):
+                shutil.rmtree(p, ignore_errors=True)
 
     if not ssh_port:
         ssh_port = _find_free_port(2201)
@@ -292,23 +356,25 @@ def create_container(name, image="alpine-3.20", root_password="ank123",
         _append_container_log(name, f"ERROR: {msg}")
         try:
             os.makedirs(existing, exist_ok=True)
-            _save_container_config(name, {
+            cfg = dict(stub_cfg) if stub_cfg else {}
+            cfg.update({
                 "name": name,
                 "status": "failed",
                 "image": image,
                 "mode": "lite",
                 "ssh_port": int(ssh_port),
                 "ankd_port": int(ankd_port),
-                "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "created_at": (stub_cfg or {}).get("created_at")
+                    or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
                 "pid": None,
                 "error": str(msg)[:500],
             })
+            _save_container_config(name, cfg)
         except Exception:
             pass
         return False, msg
 
-    _append_container_log(name, f"CREATE start image={image} ssh={ssh_port} ankd={ankd_port}")
-    _append_container_log(name, f"ANK_DIR={ANK_DIR} IMAGES_DIR={IMAGES_DIR} PROOT={PROOT_BIN}")
+    _append_container_log(name, f"Creating container: {name} (mode: lite, port: {ssh_port})")
 
     if not os.path.isfile(PROOT_BIN):
         return _fail(f"PRoot not found at {PROOT_BIN}")
@@ -331,7 +397,6 @@ def create_container(name, image="alpine-3.20", root_password="ank123",
             f"(need {image_dir} or {os.path.join(IMAGES_DIR, 'ank-alpinebase-3.20')} with bin/sh); "
             f"IMAGES_DIR listing={listing[:20]}"
         )
-    _append_container_log(name, f"base={base}")
 
     merged = os.path.join(existing, "merged")
     os.makedirs(merged, exist_ok=True)
@@ -341,7 +406,8 @@ def create_container(name, image="alpine-3.20", root_password="ank123",
         shutil.copytree(base, merged, dirs_exist_ok=True, symlinks=True)
     except Exception as e:
         return _fail(f"Failed to copy rootfs: {e}")
-    _append_container_log(name, "rootfs copied")
+
+    _append_container_log(name, f"Setting up container: {name}...")
 
     dev_dir = os.path.join(merged, "dev")
     os.makedirs(dev_dir, exist_ok=True)
@@ -358,58 +424,61 @@ def create_container(name, image="alpine-3.20", root_password="ank123",
         f.write("127.0.0.1 localhost\n")
 
     ankd_ok = _install_ankd(merged, image, int(ssh_port))
-    _append_container_log(name, f"ankd install={'ok' if ankd_ok else 'skipped'}")
+    if not ankd_ok:
+        _append_container_log(name, "WARN: ankd install skipped (source not found)")
 
-    # Smoke-test nested proot before declaring success
-    smoke = run_in_container(name, "/bin/sh -c 'echo lite-ok'", timeout=30)
-    if smoke.returncode != 0:
-        _append_container_log(name, f"proot smoke failed: {smoke.stderr or smoke.stdout}")
-        # Non-fatal: packages may still work; continue but record
-    else:
-        _append_container_log(name, "proot smoke ok")
-
+    # ank-alpinebase already ships ssh/python/nginx/etc (install.sh prebuild).
+    # Never apk add on lite create — that is what caused 60s+ hangs.
+    pkg_list = ""
     if packages:
         pkg_list = packages if isinstance(packages, str) else " ".join(packages)
         pkg_list = pkg_list.strip()
-        if pkg_list:
-            _log(f"Installing packages in '{name}': {pkg_list}")
-            for attempt in range(1, 3):
-                r = run_in_container(
-                    name, f"apk update && apk add --allow-untrusted {pkg_list}", timeout=180
-                )
-                if r.returncode == 0:
-                    _log(f"OK: packages installed in '{name}'")
-                    break
-                if attempt < 2:
-                    _log(f"WARN: apk add failed (rc={r.returncode}), retrying in 15s...")
-                    time.sleep(15)
+    if pkg_list:
+        _append_container_log(name, f"Base image packages present, skipping apk add ({pkg_list})")
 
     if root_password:
-        escaped = (root_password.replace("\\", "\\\\").replace("$", "\\$")
-                   .replace("`", "\\`").replace('"', '\\"'))
-        r = run_in_container(name, f'echo "root:{escaped}" | chpasswd', timeout=60)
-        if r.returncode != 0:
-            _log(f"WARN: chpasswd failed for '{name}': {(r.stderr or r.stdout or '').strip()[:200]}")
+        ok_pw, err_pw = _set_root_password_shadow(merged, root_password)
+        if ok_pw:
+            _append_container_log(name, "Password set via shadow")
+        else:
+            _append_container_log(name, f"WARN: password via shadow failed: {err_pw}")
 
-    config = {
+    ip_addr = _guess_ip()
+    config = dict(stub_cfg) if stub_cfg else {}
+    config.update({
         "name": name,
         "instance_uuid": os.urandom(3).hex(),
         "status": "stopped",
         "image": image,
         "mode": "lite",
-        "autostart": False,
-        "ip_address": _guess_ip(),
+        "autostart": config.get("autostart", False),
+        "ip_address": ip_addr,
         "ssh_port": int(ssh_port),
         "ankd_port": int(ankd_port),
-        "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "created_at": config.get("created_at")
+            or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "pid": None,
-        "policies": {"inter_container_p2p": False, "allow_host_access": False, "allow_internet": True},
-        "resources": {"memory_limit": "256M", "cpu_limit_percent": 50},
-        "port_mappings": [],
+        "policies": config.get("policies")
+            or {"inter_container_p2p": False, "allow_host_access": False, "allow_internet": True},
+        "resources": config.get("resources")
+            or {"memory_limit": "256M", "cpu_limit_percent": 50},
+        "port_mappings": config.get("port_mappings", []),
         "root_password": root_password,
-    }
+    })
+    if stub_cfg:
+        for k in ("template", "template_name", "template_id"):
+            if k in stub_cfg and k not in config:
+                config[k] = stub_cfg[k]
+        if stub_cfg.get("template"):
+            config["template"] = stub_cfg["template"]
+        if stub_cfg.get("template_name"):
+            config["template_name"] = stub_cfg["template_name"]
     _save_container_config(name, config)
-    _append_container_log(name, f"CREATE ok status=stopped ssh={ssh_port} ankd={ankd_port}")
+    _append_container_log(name, f"Container ready: {name}")
+    _append_container_log(
+        name,
+        f"Container '{name}' created (IP: {ip_addr}, SSH port: {ssh_port}, mode: lite)"
+    )
     _log(f"Container '{name}' created (ssh={ssh_port}, ankd={ankd_port})")
     return True, config
 

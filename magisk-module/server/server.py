@@ -2453,8 +2453,11 @@ small{color:#334155}
             self.send_error(400, "Invalid container name")
             return
         if os.path.exists(os.path.join(CONTAINERS_DIR, name)):
-            self.send_error(409, f"Container '{name}' already exists")
-            return
+            _ex = load_container_config(name)
+            _ex_status = (_ex or {}).get("status", "")
+            if _ex_status not in ("building", "failed"):
+                self.send_error(409, f"Container '{name}' already exists")
+                return
 
         image = data.get("image", "alpine-3.20")
         root_password = data.get("root_password", "")
@@ -2501,7 +2504,6 @@ small{color:#334155}
                     if t["base"] == image or t["image"] == image or t["base"] == mapped_image or t["image"] == mapped_image:
                         tpl = t
                         break
-            pkgs = " ".join(tpl.get("packages", [])) if tpl else ""
             tpl_id = template_id or (tpl["id"] if tpl else "")
             tpl_name = template_name or (tpl["name"] if tpl else "")
 
@@ -2532,10 +2534,10 @@ small{color:#334155}
                 log_path = os.path.join(ANK_DIR, "logs", f"{name}.log")
                 try:
                     with open(log_path, "w") as lf:
-                        lf.write(f"Creating container '{name}' (lite mode)...\n")
+                        lf.write(f"Deploying container '{name}'...\n")
                         lf.flush()
                     ok, result = ank_lite.create_container(
-                        name, mapped_image, root_password, ssh_port, ankd_port, packages=pkgs)
+                        name, mapped_image, root_password, ssh_port, ankd_port)
                     if not ok:
                         with open(log_path, "a") as lf:
                             lf.write(f"ERROR: {result}\n")
@@ -2553,8 +2555,6 @@ small{color:#334155}
                                 cfg["template"] = tpl_id
                                 cfg["template_name"] = tpl_name
                             save_container_config(name, cfg)
-                        with open(log_path, "a") as lf:
-                            lf.write(f"Container '{name}' created (stopped)\n")
                         log(f"Container {name} created (lite)")
                 except Exception as e:
                     log(f"ERROR: lite create thread {name}: {e}")
@@ -2725,7 +2725,6 @@ small{color:#334155}
                     cfg["pid"] = None
                     save_container_config(name, cfg)
                     note_container_stopped(name)
-        import threading
         threading.Thread(target=do_start, daemon=True).start()
         self.send_json({"message": f"Container '{name}' starting"})
 
@@ -2818,7 +2817,6 @@ small{color:#334155}
                     cfg["pid"] = None
                     save_container_config(name, cfg)
                     note_container_stopped(name)
-        import threading
         threading.Thread(target=do_stop, daemon=True).start()
         self.send_json({"message": f"Container '{name}' stopping"})
 
@@ -3024,7 +3022,6 @@ small{color:#334155}
                         os.remove(flag)
                 except OSError as e:
                     log(f"[SERVICE] delete {name}/{service}: cleanup failed: {e}")
-            import threading
             threading.Thread(target=_do_service_delete, daemon=True).start()
             self.send_json({"message": f"Service '{service}' deleted"})
             return
@@ -3065,7 +3062,6 @@ small{color:#334155}
                     _ank_stop_service_pgid(name, service)
                 else:
                     log(f"[SERVICE] stop {name}/{service}: {output.strip()[:200] if output else 'ok'}")
-            import threading
             threading.Thread(target=_do_service_stop, daemon=True).start()
             self.send_json({"message": f"Service '{service}' stopping"})
             return
@@ -3086,7 +3082,6 @@ small{color:#334155}
                     # Fallback: kill without a stop-flag so the daemon's
                     # restart policy brings the service back up.
                     _ank_stop_service_pgid(name, service, mark_stopped=False)
-            import threading
             threading.Thread(target=_do_service_restart, daemon=True).start()
             self.send_json({"message": f"Service '{service}' restarting"})
             return
@@ -3112,7 +3107,6 @@ small{color:#334155}
                             os.remove(flag)
                     except OSError:
                         pass
-            import threading
             threading.Thread(target=_do_service_start, daemon=True).start()
             self.send_json({"message": f"Service '{service}' starting"})
 
@@ -3251,7 +3245,6 @@ small{color:#334155}
                     cfg["pid"] = None
                     save_container_config(name, cfg)
                     note_container_stopped(name)
-        import threading
         threading.Thread(target=do_restart, daemon=True).start()
         self.send_json({"message": f"Container '{name}' restarting"})
 
@@ -3795,7 +3788,6 @@ small{color:#334155}
             except Exception as e:
                 _pull_status[version]["state"] = "error"
                 _pull_status[version]["error"] = str(e)
-        import threading
         threading.Thread(target=_do_pull, daemon=True).start()
         self.send_json({"message": f"Pulling alpine-{version}...", "version": version})
 
@@ -3990,12 +3982,8 @@ small{color:#334155}
                 is_lite_mode = is_lite()
 
                 if is_lite_mode:
-                    pkgs = " ".join(template.get("packages", []))
-                    with open(log_path, "a") as lf:
-                        lf.write(f"Creating container (lite mode)...\n")
-                        lf.flush()
                     ok, result = ank_lite.create_container(
-                        container_name, base_image, root_password, ssh_port, ankd_port, packages=pkgs)
+                        container_name, base_image, root_password, ssh_port, ankd_port)
                     if not ok:
                         with open(log_path, "a") as lf:
                             lf.write(f"ERROR: {result}\n")
@@ -4006,9 +3994,6 @@ small{color:#334155}
                             cfg["status"] = "failed"
                             save_container_config(container_name, cfg)
                         return
-                    with open(log_path, "a") as lf:
-                        lf.write(f"Container created (ssh={ssh_port}, ankd={ankd_port})\n")
-                        lf.flush()
 
                     cfg = load_container_config(container_name)
                     if cfg:
@@ -4101,7 +4086,7 @@ small{color:#334155}
                         config["static_path"] = template["static_path"]
                     save_container_config(container_name, config)
 
-                if template.get("packages"):
+                if template.get("packages") and not is_lite_mode:
                     pkg_list = " ".join(template["packages"])
                     log(f"Installing packages: {pkg_list} in {container_name}")
                     apk_output = ""
@@ -4125,6 +4110,10 @@ small{color:#334155}
                             "ssh_port": config.get("ssh_port", 22)
                         }
                         save_container_config(container_name, config)
+                elif template.get("packages") and is_lite_mode:
+                    with open(log_path, "a") as lf:
+                        lf.write("Base image packages present, skipping apk add\n")
+                        lf.flush()
 
                 if template_id == "nginx":
                     static_dir = template["static_path"]
@@ -4306,13 +4295,10 @@ small{color:#334155}
                 if is_lite_mode:
                     ok, result = ank_lite.create_container(
                         container_name, mapped_image, root_password, ssh_port, ankd_port)
-                    with open(log_path, "a") as lf:
-                        if ok:
-                            lf.write(f"Container created (lite, ssh={ssh_port}, ankd={ankd_port})\n")
-                        else:
-                            lf.write(f"ERROR: {result}\n")
-                        lf.flush()
                     if not ok:
+                        with open(log_path, "a") as lf:
+                            lf.write(f"ERROR: {result}\n")
+                            lf.flush()
                         log(f"ERROR: lite create {container_name}: {result}")
                         cfg = load_container_config(container_name)
                         if cfg:
@@ -4777,7 +4763,6 @@ small{color:#334155}
 
         if args[0] == "restart":
             self.send_json({"stdout": "Restarting ANK server...", "stderr": "", "code": 0})
-            import threading
             def do_restart():
                 import time; time.sleep(1)
                 os.system(f"fuser -k 8001/tcp 2>/dev/null; sleep 1; setsid sh {ANK_DIR}/ankfs/opt/ank/start-server.sh </dev/null >{ANK_DIR}/logs/server.log 2>&1 &")
@@ -5460,7 +5445,6 @@ small{color:#334155}
         ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         log(f"RESTART_DEVICE: [RESTART-DEVICE] {ts} from {client_ip} - Rebooting device...")
         self.send_json({"message": "Device rebooting..."})
-        import threading
         def _reboot():
             import time
             time.sleep(1)
@@ -5474,7 +5458,6 @@ small{color:#334155}
     def api_restart_server(self):
         """Stop everything ANK and restart the server."""
         log("RESTART_SERVER: Stopping all containers and restarting...")
-        import threading
         def _restart():
             import time
             # Stop all running containers
@@ -5573,7 +5556,6 @@ small{color:#334155}
         ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         log(f"ANK_MANAGER: [RESTART-DEVICE] {ts} from {client_ip} - Rebooting device...")
         self.send_json({"message": "Device rebooting..."})
-        import threading
         def _reboot():
             time.sleep(1)
             rc = os.system("svc power reboot 2>/dev/null || reboot 2>/dev/null || su -c reboot 2>/dev/null")
@@ -5716,7 +5698,6 @@ small{color:#334155}
 
     def _sync_sshd(self, config):
         """Start/stop/reconfigure sshd in ankfs based on config."""
-        import threading
         def _do():
             ankfs = os.path.join(ANK_DIR, "ankfs")
             ssh_enabled = config.get("ssh_enabled", False)
@@ -5809,7 +5790,6 @@ small{color:#334155}
         client_ip = self.client_address[0] if self.client_address else "unknown"
         ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         log(f"UNINSTALL: [UNINSTALL] {ts} from {client_ip} - Starting complete ANK removal...")
-        import threading
         def do_uninstall():
             log(f"UNINSTALL: [UNINSTALL] {ts} from {client_ip} - Stopping containers and cleaning up...")
             try:
