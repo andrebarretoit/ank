@@ -5,8 +5,20 @@
 # Usage: /data/local/ank/ankfs/ank-shell.sh
 # ============================================================
 
-ANK_DIR="/data/local/ank"
+# Resolve ANK_DIR: env first, then rooted install, lite guest (/ank), lite host
+if [ -z "$ANK_DIR" ]; then
+    if [ -f "/data/local/ank/mode" ]; then
+        ANK_DIR="/data/local/ank"
+    elif [ -f "/ank/mode" ]; then
+        ANK_DIR="/ank"
+    elif [ -f "/data/local/tmp/ank/mode" ]; then
+        ANK_DIR="/data/local/tmp/ank"
+    else
+        ANK_DIR="/data/local/ank"
+    fi
+fi
 ANK_ENGINE="$ANK_DIR/ank-engine"
+ANKFS="$ANK_DIR/ankfs"
 CONTAINERS_DIR="$ANK_DIR/containers"
 IMAGES_DIR="$ANK_DIR/images"
 STACKS_DIR="$ANK_DIR/stacks"
@@ -505,7 +517,7 @@ ank_ps() {
     if command -v curl >/dev/null 2>&1; then
         local json=$(_api_get "/api/containers/all")
         if [ -n "$json" ] && echo "$json" | grep -q '"name"'; then
-            local tmpfile=$(mktemp /data/local/ank/tmp/ankps.XXXXXX 2>/dev/null || echo "/data/local/ank/tmp/ankps_tmp")
+            local tmpfile=$(mktemp "$ANK_TMP/ankps.XXXXXX" 2>/dev/null || echo "$ANK_TMP/ankps_tmp")
             echo "$json" | sed 's/},{/}\n{/g' > "$tmpfile" 2>/dev/null
             while IFS= read -r obj; do
                 [ -z "$obj" ] && continue
@@ -2103,9 +2115,9 @@ ank_core_status() {
 # ============================================================
 ank_core_restart() {
     echo "Restarting ANK server..."
-    local restart_sh="$ANK_DIR/scripts/restart-server.sh"
+    local restart_sh="$ANK_DIR/core/restart-server.sh"
+    [ ! -f "$restart_sh" ] && restart_sh="$ANKFS/opt/ank/scripts/restart-server.sh"
     [ ! -f "$restart_sh" ] && restart_sh="$ANKFS/opt/ank/restart-server.sh"
-    [ ! -f "$restart_sh" ] && restart_sh="$ANK_DIR/ankfs/opt/ank/restart-server.sh"
     # Kill existing server (canonical + legacy PID files)
     kill $(cat "$LOGS_DIR/server.pid" 2>/dev/null) 2>/dev/null
     kill $(cat "$ANK_DIR/server.pid" 2>/dev/null) 2>/dev/null
@@ -2120,6 +2132,7 @@ ank_core_restart() {
     # Fallback: start directly
     local start_sh="$ANKFS/opt/ank/start-server.sh"
     [ ! -f "$start_sh" ] && start_sh="$ANKFS/opt/ank/start-lite.sh"
+    [ ! -f "$start_sh" ] && start_sh="$ANK_DIR/start-lite.sh"
     if [ -f "$start_sh" ]; then
         sh "$start_sh" >/dev/null 2>&1 &
         echo "Server restarted"

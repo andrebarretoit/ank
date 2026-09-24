@@ -3,7 +3,7 @@
 # Monitors WiFi and reconnects if disconnected
 # Run as daemon via service.sh or manually: sh wifi-watchdog.sh &
 
-ANK_DIR="/data/local/ank"
+ANK_DIR="${ANK_DIR:-/data/local/ank}"
 ANK_SDCARD="/sdcard/AndroidKonteiner"
 LOG="$ANK_DIR/logs/wifi-watchdog.log"
 CONFIG="$ANK_DIR/config.json"

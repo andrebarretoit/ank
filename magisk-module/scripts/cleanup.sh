@@ -2,7 +2,7 @@
 # Ank - Cleanup orphaned resources
 # Usage: cleanup.sh [container_name]
 
-ANK_DIR="/data/local/ank"
+ANK_DIR="${ANK_DIR:-/data/local/ank}"
 ANK_SDCARD="/sdcard/AndroidKonteiner"
 
 # ============================================================

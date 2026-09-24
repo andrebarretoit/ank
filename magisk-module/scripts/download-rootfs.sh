@@ -6,7 +6,7 @@
 # ============================================================
 
 VERSION="${1:-3.20}"
-ANK_DIR="/data/local/ank"
+ANK_DIR="${ANK_DIR:-/data/local/ank}"
 ANK_SDCARD="/sdcard/AndroidKonteiner"
 IMAGES_DIR="$ANK_DIR/images"
 ROOTFS="$IMAGES_DIR/alpine-${VERSION}"

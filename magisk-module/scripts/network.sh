@@ -2,7 +2,7 @@
 # Ank - Network management (full + compat mode)
 # Usage: network.sh <command> <container_name> [args...]
 
-ANK_DIR="/data/local/ank"
+ANK_DIR="${ANK_DIR:-/data/local/ank}"
 ANK_SDCARD="/sdcard/AndroidKonteiner"
 CONFIG_FILE="$ANK_DIR/config.json"
 BRIDGE="ank0"

@@ -1,6 +1,19 @@
 #!/data/local/ank/ankfs/usr/bin/python3
 import sys, urllib.request, urllib.error, json, os
-ANK_DIR = "/data/local/ank"
+
+def _resolve_ank_dir():
+    env = os.environ.get("ANK_DIR")
+    if env:
+        return env
+    if os.path.exists("/data/local/ank/mode"):
+        return "/data/local/ank"
+    if os.path.exists("/ank/mode"):
+        return "/ank"
+    if os.path.exists("/data/local/tmp/ank/mode"):
+        return "/data/local/tmp/ank"
+    return "/data/local/ank"
+
+ANK_DIR = _resolve_ank_dir()
 port = 8001
 try:
     with open(f"{ANK_DIR}/logs/port.conf") as f:

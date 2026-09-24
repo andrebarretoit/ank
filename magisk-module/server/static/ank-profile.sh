@@ -5,8 +5,20 @@
 # Usage: /data/local/ank/ankfs/ank-shell.sh
 # ============================================================
 
-ANK_DIR="/data/local/ank"
+# Resolve ANK_DIR: env first, then rooted install, lite guest (/ank), lite host
+if [ -z "$ANK_DIR" ]; then
+    if [ -f "/data/local/ank/mode" ]; then
+        ANK_DIR="/data/local/ank"
+    elif [ -f "/ank/mode" ]; then
+        ANK_DIR="/ank"
+    elif [ -f "/data/local/tmp/ank/mode" ]; then
+        ANK_DIR="/data/local/tmp/ank"
+    else
+        ANK_DIR="/data/local/ank"
+    fi
+fi
 ANK_ENGINE="$ANK_DIR/ank-engine"
+ANKFS="$ANK_DIR/ankfs"
 CONTAINERS_DIR="$ANK_DIR/containers"
 IMAGES_DIR="$ANK_DIR/images"
 STACKS_DIR="$ANK_DIR/stacks"
@@ -2002,13 +2014,30 @@ except: print('Error reading dashboard')
 # ============================================================
 ank_core_restart() {
     echo "Restarting ANK server..."
-    # Kill existing server
+    # Kill existing server (canonical + legacy PID files)
     kill $(cat "$LOGS_DIR/server.pid" 2>/dev/null) 2>/dev/null
+    kill $(cat "$ANK_DIR/server.pid" 2>/dev/null) 2>/dev/null
     pkill -f "ld-musl.*python3.*server.py" 2>/dev/null
+    pkill -f "python3.*server.py" 2>/dev/null
     sleep 1
-    # Restart
-    sh "$ANK_DIR/ankfs/opt/ank/start-server.sh" >/dev/null 2>&1 &
-    echo "Server restarted"
+    # Restart: prefer restart script, then lite/rooted start scripts
+    local restart_sh="$ANK_DIR/core/restart-server.sh"
+    [ ! -f "$restart_sh" ] && restart_sh="$ANKFS/opt/ank/scripts/restart-server.sh"
+    [ ! -f "$restart_sh" ] && restart_sh="$ANKFS/opt/ank/restart-server.sh"
+    if [ -f "$restart_sh" ]; then
+        sh "$restart_sh" >/dev/null 2>&1
+        echo "Server restarted"
+        return
+    fi
+    local start_sh="$ANKFS/opt/ank/start-server.sh"
+    [ ! -f "$start_sh" ] && start_sh="$ANK_DIR/start-lite.sh"
+    if [ -f "$start_sh" ]; then
+        sh "$start_sh" >/dev/null 2>&1 &
+        echo "Server restarted"
+    else
+        echo "ERROR: neither restart-server.sh nor start-server.sh found" >&2
+        return 1
+    fi
 }
 
 # ============================================================

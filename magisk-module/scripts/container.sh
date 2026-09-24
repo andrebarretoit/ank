@@ -2,7 +2,7 @@
 # Ank - Container lifecycle (full + compat mode)
 # Usage: container.sh <command> <container_name> [args...]
 
-ANK_DIR="/data/local/ank"
+ANK_DIR="${ANK_DIR:-/data/local/ank}"
 ANK_SDCARD="/sdcard/AndroidKonteiner"
 IMAGES_DIR="$ANK_DIR/images"
 CONTAINERS_DIR="$ANK_DIR/containers"

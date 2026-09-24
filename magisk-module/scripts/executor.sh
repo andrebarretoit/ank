@@ -2,7 +2,7 @@
 # ANK - Command executor (runs on host, outside chroot)
 # Watches FIFO for commands from server.py
 
-ANK_DIR="/data/local/ank"
+ANK_DIR="${ANK_DIR:-/data/local/ank}"
 ANK_SDCARD="/sdcard/AndroidKonteiner"
 FIFO="$ANK_DIR/logs/exec.fifo"
 LOG="$ANK_DIR/logs/service.log"

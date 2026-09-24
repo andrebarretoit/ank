@@ -5,7 +5,7 @@
 
 set -e
 
-ANK_DIR="/data/local/ank"
+ANK_DIR="${ANK_DIR:-/data/local/tmp/ank}"
 ANK_SDCARD="/sdcard/AndroidKonteiner"
 ROOTFS="$ANK_DIR/ankfs"
 PROOT="$ANK_DIR/proot"

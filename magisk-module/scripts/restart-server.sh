@@ -3,7 +3,11 @@
 # Called by server.py when it receives SIGHUP
 # Stops the server gracefully, waits, then starts it again
 
-ANK_DIR="/data/local/ank"
+ANK_DIR="${ANK_DIR:-/data/local/ank}"
+# Lite host without env: rooted default missing, lite install present
+if [ "$ANK_DIR" = "/data/local/ank" ] && [ ! -d "$ANK_DIR" ] && [ -d "/data/local/tmp/ank" ]; then
+    ANK_DIR="/data/local/tmp/ank"
+fi
 ANKFS="$ANK_DIR/ankfs"
 LOG_DIR="$ANK_DIR/logs"
 SERVER_LOG="$LOG_DIR/server.log"
@@ -72,7 +76,39 @@ sleep 5
 # ── Step 3: Start ────────────────────────────────────────────────────────────
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] [restart.sh] Starting server..." >> "$SERVER_LOG"
 
-if [ -x "$START_SCRIPT" ] || [ -f "$START_SCRIPT" ]; then
+# Detect lite mode (proot + lite marker in mode file)
+IS_LITE=0
+if [ -f "$ANK_DIR/proot" ] && [ -f "$ANK_DIR/mode" ] && grep -q '"mode": *"lite"' "$ANK_DIR/mode" 2>/dev/null; then
+    IS_LITE=1
+fi
+
+if [ "$IS_LITE" -eq 1 ]; then
+    if [ -f "$ANK_DIR/start-lite.sh" ]; then
+        # Lite: validated start script (binds host dir to /ank, writes server.pid)
+        sh "$ANK_DIR/start-lite.sh" >> "$SERVER_LOG" 2>&1
+    elif [ -f "$ANK_DIR/proot" ]; then
+        # Lite fallback: proot + run_server.sh with host dir mounted at /ank
+        mkdir -p "$ANK_DIR/logs" "$ANK_DIR/tmp" "$ANKFS/tmp" 2>/dev/null
+        if [ -f "$ANKFS/run_server.sh" ]; then
+            nohup sh -c "PROOT_TMP_DIR=$ANK_DIR/tmp \
+$ANK_DIR/proot -0 -r $ANKFS \
+-b /dev -b /proc -b $ANK_DIR:/ank \
+-w /root \
+/bin/sh /run_server.sh" >> "$SERVER_LOG" 2>&1 &
+        else
+            nohup env ANK_DIR=/ank PROOT_TMP_DIR="$ANK_DIR/tmp" \
+            "$ANK_DIR/proot" -0 -r "$ANKFS" \
+                -b /dev -b /proc -b "$ANK_DIR:/ank" -w /root \
+                /usr/bin/python3 /opt/ank/server.py \
+                >> "$SERVER_LOG" 2>&1 &
+        fi
+        echo "$!" > "$PID_FILE"
+        echo "$!" > "$LEGACY_PID_FILE"
+    else
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] [restart.sh] ERROR: Lite mode but no proot found" >> "$SERVER_LOG"
+        exit 1
+    fi
+elif [ -x "$START_SCRIPT" ] || [ -f "$START_SCRIPT" ]; then
     sh "$START_SCRIPT" >> "$SERVER_LOG" 2>&1
 elif [ -x "$ANKFS/opt/ank/start-lite.sh" ] || [ -f "$ANKFS/opt/ank/start-lite.sh" ]; then
     sh "$ANKFS/opt/ank/start-lite.sh" >> "$SERVER_LOG" 2>&1
@@ -85,10 +121,10 @@ elif [ -f "$ANKFS/usr/bin/python3" ] && ls "$ANKFS/lib/ld-musl-"* >/dev/null 2>&
     echo "$!" > "$PID_FILE"
     echo "$!" > "$LEGACY_PID_FILE"
 elif [ -f "$ANK_DIR/proot" ]; then
-    # Lite/PRoot mode
+    # Generic PRoot fallback: bind host dir as /ank so guest ANK_DIR resolves
     cd "$ANKFS"
     nohup "$ANK_DIR/proot" -0 -r "$ANKFS" \
-        -b /dev -b /proc -w /root \
+        -b /dev -b /proc -b "$ANK_DIR:/ank" -w /root \
         /usr/bin/python3 /opt/ank/server.py \
         >> "$SERVER_LOG" 2>&1 &
     echo "$!" > "$PID_FILE"

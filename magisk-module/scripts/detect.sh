@@ -2,7 +2,7 @@
 # Ank - Device capability detection
 # Usage: detect.sh [check|info|setup]
 
-ANK_DIR="/data/local/ank"
+ANK_DIR="${ANK_DIR:-/data/local/ank}"
 ANK_SDCARD="/sdcard/AndroidKonteiner"
 MODE_FILE="$ANK_DIR/mode"
 
@@ -44,8 +44,8 @@ check_chroot() {
         return $?
     fi
     # Try our own ankfs
-    if [ -d /data/local/ank/ankfs/bin ]; then
-        chroot /data/local/ank/ankfs /bin/true 2>/dev/null
+    if [ -d "$ANK_DIR/ankfs/bin" ]; then
+        chroot "$ANK_DIR/ankfs" /bin/true 2>/dev/null
         return $?
     fi
     # Fallback: just check chroot binary exists

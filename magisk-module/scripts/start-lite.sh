@@ -2,7 +2,7 @@
 # ANK Lite Server Starter (non-root, via PRoot)
 # Validated flow: tested on SM-M127F / aarch64
 
-ANK_DIR="/data/local/tmp/ank"
+ANK_DIR="${ANK_DIR:-/data/local/tmp/ank}"
 ROOTFS="$ANK_DIR/ankfs"
 PROOT="$ANK_DIR/proot"
 
@@ -43,6 +43,8 @@ $PROOT -0 -r $ROOTFS \
 -b $ANK_DIR:/ank \
 -w /root \
 /bin/sh /run_server.sh" > "$ANK_DIR/logs/server.log" 2>&1 &
+echo "$!" > "$ANK_DIR/logs/server.pid"
+echo "$!" > "$ANK_DIR/server.pid"
 
 echo "Servidor ANK iniciado"
 echo "Acesse: http://localhost:8001"

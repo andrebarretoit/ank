@@ -5,7 +5,18 @@
 # Drops user into the ANK interactive shell
 # ============================================================
 
-ANK_DIR="/data/local/ank"
+# Resolve ANK_DIR: env first, then rooted install, lite guest (/ank), lite host
+if [ -z "$ANK_DIR" ]; then
+    if [ -f "/data/local/ank/mode" ]; then
+        ANK_DIR="/data/local/ank"
+    elif [ -f "/ank/mode" ]; then
+        ANK_DIR="/ank"
+    elif [ -f "/data/local/tmp/ank/mode" ]; then
+        ANK_DIR="/data/local/tmp/ank"
+    else
+        ANK_DIR="/data/local/ank"
+    fi
+fi
 CONFIG="$ANK_DIR/config.json"
 SCRIPTS_DIR="$ANK_DIR/core"
 

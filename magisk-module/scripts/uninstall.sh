@@ -4,7 +4,7 @@
 # Handles: chroot (rooted) + PRoot (unrooted) modes
 # Unmounts everything, kills all processes, removes ALL ANK data
 
-ANK_DIR="/data/local/ank"
+ANK_DIR="${ANK_DIR:-/data/local/ank}"
 ANK_SDCARD="/sdcard/AndroidKonteiner"
 CONTAINERS_DIR="$ANK_DIR/containers"
 
@@ -157,13 +157,19 @@ rm -rf "$ANK_DIR/images" 2>/dev/null
 rm -rf "$ANK_DIR/ankfs" 2>/dev/null
 rm -rf "$ANK_DIR" 2>/dev/null
 rm -rf "$ANK_SDCARD" 2>/dev/null
-# Also remove Magisk module persistent data
-rm -rf "/data/adb/modules/ank" 2>/dev/null
+# Also remove Magisk module persistent data (rooted installs only)
+if [ -d "/data/adb/modules/ank" ]; then
+    rm -rf "/data/adb/modules/ank" 2>/dev/null
+fi
 echo "  OK"
 
 # ── Step 10: Remove Magisk module ───────────────────────────────────────────
 echo "[10/10] Removing Magisk module..."
-magisk --remove-module ank 2>/dev/null
+if command -v magisk >/dev/null 2>&1; then
+    magisk --remove-module ank 2>/dev/null
+else
+    echo "  Magisk not present, skipping"
+fi
 echo "  OK"
 
 echo ""

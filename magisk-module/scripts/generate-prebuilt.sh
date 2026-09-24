@@ -3,7 +3,7 @@
 # Output: /sdcard/Download/ankfs-v{VERSION}-{ARCH}.tar.xz
 
 ANK_VERSION="2.0.0"
-ANK_DIR="/data/local/ank"
+ANK_DIR="${ANK_DIR:-/data/local/ank}"
 ANK_SDCARD="/sdcard/AndroidKonteiner"
 ANKFS="$ANK_DIR/ankfs"
 

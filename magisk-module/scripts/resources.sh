@@ -2,7 +2,7 @@
 # Ank - Cgroup resource management
 # Usage: resources.sh <command> <container_name> [value]
 
-ANK_DIR="/data/local/ank"
+ANK_DIR="${ANK_DIR:-/data/local/ank}"
 ANK_SDCARD="/sdcard/AndroidKonteiner"
 CGROUP_BASE="/sys/fs/cgroup/ank"
 
