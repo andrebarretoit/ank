@@ -5606,15 +5606,18 @@ small{color:#334155}
                 if not os.path.exists(svc_ankd):
                     with open(svc_ankd, "w") as f:
                         f.write(f"NAME={svc_name}\nCMD={cmd}\nDIR={svc_dir}\nPORT={port}\nPID_FILE=/run/{svc_name}.pid\nSTOP_SIGNAL=TERM\nRESTART_POLICY=always\nRESTART_DELAY=3\n")
-                # Inject daemon off for nginx
+                # Inject daemon off + drop user directive for nginx
                 if key == "nginx":
+                    import re
                     nginx_conf = os.path.join(rootfs, "etc/nginx/nginx.conf")
                     if os.path.isfile(nginx_conf):
                         with open(nginx_conf) as fh:
                             content = fh.read()
                         if not content.startswith("daemon off"):
-                            with open(nginx_conf, "w") as fh:
-                                fh.write("daemon off;\n" + content)
+                            content = "daemon off;\n" + content
+                        content = re.sub(r"^user\s+.*$", r"# ANK: \g<0>", content, flags=re.MULTILINE)
+                        with open(nginx_conf, "w") as fh:
+                            fh.write(content)
                 break
 
     def _sync_sshd(self, config):

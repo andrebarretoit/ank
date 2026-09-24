@@ -419,6 +419,7 @@ SSHD_EOF
             if [ -f "$ROOTFS/etc/nginx/nginx.conf" ]; then
                 grep -q "^daemon off" "$ROOTFS/etc/nginx/nginx.conf" 2>/dev/null || \
                     sed -i '1i daemon off;' "$ROOTFS/etc/nginx/nginx.conf" 2>/dev/null
+                sed -i '/^user[[:space:]]/s/^/# ANK: /' "$ROOTFS/etc/nginx/nginx.conf" 2>/dev/null
             fi
             ;;
         apache*)
@@ -819,6 +820,7 @@ cmd_start() {
             if [ -f "$ROOTFS/etc/nginx/nginx.conf" ]; then
                 grep -q "^daemon off" "$ROOTFS/etc/nginx/nginx.conf" 2>/dev/null || \
                     sed -i '1i daemon off;' "$ROOTFS/etc/nginx/nginx.conf" 2>/dev/null
+                sed -i '/^user[[:space:]]/s/^/# ANK: /' "$ROOTFS/etc/nginx/nginx.conf" 2>/dev/null
             fi
             ;;
         apache*)
