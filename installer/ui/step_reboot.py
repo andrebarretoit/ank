@@ -76,36 +76,51 @@ class RebootThread(QThread):
 
         self.status.emit("Waiting for the ANK server...")
 
-        # Prefer panel_port from device config; fall back to common ports
+        # Prefer panel_port from device config (rooted + lite paths)
+        import ssl as _ssl
         ports = [8001]
-        try:
-            _c = self.adb.shell(self.serial, "cat /data/local/ank/config.json 2>/dev/null")[0]
-            import re as _re
-            m = _re.search(r'"panel_port"\s*:\s*(\d+)', _c or '')
-            if m:
-                p = int(m.group(1))
-                if p not in ports:
-                    ports.insert(0, p)
-        except Exception:
-            pass
-        for i in range(60):
-            time.sleep(2)
+        for cfg_path in (
+            "/data/local/tmp/ank/config.json",
+            "/data/local/ank/config.json",
+        ):
+            try:
+                _c = self.adb.shell(self.serial, f"cat {cfg_path} 2>/dev/null")[0]
+                import re as _re
+                m = _re.search(r'"panel_port"\s*:\s*(\d+)', _c or '')
+                if m:
+                    p = int(m.group(1))
+                    if p not in ports:
+                        ports.insert(0, p)
+            except Exception:
+                pass
+
+        # Lite serves HTTPS with a self-signed cert — accept it
+        _ctx = _ssl._create_unverified_context()
+
+        def _online():
             for scheme in ("http", "https"):
                 for port in ports:
                     try:
                         url = f"{scheme}://{self.device_ip}:{port}/"
                         req = urllib.request.Request(url, method="GET")
-                        resp = urllib.request.urlopen(req, timeout=5)
+                        resp = urllib.request.urlopen(req, timeout=5, context=_ctx)
                         code = resp.getcode()
                         if code in (200, 301, 302, 401):
-                            self.done.emit(True)
-                            return
+                            return True
                     except urllib.error.HTTPError as e:
                         if e.code in (200, 301, 302, 401):
-                            self.done.emit(True)
-                            return
+                            return True
                     except Exception:
                         pass
+            return False
+
+        for i in range(60):
+            if _online():
+                self.done.emit(True)
+                return
+            if i > 0 and i % 5 == 0:
+                self.status.emit(f"Waiting for the ANK server... ({i * 2}s)")
+            time.sleep(2)
 
         self.done.emit(False)
 
