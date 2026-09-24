@@ -272,6 +272,10 @@ function showTerminalContainers() {
 
 function navigateTo(page) {
   _formDirty = false;
+  if (ankLiteMode && (page === 'networks' || page === 'stacks')) {
+    try { localStorage.removeItem('ank_tab'); sessionStorage.removeItem('ank_nav_page'); } catch (e) {}
+    page = 'dashboard';
+  }
   const prevPage = _currentPage;
   _currentPage = page;
   try { localStorage.setItem('ank_tab', page); } catch (e) {}
@@ -1645,6 +1649,12 @@ function updateNodeSelectors(nodes) {
 async function loadStacks() {
   const el = document.getElementById('stacks-list');
   if (!el) return;
+  if (ankLiteMode) {
+    el.innerHTML = '<div class="empty-state"><i class="bi bi-hourglass-split"></i><h3>Coming soon</h3><p>Stacks are not available in lite mode</p></div>';
+    const det = document.getElementById('stack-detail');
+    if (det) det.innerHTML = '<div class="split-right-empty"><div><i class="bi bi-hourglass-split"></i><p>Coming soon in lite mode</p></div></div>';
+    return;
+  }
   try {
     const data = await api('GET', '/stacks/all');
     const stacks = data.stacks || [];
@@ -2272,6 +2282,7 @@ async function deleteBackup(id) { const ok = await confirmAction('Delete Backup'
 
 /* ═══════ NETWORKS ═══════ */
 async function loadNetworks() {
+  if (ankLiteMode) return;
   const el = document.getElementById('networks-list');
   if (!el) return;
   try {
@@ -2439,7 +2450,7 @@ function showSettingsSection(section) {
       <div class="form-group" id="manager-ip-group" style="display:none"><label class="form-label">Manager IP / Range</label><input type="text" class="form-input" id="setting-manager-ip" placeholder="192.168.0.0/24 or 0.0.0.0" maxlength="30"><small class="form-hint">Single IP, CIDR range, or 0.0.0.0 (any)</small></div>
       <hr style="border-color:var(--border);margin:12px 0">
       <div class="form-group"><label class="checkbox-label" style="display:flex;align-items:center;gap:8px;cursor:pointer"><input type="checkbox" id="setting-ssh-enabled" checked style="width:18px;height:18px;accent-color:var(--accent)"><i class="bi bi-terminal" style="color:var(--accent)"></i> Enable SSH (Android host)</label><small class="form-hint">SSH server on port <span id="setting-ssh-port-display">${sshPortDisplay}</span> — same password as this panel</small></div>
-      <div class="form-group"><label class="form-label">SSH Port</label><input type="number" class="form-input" id="setting-ssh-port" value="${cfg.ssh_port || 2200}" min="1024" max="65535"></div>
+      ${ankLiteMode ? '' : `<div class="form-group"><label class="form-label">SSH Port</label><input type="number" class="form-input" id="setting-ssh-port" value="${cfg.ssh_port || 2200}" min="1024" max="65535"></div>`}
       <button type="button" class="btn btn-primary" onclick="saveRemoteSSHSettings()"><i class="bi bi-check-lg"></i> Save</button>
     </div></div>`;
     const remoteMgmtEl = document.getElementById('setting-remote-mgmt');
@@ -2498,9 +2509,7 @@ function showSettingsSection(section) {
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
         <label class="form-label" style="margin:0">Live Logs</label>
         <select class="form-select" id="ank-mgr-log-type" style="width:auto;padding:4px 8px;font-size:12px">
-          <option value="server">Server (live)</option>
-          <option value="service">Service (legacy)</option>
-          <option value="install">Install</option>
+          <option value="server">Server (live)</option>${ankLiteMode ? '' : '<option value="service">Service (legacy)</option><option value="install">Install</option>'}
         </select>
         <label style="display:flex;align-items:center;gap:4px;font-size:12px;color:var(--text-secondary);cursor:pointer"><input type="checkbox" id="ank-mgr-log-auto" checked style="accent-color:var(--accent)"> Auto-scroll</label>
         <button class="btn btn-ghost btn-sm" id="ank-mgr-log-refresh"><i class="bi bi-arrow-clockwise"></i></button>
@@ -2528,7 +2537,7 @@ function showSettingsSection(section) {
         const data = await r.json();
         const el = document.getElementById('ank-mgr-logs');
         if (!el) return;
-        el.textContent = (data.lines && data.lines.length) ? data.lines.join('\n') : '(no log output yet)';
+        el.textContent = (data.lines && data.lines.length) ? data.lines.join('\n') : (ankLiteMode ? 'No logs yet — if ANK is not running, open ANK Installer and Start' : '(no log output yet)');
         if (document.getElementById('ank-mgr-log-auto')?.checked) el.scrollTop = el.scrollHeight;
       } catch(e) {}
     }
@@ -3038,7 +3047,7 @@ async function loadLogs(append) {
     const viewer = document.getElementById('log-viewer');
     if (!viewer) return;
     if (!data.lines || data.lines.length === 0) {
-      if (!append) viewer.innerHTML = '<div class="log-empty"><i class="bi bi-terminal"></i><p>No logs available</p></div>';
+      if (!append) viewer.innerHTML = `<div class="log-empty"><i class="bi bi-terminal"></i><p>${ankLiteMode ? 'No logs yet — if ANK is not running, open ANK Installer and Start' : 'No logs available'}</p></div>`;
       return;
     }
     if (append) {
@@ -3204,19 +3213,22 @@ document.getElementById('btn-create-container')?.addEventListener('click', async
 
 document.getElementById('create-form')?.addEventListener('submit', async (e) => {
   e.preventDefault();
-  const name = document.getElementById('container-name').value;
+  const name = document.getElementById('container-name').value.trim().toLowerCase().replace(/[^a-z0-9-]/g, '-');
   const imageVal = document.getElementById('container-image').value;
   const nodeId = document.getElementById('container-target-node')?.value || 'local';
   const isRemote = nodeId !== 'local';
+  if (!name) { toast('Container name required', 'warning'); return; }
   if (imageVal.startsWith('template:')) {
     const templateId = imageVal.replace('template:', '');
     const rootPass = document.getElementById('container-root-password').value || 'ank123';
+    if (!cachedTemplates.length) await loadImages();
     const tpl = cachedTemplates.find(t => t.id === templateId);
     const imageField = tpl ? tpl.image : templateId;
     try {
       if (isRemote) {
         toast(`Deploying on remote...`, 'info');
-        await api('POST', `/nodes/${encodeURIComponent(nodeId)}/containers`, { name, image: imageField, root_password: rootPass });
+        await api('POST', `/nodes/${encodeURIComponent(nodeId)}/containers`, { name, image: imageField, template: templateId, root_password: rootPass });
+        setTimeout(() => { loadContainers(); pollRemoteContainerStatus(nodeId, name, 0); }, 1000);
       } else {
         toast(`Deploying as "${name}"...`, 'info');
         await api('POST', '/images/deploy', { template: templateId, name, root_password: rootPass });
@@ -3238,7 +3250,10 @@ document.getElementById('create-form')?.addEventListener('submit', async (e) => 
   const sshPortVal = document.getElementById('container-ssh-port').value;
   if (sshPortVal) data.ssh_port = parseInt(sshPortVal);
   try {
-    if (isRemote) { await api('POST', `/nodes/${encodeURIComponent(nodeId)}/containers`, data); }
+    if (isRemote) {
+      await api('POST', `/nodes/${encodeURIComponent(nodeId)}/containers`, data);
+      setTimeout(() => { loadContainers(); pollRemoteContainerStatus(nodeId, name, 0); }, 1000);
+    }
     else { await api('POST', '/containers', data); }
     closeCreateModal();
     await loadContainers();
@@ -3390,26 +3405,22 @@ function applyLiteOverlay() {
   if (!ankLiteMode) return;
   document.body.classList.add('ank-lite');
 
-  // Networks page: full overlay
+  document.querySelectorAll('[data-page="networks"]').forEach(el => el.remove());
   const networksPage = document.getElementById('page-networks');
-  if (networksPage && !ankModeFeatures.network_isolation) {
-    const layout = networksPage.querySelector('.split-layout');
-    if (layout && !layout.classList.contains('lite-overlay')) {
-      layout.classList.add('lite-overlay');
-      const badge = document.createElement('div');
-      badge.className = 'lite-badge';
-      badge.innerHTML = '<i class="bi bi-globe2"></i><strong>Limited</strong><span>Network isolation not available in lite mode</span><small>Containers share host network</small>';
-      layout.appendChild(badge);
-    }
+  if (networksPage) networksPage.style.display = 'none';
+  if (_currentPage === 'networks') {
+    try { localStorage.removeItem('ank_tab'); sessionStorage.removeItem('ank_nav_page'); } catch (e) {}
+    navigateTo('dashboard');
   }
 
-  // Hide nav items that are disabled
-  if (!ankModeFeatures.network_isolation) {
-    document.querySelectorAll('[data-page="networks"]').forEach(el => {
-      el.style.opacity = '0.4';
-      el.title = 'Network isolation not available in lite mode';
-    });
-  }
+  document.querySelectorAll('[data-page="stacks"]').forEach(el => {
+    el.classList.add('nav-coming-soon');
+    el.title = 'Coming soon in lite mode';
+    const label = el.querySelector('.nav-label') || el.querySelector('span');
+    if (label && !label.querySelector('.coming-soon-badge')) label.insertAdjacentHTML('beforeend', ' <span class="coming-soon-badge">Soon</span>');
+  });
+  const createStackBtn = document.getElementById('btn-create-stack');
+  if (createStackBtn) createStackBtn.style.display = 'none';
 }
 
 /* ═══════ THEME TOGGLE ═══════ */

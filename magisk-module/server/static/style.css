@@ -1339,6 +1339,25 @@ tr:hover td { background: var(--bg-hover); }
   vertical-align: middle;
 }
 
+/* Lite mode coming soon nav */
+.nav-coming-soon {
+  opacity: 0.55;
+  pointer-events: none;
+}
+.coming-soon-badge {
+  display: inline-block;
+  background: var(--warning-dim);
+  color: var(--warning);
+  font-size: 8px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-weight: 700;
+  margin-left: 4px;
+  vertical-align: middle;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
 /* ═══════ TERMINAL PIP BAR ═══════ */
 .terminal-pip-bar {
   display: flex;
