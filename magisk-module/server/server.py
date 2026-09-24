@@ -2158,6 +2158,8 @@ small{color:#334155}
             self.api_backup_rename(path.split("/")[3], data)
         elif path.startswith("/api/backups/") and path.endswith("/delete"):
             self.api_backup_delete_file(path.split("/")[3], data)
+        elif path.startswith("/api/backups/") and path.endswith("/update"):
+            self.api_update_backup_routine(path.split("/")[3], data)
         elif path == "/api/nodes":
             self.api_add_node(data)
         elif path == "/api/nodes/pairing/send":
@@ -6547,6 +6549,62 @@ small{color:#334155}
             self.send_json({"success": ok})
         except Exception as e:
             self.send_json({"error": str(e)}, 500)
+
+    def api_update_backup_routine(self, routine_id, data):
+        bm = self._get_backup_manager()
+        if not bm:
+            self.send_json({"error": "backup_manager not available"}, 500)
+            return
+        if not isinstance(data, dict):
+            self.send_json({"error": "Request body must be a JSON object"}, 400)
+            return
+        routine = bm.get_routine(routine_id)
+        if not routine:
+            self.send_json({"error": "Routine not found"}, 404)
+            return
+        updates = {}
+        for key in ("name", "schedule", "containers", "source_type", "backup_mode", "encryption", "immutable", "enabled"):
+            if key in data:
+                updates[key] = data[key]
+        if "retention" in data or "retention_days" in data:
+            try:
+                updates["retention_days"] = int(data.get("retention", data.get("retention_days", routine.get("retention_days", 30))))
+            except (TypeError, ValueError):
+                self.send_json({"error": "retention must be an integer"}, 400)
+                return
+        if "remote" in data and isinstance(data["remote"], dict):
+            remote = dict(routine.get("remote", {}))
+            remote.update(data["remote"])
+            updates["remote"] = remote
+        elif any(k in data for k in ("remote_host", "remote_port", "remote_path", "ssh_user", "ssh_pass", "host", "port", "path", "user", "password")):
+            remote = dict(routine.get("remote", {}))
+            if "remote_host" in data or "host" in data:
+                remote["host"] = data.get("remote_host", data.get("host", remote.get("host", "")))
+            if "remote_port" in data or "port" in data:
+                try:
+                    remote["port"] = int(data.get("remote_port", data.get("port", remote.get("port", 22))))
+                except (TypeError, ValueError):
+                    self.send_json({"error": "port must be an integer"}, 400)
+                    return
+            if "remote_path" in data or "path" in data:
+                remote["path"] = data.get("remote_path", data.get("path", remote.get("path", "/backups/ank")))
+            if "ssh_user" in data or "user" in data:
+                remote["user"] = data.get("ssh_user", data.get("user", remote.get("user", "root")))
+            if "ssh_pass" in data or "password" in data:
+                remote["password"] = data.get("ssh_pass", data.get("password", remote.get("password", "")))
+            updates["remote"] = remote
+        if not updates:
+            self.send_json({"error": "No fields to update"}, 400)
+            return
+        try:
+            result = bm.update_routine(routine_id, updates)
+        except Exception as e:
+            self.send_json({"error": str(e)}, 500)
+            return
+        if not result:
+            self.send_json({"error": "Routine not found"}, 404)
+            return
+        self.send_json(result)
 
     # ============================================================
     # Nodes API

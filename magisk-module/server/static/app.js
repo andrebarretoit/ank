@@ -729,7 +729,6 @@ async function showContainerDetail(name, nodeId) {
             <button class="btn btn-success btn-sm" id="detail-start" onclick="startContainer('${esc(name)}')" ${dis.start?'disabled':''}><i class="bi bi-play-fill"></i> Start</button>
             <button class="btn btn-secondary btn-sm" id="detail-stop" onclick="stopContainer('${esc(name)}')" ${dis.stop?'disabled':''}><i class="bi bi-stop-fill"></i> Stop</button>
             <button class="btn btn-primary btn-sm" id="detail-restart" onclick="restartContainer('${esc(name)}')" ${dis.restart?'disabled':''}><i class="bi bi-arrow-repeat"></i></button>
-            <button class="btn btn-secondary btn-sm" onclick="execInContainer('${esc(name)}')" ${dis.exec||s!=='running'?'disabled':''} title="Run command"><i class="bi bi-terminal"></i> Exec</button>
             <button class="btn btn-danger btn-sm" id="detail-delete" onclick="deleteContainer('${esc(name)}')" ${dis.delete?'disabled':''}><i class="bi bi-trash3"></i></button>
           `}
         </div>
@@ -818,22 +817,25 @@ async function showContainerDetail(name, nodeId) {
       </div>
 
       <div class="detail-tab-content" id="dtab-backup">
-        <form id="detail-backup-form">
-          <div class="settings-section">
-            <div class="settings-section-title"><i class="bi bi-cloud-arrow-up"></i> Create Backup Routine</div>
-            <div class="form-group"><label class="form-label">Source Path</label><input type="text" class="form-input" id="detail-backup-source" placeholder="/data" value="/data"></div>
-            <div class="form-group"><label class="form-label">Remote Host (SSH)</label><input type="text" class="form-input" id="detail-backup-host" placeholder="192.168.1.100"></div>
-            <div class="form-row">
-              <div class="form-group"><label class="form-label">Remote Path</label><input type="text" class="form-input" id="detail-backup-rpath" value="/backups/ank"></div>
-              <div class="form-group"><label class="form-label">SSH Password</label><input type="password" class="form-input" id="detail-backup-pass" placeholder="ssh password"></div>
-            </div>
-            <div class="form-row">
-              <div class="form-group"><label class="form-label">Schedule (cron)</label><input type="text" class="form-input" id="detail-backup-cron" placeholder="0 2 * * *" value="0 2 * * *"></div>
-              <div class="form-group"><label class="form-label">Retention (days)</label><input type="number" class="form-input" id="detail-backup-retention" value="30" min="1"></div>
-            </div>
+        <div class="settings-section">
+          <div class="settings-section-title"><i class="bi bi-cloud-arrow-up"></i> Backup Status</div>
+          <div id="detail-backup-status"><div style="color:var(--text-muted);font-size:13px">Loading...</div></div>
+        </div>
+        <div class="settings-section">
+          <div class="settings-section-title"><i class="bi bi-link-45deg"></i> Add to Existing Routine</div>
+          <div class="form-group">
+            <label class="form-label">Routine</label>
+            <select class="form-select" id="detail-backup-attach-routine">
+              <option value="">Loading routines...</option>
+            </select>
+            <small class="form-hint">Only container backup routines are listed</small>
           </div>
-          <button type="submit" class="btn btn-primary"><i class="bi bi-cloud-arrow-up"></i> Create Backup Routine</button>
-        </form>
+          <button type="button" class="btn btn-primary" id="detail-backup-attach-btn"><i class="bi bi-plus-lg"></i> Add to Routine</button>
+        </div>
+        <div class="settings-section">
+          <div class="settings-section-title"><i class="bi bi-plus-circle"></i> Create New</div>
+          <button type="button" class="btn btn-secondary" onclick="openBackupWizardForContainer('${esc(name)}')"><i class="bi bi-cloud-arrow-up"></i> Open Backup Wizard</button>
+        </div>
       </div>
 
       <div class="detail-tab-content" id="dtab-settings">
@@ -910,6 +912,7 @@ async function showContainerDetail(name, nodeId) {
           fileContainerName = currentContainer.name; fileCurrentPath = '/'; closeEditor(); loadFiles();
         }
         if (tab.dataset.dtab === 'services' && currentContainer) loadTaskManager();
+        if (tab.dataset.dtab === 'backup' && currentContainer) loadContainerBackupTab(currentContainer.name);
       });
     });
 
@@ -994,27 +997,10 @@ async function showContainerDetail(name, nodeId) {
     document.getElementById('file-btn-save')?.addEventListener('click', saveFile);
     document.getElementById('file-btn-close-editor')?.addEventListener('click', closeEditor);
     document.getElementById('file-btn-upload')?.addEventListener('click', () => document.getElementById('file-upload-input')?.click());
-    document.getElementById('file-upload-input')?.addEventListener('change', (e) => { uploadToContainer(e.target.files); e.target.value = ''; });
+    document.getElementById('file-upload-input')?.addEventListener('change', (e) => { uploadToContainer(e.target.files); e.target.value=''; });
 
-    // Backup form handler
-    document.getElementById('detail-backup-form')?.addEventListener('submit', async (e) => {
-      e.preventDefault();
-      if (!currentContainer) return;
-      const routineName = `${currentContainer.name}-backup`;
-      try {
-        await api('POST', '/backups', {
-          name: routineName,
-          source: document.getElementById('detail-backup-source')?.value || '/data',
-          remote_host: document.getElementById('detail-backup-host')?.value || '',
-          remote_path: document.getElementById('detail-backup-rpath')?.value || '/backups/ank',
-          ssh_user: 'root',
-          ssh_pass: document.getElementById('detail-backup-pass')?.value || '',
-          schedule: document.getElementById('detail-backup-cron')?.value || '0 2 * * *',
-          retention: parseInt(document.getElementById('detail-backup-retention')?.value || '30')
-        });
-        toast(`Backup routine "${routineName}" created`, 'success');
-      } catch (e) { toast(`Failed: ${e.message}`, 'error'); }
-    });
+    // Backup attach button
+    document.getElementById('detail-backup-attach-btn')?.addEventListener('click', () => attachContainerToBackupRoutine());
 
     // Start log polling for running containers
     if (s === 'running') {
@@ -1076,14 +1062,6 @@ function removePort(idx) {
 async function startContainer(name) { setContainerLoading(name,'start'); try { await api('POST',`/containers/${name}/start`); toast(`Starting "${name}"...`,'info'); pollContainerStatus(name,0); } catch(e) { toast(`Failed: ${e.message}`,'error'); clearContainerLoading(name); } }
 async function stopContainer(name) { setContainerLoading(name,'stop'); try { await api('POST',`/containers/${name}/stop`); toast(`Stopping "${name}"...`,'info'); pollContainerStatus(name,0); } catch(e) { toast(`Failed: ${e.message}`,'error'); clearContainerLoading(name); } }
 async function restartContainer(name) { setContainerLoading(name,'restart'); try { await api('POST',`/containers/${name}/restart`); toast(`Restarting "${name}"...`,'info'); pollContainerStatus(name,0); } catch(e) { toast(`Failed: ${e.message}`,'error'); clearContainerLoading(name); } }
-async function execInContainer(name) {
-  const cmd = prompt(`Run command in "${name}":`);
-  if (!cmd || !cmd.trim()) return;
-  try {
-    const data = await api('POST', `/containers/${encodeURIComponent(name)}/exec`, { command: cmd });
-    openModal(`Exec — ${name}`, `<pre style="max-height:400px;overflow:auto;font-size:11px;font-family:monospace;white-space:pre-wrap;margin:0">${esc((data.stdout||'') + (data.stderr||'') || '(no output)')}</pre>`);
-  } catch(e) { toast(`Failed: ${e.message}`, 'error'); }
-}
 async function deleteContainer(name) { const ok = await confirmAction('Delete Container',`Delete "${name}"? This cannot be undone.`); if (!ok) return; try { await api('DELETE',`/containers/${name}`); if(detailLogTimer){clearInterval(detailLogTimer);detailLogTimer=null;} closeContainerTerminal(); currentContainer=null; toast(`Deleted "${name}"`,'success'); loadContainers(); document.getElementById('container-detail').innerHTML='<div class="split-right-empty"><div><i class="bi bi-box-seam"></i><p>Select a container to manage</p></div></div>'; } catch(e) { toast(`Failed: ${e.message}`,'error'); } }
 
 let containerBusy = {};
@@ -1791,7 +1769,7 @@ async function loadBackups() {
   try {
     const data = await api('GET', '/backups');
     const routines = data.routines || [];
-    if (!routines.length) { el.innerHTML = '<div class="empty-state"><i class="bi bi-cloud-arrow-up"></i><h3>No backup routines</h3><p>Create a backup routine to protect your containers</p><button class="btn btn-primary" onclick="document.getElementById(\'backup-modal-overlay\').classList.add(\'active\')"><i class="bi bi-plus-lg"></i> Create Routine</button></div>'; const btn = document.getElementById('btn-create-backup'); if (btn) btn.style.display = ''; return; }
+    if (!routines.length) { el.innerHTML = '<div class="empty-state"><i class="bi bi-cloud-arrow-up"></i><h3>No backup routines</h3><p>Create a backup routine to protect your containers</p><button class="btn btn-primary" onclick="openBackupWizardForContainer(\'\')"><i class="bi bi-plus-lg"></i> Create Routine</button></div>'; const btn = document.getElementById('btn-create-backup'); if (btn) btn.style.display = ''; return; }
     const btn = document.getElementById('btn-create-backup'); if (btn) btn.style.display = '';
     el.innerHTML = routines.map(r => {
       const lastRun = r.last_run ? new Date(r.last_run).toLocaleString() : 'Never';
@@ -1955,10 +1933,148 @@ async function deleteBackupFile(routineId, fileName) {
   } catch(e) { toast(`Failed: ${e.message}`, 'error'); }
 }
 
-document.getElementById('btn-create-backup')?.addEventListener('click', () => {
+/* ═══════ CONTAINER BACKUP TAB ═══════ */
+const CONTAINER_COMPATIBLE_SOURCE_TYPES = new Set(['container_full', 'container_selective', 'container_file']);
+
+function _isContainerRoutine(r) {
+  return CONTAINER_COMPATIBLE_SOURCE_TYPES.has(r.source_type || 'container_full');
+}
+
+async function loadContainerBackupTab(containerName) {
+  const statusEl = document.getElementById('detail-backup-status');
+  const selectEl = document.getElementById('detail-backup-attach-routine');
+  if (!statusEl || !selectEl) return;
+  statusEl.innerHTML = '<div style="color:var(--text-muted);font-size:13px">Loading...</div>';
+  selectEl.innerHTML = '<option value="">Loading routines...</option>';
+  try {
+    const data = await api('GET', '/backups');
+    const routines = (data.routines || []).filter(_isContainerRoutine);
+    const mine = routines.filter(r => Array.isArray(r.containers) && r.containers.includes(containerName));
+    if (!mine.length) {
+      statusEl.innerHTML = '<div style="display:flex;align-items:center;gap:8px;padding:10px 12px;background:var(--bg-tertiary);border-radius:8px;font-size:13px;color:var(--text-muted)"><i class="bi bi-info-circle"></i> This container is not in any backup routine</div>';
+    } else {
+      statusEl.innerHTML = mine.map(r => {
+        const lastRun = r.last_run ? new Date(r.last_run).toLocaleString() : 'Never';
+        const statusColor = r.last_status === 'success' ? 'var(--success)' : r.last_status === 'failed' ? 'var(--danger)' : 'var(--text-muted)';
+        const srcLabel = r._source_type_label || r.source_type || '-';
+        return `<div style="display:flex;align-items:center;gap:10px;padding:10px 12px;background:var(--bg-tertiary);border-radius:8px;margin-bottom:6px;font-size:13px">
+          <span style="width:8px;height:8px;border-radius:50%;background:${statusColor};flex-shrink:0"></span>
+          <div style="flex:1;min-width:0">
+            <div style="font-weight:600">${esc(r.name || r.id)}</div>
+            <div style="font-size:11px;color:var(--text-muted)">${esc(srcLabel)} · ${esc(r.schedule || 'Manual')} · Ret: ${r.retention_days || 30}d · Last: ${lastRun}</div>
+          </div>
+          <button class="btn btn-ghost btn-sm" onclick="navigateTo('backups');showBackupDetail('${esc(r.id || r.name)}')" title="Open routine"><i class="bi bi-box-arrow-up-right"></i></button>
+        </div>`;
+      }).join('');
+    }
+    const available = routines.filter(r => !(Array.isArray(r.containers) && r.containers.includes(containerName)));
+    if (!available.length) {
+      selectEl.innerHTML = '<option value="">No other routines available</option>';
+    } else {
+      selectEl.innerHTML = '<option value="">Select a routine...</option>' + available.map(r =>
+        `<option value="${esc(r.id || r.name)}">${esc(r.name || r.id)} (${esc(r._source_type_label || r.source_type || '-')})</option>`
+      ).join('');
+    }
+  } catch (e) {
+    statusEl.innerHTML = `<div style="color:var(--danger);font-size:13px">${esc(e.message || 'Failed to load')}</div>`;
+    selectEl.innerHTML = '<option value="">Failed to load</option>';
+  }
+}
+
+async function attachContainerToBackupRoutine() {
+  if (!currentContainer) return;
+  const selectEl = document.getElementById('detail-backup-attach-routine');
+  const routineId = selectEl?.value;
+  if (!routineId) { toast('Select a routine first', 'warning'); return; }
+  const btn = document.getElementById('detail-backup-attach-btn');
+  try {
+    if (btn) btn.disabled = true;
+    const routine = await api('GET', `/backups/${encodeURIComponent(routineId)}`);
+    const containers = Array.isArray(routine.containers) ? [...routine.containers] : [];
+    if (containers.includes(currentContainer.name)) {
+      toast('Container already in this routine', 'info');
+      return;
+    }
+    containers.push(currentContainer.name);
+    await api('POST', `/backups/${encodeURIComponent(routineId)}/update`, { containers });
+    toast(`Added "${currentContainer.name}" to "${routine.name || routineId}"`, 'success');
+    loadContainerBackupTab(currentContainer.name);
+  } catch (e) {
+    toast(`Failed: ${e.message}`, 'error');
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+function openBackupWizardForContainer(containerName) {
+  pendingBackupContainer = containerName || '';
   backupWizardReset();
+  loadBackupExistingConnections();
+  document.getElementById('backup-modal-overlay')?.classList.add('active');
+}
+
+let pendingBackupContainer = '';
+let backupExistingConns = [];
+
+async function loadBackupExistingConnections() {
+  const sel = document.getElementById('backup-existing-conn');
+  if (!sel) return;
+  try {
+    const data = await api('GET', '/backups');
+    const routines = data.routines || [];
+    const seen = new Set();
+    backupExistingConns = [];
+    for (const r of routines) {
+      const rem = r.remote || {};
+      if (!rem.host) continue;
+      const key = `${rem.host}:${rem.port || 22}:${rem.user || 'root'}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      backupExistingConns.push({
+        key,
+        host: rem.host,
+        port: rem.port || 22,
+        user: rem.user || 'root',
+        path: rem.path || '/backups/ank',
+        password: rem.password || '',
+        routineName: r.name || r.id
+      });
+    }
+    if (!backupExistingConns.length) {
+      sel.innerHTML = '<option value="">— Enter manually —</option>';
+      return;
+    }
+    sel.innerHTML = '<option value="">— Enter manually —</option>' + backupExistingConns.map(c =>
+      `<option value="${esc(c.key)}">${esc(c.user)}@${esc(c.host)}:${c.port} (${esc(c.routineName)})</option>`
+    ).join('');
+  } catch(e) {
+    sel.innerHTML = '<option value="">— Enter manually —</option>';
+  }
+}
+
+function applyBackupExistingConnection(key) {
+  if (!key) return;
+  const c = backupExistingConns.find(x => x.key === key);
+  if (!c) return;
+  const set = (id, val) => { const el = document.getElementById(id); if (el) el.value = val; };
+  set('backup-remote-host', c.host);
+  set('backup-remote-port', String(c.port));
+  set('backup-ssh-user', c.user);
+  set('backup-remote-path', c.path);
+  set('backup-ssh-pass', c.password);
+  backupTestPassed = false;
+  const result = document.getElementById('backup-test-result');
+  if (result) { result.textContent = 'Connection prefilled — Next will test it'; result.style.color = 'var(--text-muted)'; }
+}
+
+document.getElementById('btn-create-backup')?.addEventListener('click', () => {
+  pendingBackupContainer = '';
+  backupWizardReset();
+  loadBackupExistingConnections();
   document.getElementById('backup-modal-overlay').classList.add('active');
 });
+
+document.getElementById('backup-existing-conn')?.addEventListener('change', e => applyBackupExistingConnection(e.target.value));
 
 let backupWizardStep = 1;
 let backupTestPassed = false;
@@ -1974,6 +2090,8 @@ function backupWizardReset() {
   document.getElementById('backup-next-btn').style.display = '';
   document.getElementById('backup-create-btn').style.display = 'none';
   document.getElementById('backup-test-result').textContent = '';
+  const connSel = document.getElementById('backup-existing-conn');
+  if (connSel) connSel.value = '';
 }
 
 function backupWizardNav(dir) {
@@ -2043,7 +2161,11 @@ async function loadBackupSources() {
     if (srcType === 'container_full' || srcType === 'container_selective' || srcType === 'container_file') {
       const containers = await api('GET', '/containers/all');
       if (!containers.length) { el.innerHTML = '<div style="text-align:center;padding:20px;color:var(--text-muted)">No containers found</div>'; return; }
-      el.innerHTML = containers.map(c => `<label class="backup-source-item" data-name="${esc(c.name)}"><input type="checkbox" value="${esc(c.name)}" checked><span class="bi ${c.status==='running'?'bi-play-circle-fill':'bi-stop-circle'}" style="color:${c.status==='running'?'var(--green)':'var(--text-muted)'}"></span><span>${esc(c.name)}</span><span style="margin-left:auto;font-size:11px;color:var(--text-muted)">${esc(c.image||'-')}</span></label>`).join('');
+      const only = pendingBackupContainer;
+      el.innerHTML = containers.map(c => {
+        const checked = only ? (c.name === only) : true;
+        return `<label class="backup-source-item" data-name="${esc(c.name)}"><input type="checkbox" value="${esc(c.name)}" ${checked ? 'checked' : ''}><span class="bi ${c.status==='running'?'bi-play-circle-fill':'bi-stop-circle'}" style="color:${c.status==='running'?'var(--green)':'var(--text-muted)'}"></span><span>${esc(c.name)}</span><span style="margin-left:auto;font-size:11px;color:var(--text-muted)">${esc(c.image||'-')}</span></label>`;
+      }).join('');
     } else {
       el.innerHTML = '<div style="text-align:center;padding:20px;color:var(--text-muted)">Full system backup — no selection needed</div>';
     }
@@ -2554,8 +2676,8 @@ function initContainerTerminal() {
     xtermWs = new WebSocket(wsUrl);
     xtermWs.onopen = () => { xtermTerminal.focus(); };
     xtermWs.onmessage = ev => { xtermTerminal.write(ev.data); };
-    xtermWs.onclose = () => { xtermTerminal.writeln('\r\n\x1b[31m[Connection closed]\x1b[0m'); };
-    xtermWs.onerror = () => { xtermTerminal.writeln('\r\n\x1b[31m[Connection error]\x1b[0m'); };
+    xtermWs.onclose = () => { if (xtermTerminal) xtermTerminal.writeln('\r\n\x1b[31m[Connection closed]\x1b[0m'); };
+    xtermWs.onerror = () => { if (xtermTerminal) xtermTerminal.writeln('\r\n\x1b[31m[Connection error]\x1b[0m'); };
     xtermTerminal.onData(data => { if (xtermWs && xtermWs.readyState === WebSocket.OPEN) xtermWs.send(JSON.stringify({ type: 'input', data })); });
     const resize = () => { const rect = termWrap.getBoundingClientRect(); const cols = Math.floor(rect.width/8.4); const rows = Math.floor(rect.height/18); if (cols>0&&rows>0) { xtermTerminal.resize(cols,rows); if (xtermWs&&xtermWs.readyState===WebSocket.OPEN) xtermWs.send(JSON.stringify({type:'resize',cols,rows})); } };
     window.addEventListener('resize', resize);
