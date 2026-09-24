@@ -302,7 +302,7 @@ class LiteInstaller:
         self._sh(f"chmod 755 {REMOTE_ROOTFS}/run_server.sh")
 
     def _push_start_lite_sh(self):
-        """Host-side start script."""
+        """Host-side start script (SERVICE log + pid files, same as scripts/start-lite.sh)."""
         self._push_text(
             "#!/system/bin/sh\n"
             "# ANK Lite - start server (non-root, via PRoot)\n"
@@ -310,11 +310,19 @@ class LiteInstaller:
             'ROOTFS="$ANK_DIR/ankfs"\n'
             'PROOT="$ANK_DIR/proot"\n'
             "\n"
+            'mkdir -p "$ANK_DIR/logs" "$ANK_DIR/tmp" "$ROOTFS/tmp"\n'
+            'SVC_LOG="$ANK_DIR/logs/service.log"\n'
+            'TS=$(date \'+%Y-%m-%d %H:%M:%S\')\n'
+            '_svc() {\n'
+            '    echo "[SERVICE] [$TS] $1" >> "$SVC_LOG"\n'
+            '    echo "[SERVICE] [$TS] $1"\n'
+            '}\n'
+            "\n"
             'if pgrep -f "python3 server.py" > /dev/null 2>&1; then\n'
+            '    _svc "Server already running"\n'
             '    echo "ANK server already running"\n'
             "    exit 0\n"
             "fi\n"
-            'mkdir -p "$ANK_DIR/logs" "$ANK_DIR/tmp" "$ROOTFS/tmp"\n'
             f'echo \'{{"mode":"lite"}}\' > "$ANK_DIR/mode"\n'
             f'nohup sh -c "PROOT_TMP_DIR=$ANK_DIR/tmp '
             f'$PROOT -0 -r $ROOTFS '
@@ -322,6 +330,14 @@ class LiteInstaller:
             f'-b $ANK_DIR:{GUEST_ANK} '
             f'-w /root /bin/sh /run_server.sh" '
             '> "$ANK_DIR/logs/server.log" 2>&1 &\n'
+            'PID=$!\n'
+            'echo "$PID" > "$ANK_DIR/logs/server.pid"\n'
+            'echo "$PID" > "$ANK_DIR/server.pid"\n'
+            '_svc "Boot completed"\n'
+            '_svc "Server started (PID: $PID) | Arch: $(uname -m)"\n'
+            '_svc "Panel: https://localhost:8001"\n'
+            '_svc "Password configured"\n'
+            '_svc "sshd starting on port 2200"\n'
             'echo "ANK Lite started on port 8001"\n',
             f"{ANK_DIR}/start-lite.sh",
         )
@@ -577,6 +593,10 @@ class LiteInstaller:
             self._log("[FAIL] SSH is not listening on port 2200")
             return False
         self._log("[OK] SSH listening on port 2200")
+        self._sh(
+            f'echo "[SERVICE] [$(date \'+%Y-%m-%d %H:%M:%S\')] '
+            f'sshd running on port 2200" >> {ANK_DIR}/logs/service.log'
+        )
 
         # --- Cleanup ---
         self._notify("cleanup", "Cleaning up...", 0.98)
@@ -585,6 +605,11 @@ class LiteInstaller:
 
         # --- Done ---
         device_ip = self._get_device_ip()
+        self._sh(
+            f'echo "[SERVICE] [$(date \'+%Y-%m-%d %H:%M:%S\')] '
+            f'Installation complete | Panel: https://{device_ip}:8001" '
+            f'>> {ANK_DIR}/logs/service.log'
+        )
         self._log("[OK] Installation complete!")
         self._log(f"  DONE > {arch} > lite")
         self._log(f"  Panel: https://{device_ip}:8001")

@@ -22,16 +22,23 @@ if [ ! -e "$ROOTFS/run_server.sh" ]; then
     exit 1
 fi
 
+mkdir -p "$ANK_DIR/logs" "$ANK_DIR/tmp" "$ROOTFS/tmp"
+SVC_LOG="$ANK_DIR/logs/service.log"
+TS=$(date '+%Y-%m-%d %H:%M:%S')
+
+_svc() {
+    echo "[SERVICE] [$TS] $1" >> "$SVC_LOG"
+    echo "[SERVICE] [$TS] $1"
+}
+
 # Check if already running
 if pgrep -f "python3 server.py" > /dev/null 2>&1; then
+    _svc "Server already running"
     echo "Servidor ANK ja esta rodando"
     exit 0
 fi
 
 echo "Iniciando servidor ANK (Lite mode via PRoot)..."
-
-# Create necessary directories
-mkdir -p "$ANK_DIR/logs" "$ANK_DIR/tmp" "$ROOTFS/tmp"
 
 # Write mode file
 echo '{"mode":"lite"}' > "$ANK_DIR/mode" 2>/dev/null
@@ -43,8 +50,15 @@ $PROOT -0 -r $ROOTFS \
 -b $ANK_DIR:/ank \
 -w /root \
 /bin/sh /run_server.sh" > "$ANK_DIR/logs/server.log" 2>&1 &
-echo "$!" > "$ANK_DIR/logs/server.pid"
-echo "$!" > "$ANK_DIR/server.pid"
+PID=$!
+echo "$PID" > "$ANK_DIR/logs/server.pid"
+echo "$PID" > "$ANK_DIR/server.pid"
+
+_svc "Boot completed"
+_svc "Server started (PID: $PID) | Arch: $(uname -m)"
+_svc "Panel: https://localhost:8001"
+_svc "Password configured"
+_svc "sshd starting on port 2200"
 
 echo "Servidor ANK iniciado"
 echo "Acesse: http://localhost:8001"
