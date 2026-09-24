@@ -210,10 +210,25 @@ def _install_ankd(merged, image, ssh_port):
 # Container Lifecycle
 # ============================================================
 
+def _append_container_log(name, msg):
+    try:
+        os.makedirs(LOGS_DIR, exist_ok=True)
+        path = os.path.join(LOGS_DIR, f"{name}.log")
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        with open(path, "a") as f:
+            f.write(f"[{ts}] {msg}\n")
+    except Exception:
+        pass
+
+
 def run_in_container(name, cmd, timeout=120):
     merged = os.path.join(CONTAINERS_DIR, name, "merged")
     if not os.path.exists(merged):
         return subprocess.CompletedProcess(cmd, 1, "", "Container rootfs missing")
+    if not os.path.isfile(PROOT_BIN) or not os.access(PROOT_BIN, os.X_OK):
+        msg = f"PRoot binary missing or not executable: {PROOT_BIN}"
+        _append_container_log(name, f"ERROR: {msg}")
+        return subprocess.CompletedProcess(cmd, 1, "", msg)
     wrapped = "export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin HOME=/root TERM=xterm-256color LANG=C.UTF-8; " + cmd
     env = dict(os.environ)
     proot_tmp = os.path.join(ANK_DIR, "tmp")
@@ -228,10 +243,17 @@ def run_in_container(name, cmd, timeout=120):
         "-w", "/root",
         "/bin/sh", "-c", wrapped,
     ]
+    _append_container_log(name, f"RUN: {cmd[:200]}")
     try:
-        return subprocess.run(
+        r = subprocess.run(
             argv, capture_output=True, text=True, timeout=timeout, env=env
         )
+        if r.returncode != 0:
+            _append_container_log(
+                name,
+                f"RUN fail rc={r.returncode}: {(r.stderr or r.stdout or '')[:300]}"
+            )
+        return r
     except subprocess.TimeoutExpired as e:
         out = e.stdout or ""
         err = e.stderr or ""
@@ -239,10 +261,12 @@ def run_in_container(name, cmd, timeout=120):
             out = out.decode("utf-8", errors="replace")
         if isinstance(err, bytes):
             err = err.decode("utf-8", errors="replace")
+        _append_container_log(name, f"RUN timeout after {timeout}s: {cmd[:120]}")
         return subprocess.CompletedProcess(
             cmd, -1, (out or "") + (err or ""), f"TIMEOUT after {timeout}s"
         )
     except Exception as e:
+        _append_container_log(name, f"RUN exception: {e}")
         return subprocess.CompletedProcess(cmd, 1, "", str(e))
 
 
@@ -264,6 +288,31 @@ def create_container(name, image="alpine-3.20", root_password="ank123",
     if image.startswith("alpine-"):
         image = f"ank-alpinebase-{image[7:]}"
 
+    def _fail(msg):
+        _append_container_log(name, f"ERROR: {msg}")
+        try:
+            os.makedirs(existing, exist_ok=True)
+            _save_container_config(name, {
+                "name": name,
+                "status": "failed",
+                "image": image,
+                "mode": "lite",
+                "ssh_port": int(ssh_port),
+                "ankd_port": int(ankd_port),
+                "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "pid": None,
+                "error": str(msg)[:500],
+            })
+        except Exception:
+            pass
+        return False, msg
+
+    _append_container_log(name, f"CREATE start image={image} ssh={ssh_port} ankd={ankd_port}")
+    _append_container_log(name, f"ANK_DIR={ANK_DIR} IMAGES_DIR={IMAGES_DIR} PROOT={PROOT_BIN}")
+
+    if not os.path.isfile(PROOT_BIN):
+        return _fail(f"PRoot not found at {PROOT_BIN}")
+
     base = None
     image_dir = os.path.join(IMAGES_DIR, image)
     if os.path.lexists(os.path.join(image_dir, "bin", "sh")):
@@ -273,10 +322,16 @@ def create_container(name, image="alpine-3.20", root_password="ank123",
         if os.path.lexists(os.path.join(fallback_dir, "bin", "sh")):
             base = fallback_dir
     if not base:
-        return False, (
+        try:
+            listing = os.listdir(IMAGES_DIR) if os.path.isdir(IMAGES_DIR) else []
+        except Exception:
+            listing = []
+        return _fail(
             f"No usable base image for '{image}' "
-            f"(need {image_dir} or {os.path.join(IMAGES_DIR, 'ank-alpinebase-3.20')} with bin/sh)"
+            f"(need {image_dir} or {os.path.join(IMAGES_DIR, 'ank-alpinebase-3.20')} with bin/sh); "
+            f"IMAGES_DIR listing={listing[:20]}"
         )
+    _append_container_log(name, f"base={base}")
 
     merged = os.path.join(existing, "merged")
     os.makedirs(merged, exist_ok=True)
@@ -285,7 +340,8 @@ def create_container(name, image="alpine-3.20", root_password="ank123",
     try:
         shutil.copytree(base, merged, dirs_exist_ok=True, symlinks=True)
     except Exception as e:
-        return False, f"Failed to copy rootfs: {e}"
+        return _fail(f"Failed to copy rootfs: {e}")
+    _append_container_log(name, "rootfs copied")
 
     dev_dir = os.path.join(merged, "dev")
     os.makedirs(dev_dir, exist_ok=True)
@@ -301,7 +357,16 @@ def create_container(name, image="alpine-3.20", root_password="ank123",
     with open(hosts, "w") as f:
         f.write("127.0.0.1 localhost\n")
 
-    _install_ankd(merged, image, int(ssh_port))
+    ankd_ok = _install_ankd(merged, image, int(ssh_port))
+    _append_container_log(name, f"ankd install={'ok' if ankd_ok else 'skipped'}")
+
+    # Smoke-test nested proot before declaring success
+    smoke = run_in_container(name, "/bin/sh -c 'echo lite-ok'", timeout=30)
+    if smoke.returncode != 0:
+        _append_container_log(name, f"proot smoke failed: {smoke.stderr or smoke.stdout}")
+        # Non-fatal: packages may still work; continue but record
+    else:
+        _append_container_log(name, "proot smoke ok")
 
     if packages:
         pkg_list = packages if isinstance(packages, str) else " ".join(packages)
@@ -344,6 +409,7 @@ def create_container(name, image="alpine-3.20", root_password="ank123",
         "root_password": root_password,
     }
     _save_container_config(name, config)
+    _append_container_log(name, f"CREATE ok status=stopped ssh={ssh_port} ankd={ankd_port}")
     _log(f"Container '{name}' created (ssh={ssh_port}, ankd={ankd_port})")
     return True, config
 
@@ -361,6 +427,12 @@ def start_container(name):
         return False, "Container rootfs missing"
 
     _log(f"Starting '{name}'...")
+    _append_container_log(name, "START begin")
+
+    if not os.path.isfile(PROOT_BIN):
+        msg = f"PRoot not found at {PROOT_BIN}"
+        _append_container_log(name, f"ERROR: {msg}")
+        return False, msg
 
     ssh_port = int(config.get("ssh_port") or 2201)
     ankd_port = int(config.get("ankd_port") or 50000)
@@ -370,7 +442,7 @@ def start_container(name):
     if os.path.exists(ankd_sh):
         inner = (
             "export PATH=/bin:/sbin:/usr/bin:/usr/sbin HOME=/root TERM=xterm-256color "
-            f"LANG=C.UTF-8 LD_LIBRARY_PATH={merged}/lib:{merged}/usr/lib; "
+            "LANG=C.UTF-8 LD_LIBRARY_PATH=/lib:/usr/lib:/lib64:/usr/lib64; "
             f"ANKD_CONTAINER={name} ANKD_SSHD_PORT={ssh_port} ANKD_PORT={ankd_port} "
             f"ANKD_INSTANCE_UUID={instance_uuid} ANK_HEALTH_FILE=/tmp/ank-health "
             "/usr/ankd/core/ankd.sh daemon"
@@ -378,7 +450,7 @@ def start_container(name):
     else:
         inner = (
             "export PATH=/bin:/sbin:/usr/bin:/usr/sbin HOME=/root TERM=xterm-256color "
-            f"LANG=C.UTF-8 LD_LIBRARY_PATH={merged}/lib:{merged}/usr/lib; "
+            "LANG=C.UTF-8 LD_LIBRARY_PATH=/lib:/usr/lib:/lib64:/usr/lib64; "
             "trap '' HUP PIPE; _ank_exit=0; trap '_ank_exit=1' TERM INT; "
             "mkdir -p /run/sshd 2>/dev/null; "
             f"hostname {name} 2>/dev/null; "
@@ -436,6 +508,7 @@ def start_container(name):
         time.sleep(2)
         if proc.poll() is not None:
             _log(f"ERROR: start '{name}': process died immediately after start")
+            _append_container_log(name, f"START failed: process died rc={proc.poll()}")
             config["pid"] = None
             config["status"] = "failed"
             _save_container_config(name, config)
@@ -448,10 +521,12 @@ def start_container(name):
         _start_port_proxies(name, config)
 
         _log(f"Container '{name}' started (pid={proc.pid})")
+        _append_container_log(name, f"START ok pid={proc.pid}")
         return True, config
 
     except Exception as e:
         _log(f"ERROR: start '{name}': {e}")
+        _append_container_log(name, f"START exception: {e}")
         config["pid"] = None
         config["status"] = "failed"
         _save_container_config(name, config)

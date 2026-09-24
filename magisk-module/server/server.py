@@ -3952,28 +3952,30 @@ small{color:#334155}
         ssh_port = self._find_free_port(2201)
         ankd_port = self._find_free_ankd_port()
 
-        if not is_lite():
-            stub_dir = os.path.join(CONTAINERS_DIR, container_name)
-            os.makedirs(stub_dir, exist_ok=True)
-            stub_config = {
-                "name": container_name,
-                "status": "building",
-                "image": base_image,
-                "mode": get_mode().get("mode", "shared_host"),
-                "autostart": False,
-                "ip_address": "",
-                "ssh_port": ssh_port,
-                "ankd_port": ankd_port,
-                "created_at": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
-                "pid": None,
-                "policies": {"inter_container_p2p": False, "allow_host_access": False, "allow_internet": True},
-                "resources": {"memory_limit": "256M", "cpu_limit_percent": 50},
-                "port_mappings": [],
-                "root_password": root_password,
-                "template": template_id,
-                "template_name": template["name"]
-            }
-            save_container_config(container_name, stub_config)
+        # Stub for both modes so the container appears immediately (building)
+        stub_dir = os.path.join(CONTAINERS_DIR, container_name)
+        os.makedirs(stub_dir, exist_ok=True)
+        stub_config = {
+            "name": container_name,
+            "status": "building",
+            "image": base_image,
+            "mode": get_mode().get("mode", "shared_host"),
+            "autostart": False,
+            "ip_address": "",
+            "ssh_port": ssh_port,
+            "ankd_port": ankd_port,
+            "created_at": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "pid": None,
+            "policies": {"inter_container_p2p": False, "allow_host_access": False, "allow_internet": True},
+            "resources": {"memory_limit": "256M", "cpu_limit_percent": 50},
+            "port_mappings": [],
+            "root_password": root_password,
+            "template": template_id,
+            "template_name": template["name"]
+        }
+        if is_lite():
+            stub_config["mode"] = "lite"
+        save_container_config(container_name, stub_config)
 
         def _do_deploy():
             global _building
@@ -4257,29 +4259,28 @@ small{color:#334155}
         if not root_password:
             root_password = "ank123"
 
-        # Write stub config with "building" status immediately
+        # Write stub config with "building" status immediately (both modes)
         ssh_port = self._find_free_port(2201)
         ankd_port = self._find_free_ankd_port()
-        if not is_lite():
-            stub_dir = os.path.join(CONTAINERS_DIR, container_name)
-            os.makedirs(stub_dir, exist_ok=True)
-            stub_config = {
-                "name": container_name,
-                "status": "building",
-                "image": base_image,
-                "mode": get_mode().get("mode", "shared_host"),
-                "autostart": False,
-                "ip_address": "",
-                "ssh_port": ssh_port,
-                "ankd_port": ankd_port,
-                "created_at": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
-                "pid": None,
-                "policies": {"inter_container_p2p": False, "allow_host_access": False, "allow_internet": True},
-                "resources": {"memory_limit": "256M", "cpu_limit_percent": 50},
-                "port_mappings": [],
-                "root_password": root_password
-            }
-            save_container_config(container_name, stub_config)
+        stub_dir = os.path.join(CONTAINERS_DIR, container_name)
+        os.makedirs(stub_dir, exist_ok=True)
+        stub_config = {
+            "name": container_name,
+            "status": "building",
+            "image": base_image,
+            "mode": "lite" if is_lite() else get_mode().get("mode", "shared_host"),
+            "autostart": False,
+            "ip_address": "",
+            "ssh_port": ssh_port,
+            "ankd_port": ankd_port,
+            "created_at": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "pid": None,
+            "policies": {"inter_container_p2p": False, "allow_host_access": False, "allow_internet": True},
+            "resources": {"memory_limit": "256M", "cpu_limit_percent": 50},
+            "port_mappings": [],
+            "root_password": root_password
+        }
+        save_container_config(container_name, stub_config)
 
         def _do_build():
             global _building
@@ -4313,6 +4314,17 @@ small{color:#334155}
                         lf.flush()
                     if not ok:
                         log(f"ERROR: lite create {container_name}: {result}")
+                        cfg = load_container_config(container_name)
+                        if cfg:
+                            cfg["status"] = "failed"
+                            save_container_config(container_name, cfg)
+                        return
+                    # Verify merged tree exists before RUN phase
+                    _merged_check = os.path.join(CONTAINERS_DIR, container_name, "merged")
+                    if not os.path.isdir(_merged_check):
+                        log(f"ERROR: lite create ok but merged missing for {container_name}")
+                        with open(log_path, "a") as lf:
+                            lf.write("ERROR: merged dir missing after create\n")
                         cfg = load_container_config(container_name)
                         if cfg:
                             cfg["status"] = "failed"
