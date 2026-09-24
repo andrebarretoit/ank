@@ -274,6 +274,7 @@ function navigateTo(page) {
   _formDirty = false;
   const prevPage = _currentPage;
   _currentPage = page;
+  try { localStorage.setItem('ank_tab', page); } catch (e) {}
 
   if (prevPage === 'shell' && page !== 'shell') hideTerminalContainers();
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
@@ -308,6 +309,7 @@ function navigateTo(page) {
 document.querySelectorAll('.notch-item, .mobile-bar-item').forEach(item => {
   item.addEventListener('click', e => {
     e.preventDefault();
+    try { localStorage.setItem('ank_tab', item.dataset.page); } catch (err) {}
     sessionStorage.setItem('ank_nav_page', item.dataset.page);
     location.reload();
   });
@@ -358,9 +360,13 @@ function logout() {
   isLoggedIn = false;
   document.getElementById('login-screen').style.display = '';
   document.getElementById('app').classList.add('hidden');
+  const bl = document.getElementById('boot-loader');
+  if (bl) bl.hidden = true;
 }
 
 function showApp() {
+  const bl = document.getElementById('boot-loader');
+  if (bl) bl.hidden = true;
   document.getElementById('login-screen').style.display = 'none';
   document.getElementById('app').classList.remove('hidden');
   loadAll();
@@ -1973,8 +1979,8 @@ function backupWizardReset() {
 function backupWizardNav(dir) {
   const next = backupWizardStep + dir;
   if (next < 1 || next > 3) return;
-  if (dir > 0 && backupWizardStep === 1 && !backupTestPassed) {
-    toast('Test connection first', 'warning'); return;
+  if (dir > 0 && backupWizardStep === 1) {
+    if (!backupTestPassed) { testBackupConnection().then(ok => { if (ok) backupWizardNav(1); }); return; }
   }
   if (dir > 0 && backupWizardStep === 2) {
     const name = document.getElementById('backup-name')?.value?.trim();
@@ -1995,9 +2001,13 @@ function backupWizardNav(dir) {
 }
 
 async function testBackupConnection() {
-  const btn = document.getElementById('backup-test-btn');
+  const btn = document.getElementById('backup-next-btn');
   const result = document.getElementById('backup-test-result');
-  btn.disabled = true; result.textContent = 'Testing...'; result.style.color = 'var(--text-muted)';
+  const nextLabel = btn?.querySelector('.next-label');
+  const origHtml = btn?.innerHTML;
+  if (btn) btn.disabled = true;
+  if (nextLabel) nextLabel.textContent = 'Testing…';
+  if (result) { result.textContent = 'Testing connection…'; result.style.color = 'var(--text-muted)'; }
   try {
     const body = {
       host: document.getElementById('backup-remote-host')?.value || '',
@@ -2009,13 +2019,21 @@ async function testBackupConnection() {
     console.log('[Backup] Test connection request:', JSON.stringify(body, null, 2));
     const data = await api('POST', '/backups/test-connection', body);
     console.log('[Backup] Test connection response:', JSON.stringify(data, null, 2));
-    if (data.connected) { result.textContent = '✓ Connected'; result.style.color = 'var(--green)'; backupTestPassed = true; }
-    else { result.textContent = `✗ ${data.reason || 'Could not connect — check host, port and credentials'}`; result.style.color = 'var(--red)'; backupTestPassed = false; if (data.stderr_tail) console.log('[Backup] stderr:', data.stderr_tail); }
+    if (data.connected) {
+      if (result) { result.textContent = '✓ Connected'; result.style.color = 'var(--green)'; }
+      backupTestPassed = true;
+    } else {
+      if (result) { result.textContent = `✗ ${data.reason || 'Could not connect — check host, port and credentials'}`; result.style.color = 'var(--red)'; }
+      backupTestPassed = false;
+      if (data.stderr_tail) console.log('[Backup] stderr:', data.stderr_tail);
+    }
   } catch(e) {
     console.error('[Backup] Test connection error:', e);
-    result.textContent = '✗ Could not connect — check host, port and credentials'; result.style.color = 'var(--red)'; backupTestPassed = false;
+    if (result) { result.textContent = '✗ Could not connect — check host, port and credentials'; result.style.color = 'var(--red)'; }
+    backupTestPassed = false;
   }
-  btn.disabled = false;
+  if (btn) { btn.disabled = false; if (nextLabel) nextLabel.textContent = 'Next'; }
+  return backupTestPassed;
 }
 
 async function loadBackupSources() {
@@ -3446,11 +3464,14 @@ document.addEventListener('change', (e) => { if (e.target.matches('input,textare
 if (isLoggedIn) {
   showApp();
   detectWsProtocol().then(() => startRefreshTimer());
-  const pendingPage = sessionStorage.getItem('ank_nav_page');
+  const pendingPage = sessionStorage.getItem('ank_nav_page') || localStorage.getItem('ank_tab');
   if (pendingPage) {
     sessionStorage.removeItem('ank_nav_page');
     setTimeout(() => navigateTo(pendingPage), 50);
   }
+} else {
+  const bl = document.getElementById('boot-loader');
+  if (bl) bl.hidden = true;
 }
 // Theme toggle listeners
 document.getElementById('theme-toggle-login')?.addEventListener('click', toggleTheme);

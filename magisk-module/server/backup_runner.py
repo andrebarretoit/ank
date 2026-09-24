@@ -216,14 +216,15 @@ class BackupRunner:
         remote_path = self.remote.get("path", "/backups/ank").rstrip("/")
         filename = os.path.basename(tar_path)
         remote_dest = f"{remote_path}/{filename}"
+        from backup_manager import run_ssh_argv
         cmd = [
-            "sshpass", "-e",
             "scp", "-P", str(port),
             "-o", "StrictHostKeyChecking=no",
+            "-o", "UserKnownHostsFile=/dev/null",
             tar_path,
             f"{user}@{host}:{remote_dest}"
         ]
-        result = subprocess.run(cmd, capture_output=True, text=True, env={**os.environ, "SSHPASS": password})
+        result = run_ssh_argv(cmd, password, timeout=600)
         if result.returncode != 0:
             self.log(f"SCP upload failed: {result.stderr}")
             raise RuntimeError(f"SCP upload failed: {result.stderr}")
@@ -238,14 +239,15 @@ class BackupRunner:
         user = self.remote.get("user", "root")
         password = self.remote.get("password", "")
         remote_path = shlex.quote(self.remote.get("path", "/backups/ank").rstrip("/"))
+        from backup_manager import run_ssh_argv
         cmd = [
-            "sshpass", "-e",
             "ssh", "-p", str(port),
             "-o", "StrictHostKeyChecking=no",
+            "-o", "UserKnownHostsFile=/dev/null",
             f"{user}@{host}",
             f"find {remote_path} -maxdepth 1 -name '*.tar.gz' -mtime +{retention_days} -delete"
         ]
-        result = subprocess.run(cmd, capture_output=True, text=True, env={**os.environ, "SSHPASS": password})
+        result = run_ssh_argv(cmd, password, timeout=30)
         if result.returncode != 0:
             self.log(f"Retention cleanup failed: {result.stderr}")
         else:
@@ -257,16 +259,16 @@ class BackupRunner:
         user = self.remote.get("user", "root")
         password = self.remote.get("password", "")
         filename = os.path.basename(remote_path)
-        remote_dir = os.path.dirname(remote_path)
+        from backup_manager import run_ssh_argv
 
         cmd_detect = [
-            "sshpass", "-e",
             "ssh", "-p", str(port),
             "-o", "StrictHostKeyChecking=no",
+            "-o", "UserKnownHostsFile=/dev/null",
             f"{user}@{host}",
             "uname -s"
         ]
-        result = subprocess.run(cmd_detect, capture_output=True, text=True, timeout=10, env={**os.environ, "SSHPASS": password})
+        result = run_ssh_argv(cmd_detect, password, timeout=10)
         os_type = result.stdout.strip().lower()
 
         if "linux" in os_type:
@@ -280,13 +282,13 @@ class BackupRunner:
             return
 
         cmd = [
-            "sshpass", "-e",
             "ssh", "-p", str(port),
             "-o", "StrictHostKeyChecking=no",
+            "-o", "UserKnownHostsFile=/dev/null",
             f"{user}@{host}",
             immut_cmd
         ]
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10, env={**os.environ, "SSHPASS": password})
+        result = run_ssh_argv(cmd, password, timeout=10)
         if result.returncode == 0:
             self.log(f"Immutability applied to {filename}")
         else:

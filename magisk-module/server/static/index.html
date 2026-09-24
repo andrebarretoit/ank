@@ -34,6 +34,19 @@
 <body>
 <div class="bg-flares"></div>
 
+<!-- Boot loader: shown instantly when a saved token exists (prevents login flicker on F5) -->
+<div id="boot-loader" class="boot-loader" hidden>
+  <div class="boot-loader-card">
+    <div class="boot-spinner"></div>
+    <div class="boot-loader-text">Restoring session…</div>
+  </div>
+</div>
+<script>
+  try {
+    if (localStorage.getItem('ank_token')) document.getElementById('boot-loader').hidden = false;
+  } catch (e) {}
+</script>
+
   <!-- ═══════ LOGIN ═══════ -->
   <div id="login-screen" class="login-container">
     <div class="login-visual">
@@ -519,7 +532,7 @@
             <div class="form-group"><label class="form-label">SSH User</label><input type="text" class="form-input" id="backup-ssh-user" value="root"></div>
             <div class="form-group"><label class="form-label">SSH Password</label><input type="password" class="form-input" id="backup-ssh-pass"></div>
           </div>
-          <div style="margin-top:12px"><button type="button" class="btn btn-sm btn-secondary" id="backup-test-btn" onclick="testBackupConnection()"><i class="bi bi-plug"></i> Test Connection</button><span id="backup-test-result" style="margin-left:8px;font-size:12px"></span></div>
+          <div id="backup-test-result" style="margin-top:8px;font-size:12px;min-height:16px"></div>
         </div>
 
         <!-- Step 2: Config -->
@@ -569,7 +582,7 @@
         <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
           <button type="button" class="btn btn-secondary" id="backup-prev-btn" onclick="backupWizardNav(-1)" style="display:none"><i class="bi bi-arrow-left"></i> Back</button>
           <button type="button" class="btn btn-secondary" onclick="closeModalById('backup-modal-overlay')">Cancel</button>
-          <button type="button" class="btn btn-primary" id="backup-next-btn" onclick="backupWizardNav(1)">Next <i class="bi bi-arrow-right"></i></button>
+          <button type="button" class="btn btn-primary" id="backup-next-btn" onclick="backupWizardNav(1)"><span class="next-label">Next</span> <i class="bi bi-arrow-right"></i></button>
           <button type="button" class="btn btn-primary" id="backup-create-btn" onclick="createBackup()" style="display:none"><i class="bi bi-check-lg"></i> Create</button>
         </div>
       </div>

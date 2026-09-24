@@ -15,6 +15,97 @@ ANK_DIR = os.environ.get("ANK_DIR", "/data/local/ank")
 BACKUPS_DIR = os.path.join(ANK_DIR, "backups")
 CONTAINERS_DIR = os.path.join(ANK_DIR, "containers")
 LOGS_DIR = os.path.join(BACKUPS_DIR, "logs")
+TMP_DIR = os.path.join(ANK_DIR, "tmp")
+
+
+def _write_askpass(password):
+    """Write SSH_ASKPASS helper that echoes the password from env.
+
+    Returns (host_path, path_visible_to_ssh).  host_path is where we write
+    the file; path_visible_to_ssh is what to put in SSH_ASKPASS (differs when
+    running inside the ankfs chroot).
+    """
+    os.makedirs(TMP_DIR, exist_ok=True)
+    host_path = os.path.join(TMP_DIR, "ank_askpass.sh")
+    with open(host_path, "w") as f:
+        f.write("#!/bin/sh\n")
+        f.write('echo "$ANK_ASKPASS_PASSWORD"\n')
+    os.chmod(host_path, 0o700)
+    return host_path, host_path
+
+
+def _ssh_askpass_env(password, ssh_askpass_path):
+    env = {k: v for k, v in os.environ.items() if k != "SSHPASS"}
+    env["ANK_ASKPASS_PASSWORD"] = password
+    env["SSH_ASKPASS"] = ssh_askpass_path
+    env["SSH_ASKPASS_REQUIRE"] = "force"
+    env["DISPLAY"] = env.get("DISPLAY") or ":0"
+    return env
+
+
+def _find_chroot_bin():
+    b = shutil.which("chroot")
+    if b:
+        return b
+    for cand in ("/system/bin/chroot", "/system/xbin/chroot", "/sbin/chroot"):
+        if os.path.isfile(cand) and os.access(cand, os.X_OK):
+            return cand
+    return None
+
+
+def run_ssh_argv(ssh_argv, password, timeout=30, remote_cmd_note=""):
+    """Run ssh/scp argv with password auth via SSH_ASKPASS (no PTY / no sshpass).
+
+    ssh_argv[0] must be 'ssh' or 'scp'.  Paths and -p/-P flags are the caller's.
+    Chooses host ssh if present, else chroots into ankfs.
+    Returns CompletedProcess-like or raises.
+    """
+    rootfs = os.path.join(ANK_DIR, "ankfs")
+    rootfs_ssh = os.path.join(rootfs, "usr", "bin", ssh_argv[0])
+    host_ssh = shutil.which(ssh_argv[0])
+
+    run_kwargs = {
+        "capture_output": True,
+        "text": True,
+        "timeout": timeout,
+        "stdin": subprocess.DEVNULL,
+    }
+
+    if host_ssh:
+        _, ask_path = _write_askpass(password)
+        env = _ssh_askpass_env(password, ask_path)
+        run_kwargs["env"] = env
+        argv = [host_ssh] + ssh_argv[1:]
+        return subprocess.run(argv, **run_kwargs)
+
+    if not os.path.isfile(rootfs_ssh):
+        raise FileNotFoundError(f"{ssh_argv[0]} not found on host or in ankfs")
+
+    # Chroot: askpass must live inside the rootfs at a path ssh can see.
+    os.makedirs(os.path.join(rootfs, "tmp"), exist_ok=True)
+    ask_host = os.path.join(rootfs, "tmp", "ank_askpass.sh")
+    with open(ask_host, "w") as f:
+        f.write("#!/bin/sh\n")
+        f.write('echo "$ANK_ASKPASS_PASSWORD"\n')
+    os.chmod(ask_host, 0o700)
+
+    env = _ssh_askpass_env(password, "/tmp/ank_askpass.sh")
+    env["PATH"] = "/usr/sbin:/usr/bin:/sbin:/bin"
+    env["HOME"] = "/root"
+    run_kwargs["env"] = env
+
+    chroot_bin = _find_chroot_bin()
+    inner = [f"/usr/bin/{ssh_argv[0]}"] + ssh_argv[1:]
+    if chroot_bin:
+        argv = [chroot_bin, rootfs] + inner
+        return subprocess.run(argv, **run_kwargs)
+
+    def _preexec(rootfs_path=rootfs):
+        os.chroot(rootfs_path)
+        os.chdir("/")
+
+    argv = inner
+    return subprocess.run(argv, preexec_fn=_preexec, **run_kwargs)
 
 SOURCE_TYPES = (
     "container_full",
@@ -104,16 +195,6 @@ class BackupManager:
         path = str(remote_config.get("path", "/backups/ank")).rstrip("/") or "/backups/ank"
         target = host if "@" in host else f"{user}@{host}"
 
-        rootfs = os.path.join(ANK_DIR, "ankfs")
-        rootfs_sshpass = os.path.join(rootfs, "usr", "bin", "sshpass")
-        sshpass_bin = shutil.which("sshpass")
-        use_chroot = False
-        if not sshpass_bin:
-            if os.path.isfile(rootfs_sshpass):
-                use_chroot = True
-            else:
-                return {"ok": False, "reason": "sshpass not found on device"}
-
         ssh_args = [
             "-p", str(port),
             "-o", "StrictHostKeyChecking=no",
@@ -123,42 +204,12 @@ class BackupManager:
             target,
             "mkdir", "-p", path,
         ]
-        env = {**os.environ, "SSHPASS": password}
-        run_kwargs = {"capture_output": True, "text": True, "timeout": 30, "env": env}
-
         try:
-            if use_chroot:
-                self._ensure_chroot_pty(rootfs)
-                env["PATH"] = "/usr/sbin:/usr/bin:/sbin:/bin"
-                env["HOME"] = "/root"
-                chroot_bin = shutil.which("chroot")
-                if not chroot_bin:
-                    for cand in ("/system/bin/chroot", "/system/xbin/chroot", "/sbin/chroot"):
-                        if os.path.isfile(cand) and os.access(cand, os.X_OK):
-                            chroot_bin = cand
-                            break
-                if chroot_bin:
-                    result = subprocess.run(
-                        [chroot_bin, rootfs, "/usr/bin/sshpass", "-e", "ssh"] + ssh_args,
-                        **run_kwargs
-                    )
-                else:
-                    def _preexec(rootfs_path=rootfs):
-                        os.chroot(rootfs_path)
-                        os.chdir("/")
-                    result = subprocess.run(
-                        ["/usr/bin/sshpass", "-e", "ssh"] + ssh_args,
-                        preexec_fn=_preexec, **run_kwargs
-                    )
-            else:
-                result = subprocess.run(
-                    [sshpass_bin, "-e", "ssh"] + ssh_args,
-                    **run_kwargs
-                )
+            result = run_ssh_argv(["ssh"] + ssh_args, password, timeout=30)
         except subprocess.TimeoutExpired:
             return {"ok": False, "reason": "timed out creating remote path", "exit_code": 124}
-        except (OSError, ValueError) as e:
-            return {"ok": False, "reason": f"could not run sshpass: {e}"}
+        except (OSError, ValueError, FileNotFoundError) as e:
+            return {"ok": False, "reason": f"could not run ssh: {e}"}
 
         ok = result.returncode == 0
         stderr_tail = (result.stderr or result.stdout or "").strip()[-200:]
@@ -325,22 +376,6 @@ class BackupManager:
         password = str(remote_config.get("password", ""))
         target = host if "@" in host else f"{user}@{host}"
 
-        rootfs = os.path.join(ANK_DIR, "ankfs")
-        rootfs_sshpass = os.path.join(rootfs, "usr", "bin", "sshpass")
-        sshpass_bin = shutil.which("sshpass")
-        use_chroot = False
-        if not sshpass_bin:
-            # On-device: server runs on the Android host (musl-loaded python, NOT chrooted),
-            # so sshpass/ssh (Alpine musl binaries inside ankfs) are not on PATH and cannot
-            # be exec'd directly (ELF interpreter /lib/ld-musl-*.so.1 is missing on host).
-            # Run them chrooted into ankfs, like the rest of the codebase does.
-            if os.path.isfile(rootfs_sshpass):
-                use_chroot = True
-            else:
-                return _result(False, "sshpass not found on device (missing in ankfs rootfs)")
-
-        # argv list (no shell) — no quoting/injection issues; flags avoid the first-connection
-        # host-key prompt hang and bound the connect phase.
         ssh_args = [
             "-p", str(port),
             "-o", "StrictHostKeyChecking=no",
@@ -350,45 +385,13 @@ class BackupManager:
             target,
             "echo", "__ANK_OK__",
         ]
-        env = {**os.environ, "SSHPASS": password}
-        run_kwargs = {"capture_output": True, "text": True, "timeout": 30, "env": env}
-
         try:
-            if use_chroot:
-                self._ensure_chroot_pty(rootfs)
-                env["PATH"] = "/usr/sbin:/usr/bin:/sbin:/bin"  # inside the ankfs chroot
-                env["HOME"] = "/root"
-                chroot_bin = shutil.which("chroot")
-                if not chroot_bin:
-                    for cand in ("/system/bin/chroot", "/system/xbin/chroot", "/sbin/chroot"):
-                        if os.path.isfile(cand) and os.access(cand, os.X_OK):
-                            chroot_bin = cand
-                            break
-                if chroot_bin:
-                    result = subprocess.run(
-                        [chroot_bin, rootfs, "/usr/bin/sshpass", "-e", "ssh"] + ssh_args,
-                        **run_kwargs
-                    )
-                else:
-                    # No chroot binary available — chroot ourselves in the child before exec.
-                    def _preexec(rootfs_path=rootfs):
-                        os.chroot(rootfs_path)
-                        os.chdir("/")
-                    result = subprocess.run(
-                        ["/usr/bin/sshpass", "-e", "ssh"] + ssh_args,
-                        preexec_fn=_preexec, **run_kwargs
-                    )
-            else:
-                result = subprocess.run(
-                    [sshpass_bin, "-e", "ssh"] + ssh_args,
-                    **run_kwargs
-                )
+            result = run_ssh_argv(["ssh"] + ssh_args, password, timeout=30)
         except subprocess.TimeoutExpired:
             return _result(False, "timed out — host unreachable or sshd not responding",
                            124, "", timed_out=True)
-        except (OSError, ValueError) as e:
-            # ValueError: preexec_fn unsupported on this platform
-            return _result(False, f"could not run sshpass: {e}", None, str(e))
+        except (OSError, ValueError, FileNotFoundError) as e:
+            return _result(False, f"could not run ssh: {e}", None, str(e))
 
         exit_code = result.returncode
         stderr_tail = (result.stderr or result.stdout or "").strip()
