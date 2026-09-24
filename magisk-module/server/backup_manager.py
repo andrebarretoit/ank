@@ -9,6 +9,7 @@ import hashlib
 import hmac
 import shlex
 import shutil
+import stat
 
 ANK_DIR = os.environ.get("ANK_DIR", "/data/local/ank")
 BACKUPS_DIR = os.path.join(ANK_DIR, "backups")
@@ -127,6 +128,7 @@ class BackupManager:
 
         try:
             if use_chroot:
+                self._ensure_chroot_pty(rootfs)
                 env["PATH"] = "/usr/sbin:/usr/bin:/sbin:/bin"
                 env["HOME"] = "/root"
                 chroot_bin = shutil.which("chroot")
@@ -353,6 +355,7 @@ class BackupManager:
 
         try:
             if use_chroot:
+                self._ensure_chroot_pty(rootfs)
                 env["PATH"] = "/usr/sbin:/usr/bin:/sbin:/bin"  # inside the ankfs chroot
                 env["HOME"] = "/root"
                 chroot_bin = shutil.which("chroot")
@@ -395,6 +398,38 @@ class BackupManager:
         return _result(False, self._map_ssh_failure(exit_code, stderr_tail), exit_code, stderr_tail)
 
     @staticmethod
+    def _ensure_chroot_pty(rootfs):
+        """Make sure sshpass can allocate a PTY inside the ankfs chroot.
+
+        sshpass needs /dev/ptmx + a mounted devpts to intercept ssh's
+        password prompt (exit 3 otherwise).  Creates device nodes and
+        mounts devpts if missing — best-effort, failures are non-fatal.
+        """
+        dev = os.path.join(rootfs, "dev")
+        pts = os.path.join(dev, "pts")
+        ptmx = os.path.join(dev, "ptmx")
+        try:
+            os.makedirs(pts, exist_ok=True)
+            if not os.path.exists(ptmx):
+                os.mknod(ptmx, 0o666 | stat.S_IFCHR, os.makedev(5, 2))
+            else:
+                os.chmod(ptmx, 0o666)
+            # devpts must be mounted for openpty to succeed
+            mounted = False
+            try:
+                with open("/proc/mounts") as f:
+                    mounted = any(line.split()[1] == pts for line in f if line.strip())
+            except OSError:
+                pass
+            if not mounted:
+                subprocess.run(
+                    ["mount", "-t", "devpts", "devpts", pts],
+                    capture_output=True, timeout=5
+                )
+        except (OSError, subprocess.SubprocessError):
+            pass  # best-effort — _map_ssh_failure will report if still broken
+
+    @staticmethod
     def _map_ssh_failure(exit_code, stderr):
         """Map ssh/sshpass exit codes and stderr text to a short human reason."""
         low = (stderr or "").lower()
@@ -409,7 +444,8 @@ class BackupManager:
             return "host unreachable — connection timed out"
         if "host key verification failed" in low:
             return "host key verification failed"
-        if "posix_openpt" in low or "/dev/ptmx" in low or "failed to create pty" in low:
+        if "posix_openpt" in low or "/dev/ptmx" in low or "failed to create pty" in low \
+                or "pseudo terminal" in low or "failed to get a pseudo terminal" in low:
             return "sshpass could not allocate a pty (/dev/ptmx or devpts missing in ankfs)"
         if "chroot" in low and ("operation not permitted" in low or "permission denied" in low):
             return "chroot failed — insufficient permissions"
