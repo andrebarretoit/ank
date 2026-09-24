@@ -73,10 +73,16 @@ sleep 1
 # Ensure /dev nodes exist in ankfs for Python/PTY
 mkdir -p "$ROOTFS/dev"
 # Bind-mount host /dev nodes — mknod on Android creates regular files (SELinux)
-for _dn in null urandom random tty ptmx console; do
-    [ -e "/dev/$_dn" ] && mount --bind "/dev/$_dn" "$ROOTFS/dev/$_dn" 2>/dev/null
-    [ -e "$ROOTFS/dev/$_dn" ] || mknod "$ROOTFS/dev/$_dn" c 1 3 2>/dev/null
-    chmod 666 "$ROOTFS/dev/$_dn" 2>/dev/null
+# Target file must exist before bind-mount; mknod fallback uses correct major/minor
+for _dn in "null:1:3" "urandom:1:9" "random:1:8" "tty:5:0" "ptmx:5:2" "console:5:1"; do
+    _name="${_dn%%:*}"; _rest="${_dn#*:}"; _maj="${_rest%%:*}"; _min="${_rest##*:}"
+    [ -e "$ROOTFS/dev/$_name" ] || touch "$ROOTFS/dev/$_name" 2>/dev/null
+    [ -e "/dev/$_name" ] && mount --bind "/dev/$_name" "$ROOTFS/dev/$_name" 2>/dev/null
+    if [ ! -c "$ROOTFS/dev/$_name" ]; then
+        rm -f "$ROOTFS/dev/$_name" 2>/dev/null
+        mknod "$ROOTFS/dev/$_name" c "$_maj" "$_min" 2>/dev/null
+    fi
+    chmod 666 "$ROOTFS/dev/$_name" 2>/dev/null
 done
 
 # Verify Python exists
@@ -100,10 +106,16 @@ if ! mountpoint -q "$ROOTFS/dev/pts" 2>/dev/null; then
     umount "$ROOTFS/dev" 2>/dev/null
     mount -t tmpfs -o size=16m tmpfs "$ROOTFS/dev" 2>/dev/null
     # Bind-mount host /dev nodes — mknod on Android creates regular files (SELinux)
-    for _dn in null zero random urandom tty ptmx console; do
-        [ -e "/dev/$_dn" ] && mount --bind "/dev/$_dn" "$ROOTFS/dev/$_dn" 2>/dev/null
-        [ -e "$ROOTFS/dev/$_dn" ] || mknod "$ROOTFS/dev/$_dn" c 1 3 2>/dev/null
-        chmod 666 "$ROOTFS/dev/$_dn" 2>/dev/null
+    # Target must exist before bind-mount (fresh tmpfs is empty); correct major/minor fallback
+    for _dn in "null:1:3" "zero:1:5" "random:1:8" "urandom:1:9" "tty:5:0" "ptmx:5:2" "console:5:1"; do
+        _name="${_dn%%:*}"; _rest="${_dn#*:}"; _maj="${_rest%%:*}"; _min="${_rest##*:}"
+        [ -e "$ROOTFS/dev/$_name" ] || touch "$ROOTFS/dev/$_name" 2>/dev/null
+        [ -e "/dev/$_name" ] && mount --bind "/dev/$_name" "$ROOTFS/dev/$_name" 2>/dev/null
+        if [ ! -c "$ROOTFS/dev/$_name" ]; then
+            rm -f "$ROOTFS/dev/$_name" 2>/dev/null
+            mknod "$ROOTFS/dev/$_name" c "$_maj" "$_min" 2>/dev/null
+        fi
+        chmod 666 "$ROOTFS/dev/$_name" 2>/dev/null
     done
     mkdir -p "$ROOTFS/dev/pts" "$ROOTFS/dev/shm" 2>/dev/null
     mount -t devpts -o mode=0620,ptmxmode=0666 devpts "$ROOTFS/dev/pts" 2>/dev/null
@@ -171,12 +183,15 @@ if [ "$SSH_ENABLED" = "1" ] && [ -f "$ROOTFS/usr/sbin/sshd" ]; then
     ln -sf pts/ptmx "$ROOTFS/dev/ptmx" 2>/dev/null
     chmod 666 "$ROOTFS/dev/pts/ptmx" 2>/dev/null
     mount -t proc proc "$ROOTFS/proc" 2>/dev/null
-    # Seed entropy on old kernels (armv7l/kernel 3.10: /dev/urandom lacks entropy at boot)
-    case "$ARCH" in
-        armv7*)
-            dd if=/dev/urandom of="$ROOTFS/dev/urandom" bs=1024 count=1 2>/dev/null
-            ;;
-    esac
+    # Ensure /dev/urandom is a real char device — sshd/OpenSSL PRNG needs it
+    if [ ! -c "$ROOTFS/dev/urandom" ]; then
+        rm -f "$ROOTFS/dev/urandom" 2>/dev/null
+        touch "$ROOTFS/dev/urandom" 2>/dev/null
+        mount --bind /dev/urandom "$ROOTFS/dev/urandom" 2>/dev/null
+        [ ! -c "$ROOTFS/dev/urandom" ] && { rm -f "$ROOTFS/dev/urandom" 2>/dev/null; mknod "$ROOTFS/dev/urandom" c 1 9 2>/dev/null; }
+        chmod 666 "$ROOTFS/dev/urandom" 2>/dev/null
+        [ -c "$ROOTFS/dev/urandom" ] && log "Fixed /dev/urandom (was not a device node)" || log "WARN: /dev/urandom still not a device node"
+    fi
     log "sshd starting on port $SSH_PORT"
     chroot "$ROOTFS" /usr/sbin/sshd -t 2>&1 | while IFS= read -r line; do log "  sshd config: $line"; done || true
     nohup chroot "$ROOTFS" /usr/sbin/sshd \
