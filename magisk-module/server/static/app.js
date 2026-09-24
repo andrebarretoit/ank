@@ -951,8 +951,8 @@ async function showContainerDetail(name, nodeId) {
         const newPass = document.getElementById('detail-root-password').value;
         if (newPass && newPass.length >= 4) updateData.root_password = newPass;
         await api('POST', `/containers/${name}/update`, updateData);
+        await showContainerDetail(name, nodeId);
         toast(`Settings saved for "${name}"`, 'success');
-        showContainerDetail(name, nodeId);
       } catch (e) { toast(`Failed: ${e.message}`, 'error'); }
     });
 
@@ -965,6 +965,7 @@ async function showContainerDetail(name, nodeId) {
         const hp = row.querySelector('[data-field="host_port"]');
         if (hp && hp.value) {
           const port = parseInt(hp.value) || 0;
+          const cp = row.querySelector('[data-field="container_port"]');
           ports.push({ host_port: port, container_port: port, protocol: 'tcp' });
         }
       });
@@ -973,8 +974,8 @@ async function showContainerDetail(name, nodeId) {
           port_mappings: ports,
           policies: { inter_container_p2p: document.getElementById('detail-p2p').checked, allow_host_access: document.getElementById('detail-host').checked, allow_internet: document.getElementById('detail-internet').checked }
         });
+        await showContainerDetail(name, nodeId);
         toast(`Network settings saved for "${name}"`, 'success');
-        showContainerDetail(name, nodeId);
       } catch (e) { toast(`Failed: ${e.message}`, 'error'); }
     });
 
@@ -1062,7 +1063,7 @@ function removePort(idx) {
 async function startContainer(name) { setContainerLoading(name,'start'); try { await api('POST',`/containers/${name}/start`); toast(`Starting "${name}"...`,'info'); pollContainerStatus(name,0); } catch(e) { toast(`Failed: ${e.message}`,'error'); clearContainerLoading(name); } }
 async function stopContainer(name) { setContainerLoading(name,'stop'); try { await api('POST',`/containers/${name}/stop`); toast(`Stopping "${name}"...`,'info'); pollContainerStatus(name,0); } catch(e) { toast(`Failed: ${e.message}`,'error'); clearContainerLoading(name); } }
 async function restartContainer(name) { setContainerLoading(name,'restart'); try { await api('POST',`/containers/${name}/restart`); toast(`Restarting "${name}"...`,'info'); pollContainerStatus(name,0); } catch(e) { toast(`Failed: ${e.message}`,'error'); clearContainerLoading(name); } }
-async function deleteContainer(name) { const ok = await confirmAction('Delete Container',`Delete "${name}"? This cannot be undone.`); if (!ok) return; try { await api('DELETE',`/containers/${name}`); if(detailLogTimer){clearInterval(detailLogTimer);detailLogTimer=null;} closeContainerTerminal(); currentContainer=null; toast(`Deleted "${name}"`,'success'); loadContainers(); document.getElementById('container-detail').innerHTML='<div class="split-right-empty"><div><i class="bi bi-box-seam"></i><p>Select a container to manage</p></div></div>'; } catch(e) { toast(`Failed: ${e.message}`,'error'); } }
+async function deleteContainer(name) { const ok = await confirmAction('Delete Container',`Delete "${name}"? This cannot be undone.`); if (!ok) return; try { await api('DELETE',`/containers/${name}`); if(detailLogTimer){clearInterval(detailLogTimer);detailLogTimer=null;} closeContainerTerminal(); currentContainer=null; document.getElementById('container-detail').innerHTML='<div class="split-right-empty"><div><i class="bi bi-box-seam"></i><p>Select a container to manage</p></div></div>'; await loadContainers(); toast(`Deleted "${name}"`,'success'); } catch(e) { toast(`Failed: ${e.message}`,'error'); } }
 
 let containerBusy = {};
 
@@ -1294,8 +1295,8 @@ async function showImageSection(section) {
       try {
         toast(`Building from Ankfile as "${name}"...`, 'info');
         await api('POST', '/images/ankfile', { content, name, save_as_image: saveAsImage, image_name: imageName, target_node: targetNode });
-        loadContainers();
-        if (saveAsImage) loadImages();
+        await loadContainers();
+        if (saveAsImage) await loadImages();
         pollContainerStatus(name, 0);
       } catch (e) { toast(`Failed: ${e.message}`, 'error'); }
     });
@@ -1373,8 +1374,10 @@ async function pullImage() {
         if (st.state === 'done') {
           clearInterval(poll);
           logEl.textContent += '\nDone!';
+          await loadImages();
+          const sel = document.querySelector('#images-list .split-list-card.selected');
+          showImageSection(sel ? sel.dataset.section : 'images');
           toast('Image pulled successfully', 'success');
-          loadImages().then(() => { const sel = document.querySelector('#images-list .split-list-card.selected'); showImageSection(sel ? sel.dataset.section : 'images'); });
         } else if (st.state === 'error') {
           clearInterval(poll);
           logEl.textContent += `\nError: ${st.error || 'Unknown error'}`;
@@ -1416,13 +1419,13 @@ async function deployTemplate(id, name, baseReady) {
     if (nodeId !== 'local') {
       toast(`Deploying on remote...`, 'info');
       await api('POST', `/nodes/${encodeURIComponent(nodeId)}/containers`, { name: containerName, image: imageField, root_password: rootPass });
-      toast(`Creation sent to remote node`, 'success');
       setTimeout(() => { loadContainers(); pollRemoteContainerStatus(nodeId, containerName, 0); }, 1000);
+      toast(`Creation sent to remote node`, 'success');
     } else {
       toast(`Deploying as "${containerName}"...`, 'info');
       await api('POST', '/images/deploy', { template: id, name: containerName, root_password: rootPass });
       pollContainerStatus(containerName, 0);
-      loadContainers();
+      await loadContainers();
     }
   } catch (e) { toast(`Failed: ${e.message}`, 'error'); }
 }
@@ -1432,7 +1435,13 @@ document.getElementById('btn-pull-image')?.addEventListener('click', pullImage);
 async function deleteImage(id) {
   const ok = await confirmAction('Delete Image', 'Delete this image?');
   if (!ok) return;
-  try { await api('DELETE', `/images/${encodeURIComponent(id)}`); toast('Image deleted', 'success'); loadImages().then(() => { const sel = document.querySelector('#images-list .split-list-card.selected'); showImageSection(sel ? sel.dataset.section : 'images'); }); } catch(e) { toast(`Failed: ${e.message}`, 'error'); }
+  try {
+    await api('DELETE', `/images/${encodeURIComponent(id)}`);
+    await loadImages();
+    const sel = document.querySelector('#images-list .split-list-card.selected');
+    showImageSection(sel ? sel.dataset.section : 'images');
+    toast('Image deleted', 'success');
+  } catch(e) { toast(`Failed: ${e.message}`, 'error'); }
 }
 
 /* ═══════ NODES ═══════ */
@@ -1550,30 +1559,30 @@ async function loadPairingRequests() {
   } catch (e) { el.innerHTML = ''; }
 }
 
-async function approvePairing(reqId) { try { await api('POST', `/nodes/pairing/${encodeURIComponent(reqId)}/approve`); toast('Approved', 'success'); loadPairingRequests(); } catch(e) { toast(`Failed: ${e.message}`, 'error'); } }
-async function rejectPairing(reqId) { try { await api('POST', `/nodes/pairing/${encodeURIComponent(reqId)}/reject`); toast('Rejected', 'success'); loadPairingRequests(); } catch(e) { toast(`Failed: ${e.message}`, 'error'); } }
+async function approvePairing(reqId) { try { await api('POST', `/nodes/pairing/${encodeURIComponent(reqId)}/approve`); await loadPairingRequests(); toast('Approved', 'success'); } catch(e) { toast(`Failed: ${e.message}`, 'error'); } }
+async function rejectPairing(reqId) { try { await api('POST', `/nodes/pairing/${encodeURIComponent(reqId)}/reject`); await loadPairingRequests(); toast('Rejected', 'success'); } catch(e) { toast(`Failed: ${e.message}`, 'error'); } }
 
 async function restartRemoteNode() {
   if (!currentNodeDetailId) return;
   const ok = await confirmAction('Restart Device', 'Reboot remote device?');
   if (!ok) return;
-  try { await api('POST', `/nodes/${encodeURIComponent(currentNodeDetailId)}/restart`); toast('Restart sent', 'success'); showNodeDetail(currentNodeDetailId, '', 'online'); } catch(e) { toast(`Failed: ${e.message}`, 'error'); }
+  try { await api('POST', `/nodes/${encodeURIComponent(currentNodeDetailId)}/restart`); await showNodeDetail(currentNodeDetailId, '', 'online'); toast('Restart sent', 'success'); } catch(e) { toast(`Failed: ${e.message}`, 'error'); }
 }
 
 async function deleteNode(id) {
   const ok = await confirmAction('Remove Node', 'Remove this node?');
   if (!ok) return;
-  try { await api('POST', `/nodes/${encodeURIComponent(id)}/delete`); toast('Node removed', 'success'); document.getElementById('node-detail').innerHTML = '<div class="split-right-empty"><div><i class="bi bi-hdd-network"></i><p>Select a node</p></div></div>'; loadNodes(); } catch(e) { toast(`Failed: ${e.message}`, 'error'); }
+  try { await api('POST', `/nodes/${encodeURIComponent(id)}/delete`); document.getElementById('node-detail').innerHTML = '<div class="split-right-empty"><div><i class="bi bi-hdd-network"></i><p>Select a node</p></div></div>'; await loadNodes(); toast('Node removed', 'success'); } catch(e) { toast(`Failed: ${e.message}`, 'error'); }
 }
 
 async function revokeManager() {
   const ok = await confirmAction('Revoke Manager', 'Revoke manager access? This node will no longer be managed.');
   if (!ok) return;
-  try { await api('DELETE', '/nodes/manager'); toast('Manager access revoked', 'success'); loadNodes(); } catch(e) { toast(`Failed: ${e.message}`, 'error'); }
+  try { await api('DELETE', '/nodes/manager'); await loadNodes(); toast('Manager access revoked', 'success'); } catch(e) { toast(`Failed: ${e.message}`, 'error'); }
 }
 
 async function refreshNode(id) {
-  try { toast('Refreshing node...', 'info'); await api('POST', `/nodes/${encodeURIComponent(id)}/refresh`); loadNodes(); toast('Node refreshed', 'success'); } catch(e) { toast(`Failed: ${e.message}`, 'error'); }
+  try { await api('POST', `/nodes/${encodeURIComponent(id)}/refresh`); await loadNodes(); toast('Node refreshed', 'success'); } catch(e) { toast(`Failed: ${e.message}`, 'error'); }
 }
 
 document.getElementById('btn-add-node')?.addEventListener('click', sendPairingRequest);
@@ -1587,17 +1596,17 @@ async function sendPairingRequest() {
     { id: 'alias', label: 'Alias (optional)', type: 'text', placeholder: 'Auto-fills from node name', optional: true }
   ]);
   if (!result) return;
-  try { await api('POST', '/nodes/pairing/send', { ip: result.ip, port: parseInt(result.port), user: result.user || 'admin', password: result.password, alias: result.alias }); toast('Pairing request sent', 'success'); loadNodes(); } catch(e) { toast(`Failed: ${e.message}`, 'error'); }
+  try { await api('POST', '/nodes/pairing/send', { ip: result.ip, port: parseInt(result.port), user: result.user || 'admin', password: result.password, alias: result.alias }); await loadNodes(); toast('Pairing request sent', 'success'); } catch(e) { toast(`Failed: ${e.message}`, 'error'); }
 }
 
 async function remoteContainerAction(nodeId, name, action) {
-  try { await api('POST', `/nodes/${encodeURIComponent(nodeId)}/containers/${encodeURIComponent(name)}/${action}`); toast(`${action} sent`, 'success'); loadContainers(); pollRemoteContainerStatus(nodeId, name, 0); } catch(e) { toast(`Failed: ${e.message}`, 'error'); }
+  try { await api('POST', `/nodes/${encodeURIComponent(nodeId)}/containers/${encodeURIComponent(name)}/${action}`); await loadContainers(); pollRemoteContainerStatus(nodeId, name, 0); toast(`${action} sent`, 'success'); } catch(e) { toast(`Failed: ${e.message}`, 'error'); }
 }
 
 async function remoteDeleteContainer(nodeId, name) {
   const ok = await confirmAction('Delete Container', `Delete "${name}" on remote node?`);
   if (!ok) return;
-  try { await api('DELETE', `/nodes/${encodeURIComponent(nodeId)}/containers/${encodeURIComponent(name)}`); toast('Deleted', 'success'); loadContainers(); } catch(e) { toast(`Failed: ${e.message}`, 'error'); }
+  try { await api('DELETE', `/nodes/${encodeURIComponent(nodeId)}/containers/${encodeURIComponent(name)}`); await loadContainers(); toast('Deleted', 'success'); } catch(e) { toast(`Failed: ${e.message}`, 'error'); }
 }
 
 async function loadNodesForShellSelector() {
@@ -1698,11 +1707,11 @@ function showStackDetail(name) {
 async function rollingUpdateStack(name) {
   const ok = await confirmAction('Rolling Update', `Perform rolling update on stack "${name}"? This will replace containers one by one.`);
   if (!ok) return;
-  try { await api('POST', `/stacks/${encodeURIComponent(name)}/rolling-update`, {}); toast('Rolling update started', 'info'); loadStacks(); } catch(e) { toast(`Failed: ${e.message}`, 'error'); }
+  try { await api('POST', `/stacks/${encodeURIComponent(name)}/rolling-update`, {}); await loadStacks(); toast('Rolling update started', 'info'); } catch(e) { toast(`Failed: ${e.message}`, 'error'); }
 }
 
 async function healStack(name) {
-  try { await api('POST', `/stacks/${encodeURIComponent(name)}/healing`, {}); toast(`Healing started for "${name}"`, 'success'); loadStacks(); } catch(e) { toast(`Failed: ${e.message}`, 'error'); }
+  try { await api('POST', `/stacks/${encodeURIComponent(name)}/healing`, {}); await loadStacks(); toast(`Healing started for "${name}"`, 'success'); } catch(e) { toast(`Failed: ${e.message}`, 'error'); }
 }
 
 async function viewStackLogs(name) {
@@ -1749,17 +1758,17 @@ async function createStack() {
     toast(`Creating stack "${name}"...`, 'info');
     await api('POST', '/stacks', { name, template: image, min, max, lb_port: lbPort, load_balance: lbAlgo, root_password: rootPass, shared_volume: volume, trigger: trigger === 'none' ? null : trigger, ankfile });
     closeModalById('stack-modal-overlay');
+    await loadStacks();
     toast(`Stack "${name}" created`, 'success');
-    loadStacks();
   } catch (e) { toast(`Failed: ${e.message}`, 'error'); }
 }
 
-async function scaleStackUp(name) { try { await api('POST', `/stacks/${encodeURIComponent(name)}/scale`, { count: 1 }); toast(`Scaled up "${name}"`, 'success'); loadStacks(); } catch (e) { toast(`Failed: ${e.message}`, 'error'); } }
-async function scaleStackDown(name) { try { await api('POST', `/stacks/${encodeURIComponent(name)}/scale-down`, { count: 1 }); toast(`Scaled down "${name}"`, 'success'); loadStacks(); } catch (e) { toast(`Failed: ${e.message}`, 'error'); } }
+async function scaleStackUp(name) { try { await api('POST', `/stacks/${encodeURIComponent(name)}/scale`, { count: 1 }); await loadStacks(); toast(`Scaled up "${name}"`, 'success'); } catch (e) { toast(`Failed: ${e.message}`, 'error'); } }
+async function scaleStackDown(name) { try { await api('POST', `/stacks/${encodeURIComponent(name)}/scale-down`, { count: 1 }); await loadStacks(); toast(`Scaled down "${name}"`, 'success'); } catch (e) { toast(`Failed: ${e.message}`, 'error'); } }
 async function deleteStack(name) {
   const ok = await confirmAction('Delete Stack', `Delete stack "${name}" and all its containers?`);
   if (!ok) return;
-  try { await api('DELETE', `/stacks/${encodeURIComponent(name)}`); toast('Stack deleted', 'success'); loadStacks(); } catch(e) { toast(`Failed: ${e.message}`, 'error'); }
+  try { await api('DELETE', `/stacks/${encodeURIComponent(name)}`); await loadStacks(); toast('Stack deleted', 'success'); } catch(e) { toast(`Failed: ${e.message}`, 'error'); }
 }
 
 /* ═══════ BACKUPS ═══════ */
@@ -1803,6 +1812,7 @@ async function showBackupDetail(id) {
           <button class="btn btn-secondary btn-sm" onclick="showBackupHistory('${esc(id)}')"><i class="bi bi-clock-history"></i> History</button>
           <button class="btn btn-secondary btn-sm" onclick="browseBackupFiles('${esc(id)}')"><i class="bi bi-folder2-open"></i> Browse</button>
           <button class="btn btn-secondary btn-sm" onclick="checkBackupBattery()" title="Battery guard status"><i class="bi bi-battery-half"></i> Battery</button>
+          <button class="btn btn-secondary btn-sm" onclick="editBackupRoutine('${esc(id)}')"><i class="bi bi-pencil"></i> Edit</button>
           <button class="btn btn-danger btn-sm" onclick="deleteBackup('${esc(id)}')"><i class="bi bi-trash3"></i></button>
         </div>
       </div>
@@ -1817,6 +1827,35 @@ async function showBackupDetail(id) {
       </div>
       <div id="backup-sub-content"></div>`;
   } catch(e) { el.innerHTML = `<div style="color:var(--danger);padding:20px">${esc(e.message)}</div>`; }
+}
+
+async function editBackupRoutine(id) {
+  try {
+    const r = await api('GET', `/backups/${encodeURIComponent(id)}`);
+    const containers = Array.isArray(r.containers) ? r.containers.join(', ') : '';
+    const result = await customModal('Edit Routine', [
+      { id: 'name', label: 'Routine Name', type: 'text', value: r.name || '' },
+      { id: 'schedule', label: 'Schedule', type: 'text', value: r.schedule || '', placeholder: 'daily, every 6h, or cron', optional: true },
+      { id: 'retention', label: 'Retention (days)', type: 'number', value: String(r.retention_days || 30) },
+      { id: 'containers', label: 'Containers', type: 'text', value: containers, placeholder: 'comma-separated names', optional: true },
+      { id: 'enabled', label: 'Enabled (yes/no)', type: 'text', value: r.enabled === false ? 'no' : 'yes' }
+    ]);
+    if (!result) return;
+    const retention = parseInt(result.retention, 10);
+    if (isNaN(retention) || retention < 1) { toast('Retention must be a positive number', 'error'); return; }
+    const body = {
+      name: result.name,
+      schedule: result.schedule,
+      retention_days: retention,
+      enabled: !/^(no|false|0|off)$/i.test(result.enabled || 'yes'),
+      containers: result.containers.split(',').map(s => s.trim()).filter(Boolean)
+    };
+    await api('POST', `/backups/${encodeURIComponent(id)}/update`, body);
+    await showBackupDetail(id);
+    await loadBackups();
+    document.querySelectorAll('#backups-list .split-list-card').forEach(el => el.classList.toggle('selected', el.dataset.id === id));
+    toast('Routine updated', 'success');
+  } catch (e) { toast(`Failed: ${e.message}`, 'error'); }
 }
 
 async function showBackupHistory(id) {
@@ -1918,8 +1957,8 @@ async function renameBackupFile(routineId, fileName) {
   if (!newname || newname === fileName) return;
   try {
     await api('POST', `/backups/${encodeURIComponent(routineId)}/rename`, { old_name: fileName, new_name: newname });
+    await browseBackupFiles(routineId);
     toast('File renamed', 'success');
-    browseBackupFiles(routineId);
   } catch(e) { toast(`Failed: ${e.message}`, 'error'); }
 }
 
@@ -1928,8 +1967,8 @@ async function deleteBackupFile(routineId, fileName) {
   if (!ok) return;
   try {
     await api('POST', `/backups/${encodeURIComponent(routineId)}/delete`, { file: fileName });
+    await browseBackupFiles(routineId);
     toast('Deleted', 'success');
-    browseBackupFiles(routineId);
   } catch(e) { toast(`Failed: ${e.message}`, 'error'); }
 }
 
@@ -1997,8 +2036,8 @@ async function attachContainerToBackupRoutine() {
     }
     containers.push(currentContainer.name);
     await api('POST', `/backups/${encodeURIComponent(routineId)}/update`, { containers });
+    await loadContainerBackupTab(currentContainer.name);
     toast(`Added "${currentContainer.name}" to "${routine.name || routineId}"`, 'success');
-    loadContainerBackupTab(currentContainer.name);
   } catch (e) {
     toast(`Failed: ${e.message}`, 'error');
   } finally {
@@ -2211,15 +2250,15 @@ async function createBackup() {
     const res = await api('POST', '/backups', body);
     console.log('[Backup] Create routine response:', JSON.stringify(res, null, 2));
     closeModalById('backup-modal-overlay');
+    await loadBackups();
     toast(`Routine "${name}" created`, 'success');
-    loadBackups();
   } catch (e) {
     console.error('[Backup] Create routine error:', e);
     toast(`Failed: ${e.message}`, 'error');
   }
 }
 
-async function executeBackup(id) { try { toast('Running backup...','info'); await api('POST',`/backups/${encodeURIComponent(id)}/execute`); toast('Backup complete','success'); loadBackups(); } catch(e) { toast(`Failed: ${e.message}`,'error'); } }
+async function executeBackup(id) { try { toast('Running backup...','info'); await api('POST',`/backups/${encodeURIComponent(id)}/execute`); await loadBackups(); toast('Backup complete','success'); } catch(e) { toast(`Failed: ${e.message}`,'error'); } }
 
 async function checkBackupBattery() {
   try {
@@ -2227,7 +2266,7 @@ async function checkBackupBattery() {
     openModal('Battery Guard', `<pre style="font-size:12px;font-family:monospace;white-space:pre-wrap;margin:0">${esc(JSON.stringify(data, null, 2))}</pre>`);
   } catch(e) { toast(`Failed: ${e.message}`, 'error'); }
 }
-async function deleteBackup(id) { const ok = await confirmAction('Delete Backup','Delete this routine and all its history?'); if(!ok) return; try { await api('DELETE',`/backups/${encodeURIComponent(id)}`); toast('Deleted','success'); loadBackups(); } catch(e) { toast(`Failed: ${e.message}`,'error'); } }
+async function deleteBackup(id) { const ok = await confirmAction('Delete Backup','Delete this routine and all its history?'); if(!ok) return; try { await api('DELETE',`/backups/${encodeURIComponent(id)}`); await loadBackups(); toast('Deleted','success'); } catch(e) { toast(`Failed: ${e.message}`,'error'); } }
 
 /* ═══════ NETWORKS ═══════ */
 async function loadNetworks() {
@@ -2287,8 +2326,8 @@ document.getElementById('network-form')?.addEventListener('submit', async (e) =>
   try {
     await api('POST', '/networks', { subnet, gateway, bridge, nat });
     closeModalById('network-modal-overlay');
+    await loadNetworks();
     toast(`Network ${subnet}/24 configured`, 'success');
-    loadNetworks();
   } catch (e) { toast(`Failed: ${e.message}`, 'error'); }
 });
 
@@ -2324,7 +2363,6 @@ function showSettingsSection(section) {
           current_password: document.getElementById('current-password').value,
           new_password: newPass
         });
-        toast('Password updated', 'success');
         if (newPass) {
           const loginRes = await fetch(`${API}/auth/login`, {
             method: 'POST', headers: { 'Content-Type': 'application/json', 'X-ANK-Client': 'ank-panel' },
@@ -2334,6 +2372,7 @@ function showSettingsSection(section) {
           if (loginData.token) { ankToken = loginData.token; localStorage.setItem('ank_token', ankToken); }
         }
         document.getElementById('password-form').reset();
+        toast('Password updated', 'success');
       } catch (e) { toast(`Failed: ${e.message}`, 'error'); }
     });
   } else if (section === 'server') {
@@ -2373,6 +2412,7 @@ function showSettingsSection(section) {
         refreshSeconds = parseInt(document.getElementById('setting-refresh').value);
         localStorage.setItem('ank_refresh', refreshSeconds);
         startRefreshTimer();
+        settingsConfig = await api('GET', '/config').catch(() => settingsConfig);
         toast('Server settings saved', 'success');
       } catch (e) { toast(`Failed: ${e.message}`, 'error'); }
     });
@@ -2550,6 +2590,7 @@ async function saveRemoteSSHSettings() {
       ssh_enabled: document.getElementById('setting-ssh-enabled')?.checked ?? true,
       ssh_port: parseInt(document.getElementById('setting-ssh-port')?.value || '2200')
     });
+    settingsConfig = await api('GET', '/config').catch(() => settingsConfig);
     toast('Settings saved', 'success');
   } catch (e) { toast(`Failed: ${e.message}`, 'error'); }
 }
@@ -2786,13 +2827,13 @@ async function saveFile() {
   const ta = document.getElementById('file-editor-content');
   const path = ta.dataset.path;
   if (ta.dataset.binary === '1') { toast('Cannot edit binary files', 'warning'); return; }
-  try { await api('POST', `/containers/${fileContainerName}/files/write`, { path, content: ta.value }); toast('File saved', 'success'); } catch (e) { toast(e.message || 'Failed to save', 'error'); }
+  try { await api('POST', `/containers/${fileContainerName}/files/write`, { path, content: ta.value }); await loadFiles(); toast('File saved', 'success'); } catch (e) { toast(e.message || 'Failed to save', 'error'); }
 }
 
 async function deleteFilePrompt(path) {
   const confirmed = await confirmAction('Delete File', 'Delete ' + path + '?');
   if (!confirmed) return;
-  try { await api('DELETE', `/containers/${fileContainerName}/files?path=${encodeURIComponent(path)}`); toast('Deleted', 'success'); loadFiles(); } catch (e) { toast(e.message || 'Failed to delete', 'error'); }
+  try { await api('DELETE', `/containers/${fileContainerName}/files?path=${encodeURIComponent(path)}`); await loadFiles(); toast('Deleted', 'success'); } catch (e) { toast(e.message || 'Failed to delete', 'error'); }
 }
 
 async function renameFilePrompt(oldPath) {
@@ -2800,7 +2841,7 @@ async function renameFilePrompt(oldPath) {
   const newName = await inputModal('Rename', 'Rename to:', name);
   if (!newName || newName === name) return;
   const dir = oldPath.substring(0, oldPath.lastIndexOf('/')) || '/';
-  try { await api('POST', `/containers/${fileContainerName}/files/rename`, { old_path: oldPath, new_path: dir + '/' + newName }); toast('Renamed', 'success'); loadFiles(); } catch (e) { toast(e.message || 'Failed to rename', 'error'); }
+  try { await api('POST', `/containers/${fileContainerName}/files/rename`, { old_path: oldPath, new_path: dir + '/' + newName }); await loadFiles(); toast('Renamed', 'success'); } catch (e) { toast(e.message || 'Failed to rename', 'error'); }
 }
 
 async function downloadFile(path) {
@@ -2832,14 +2873,14 @@ async function createNewFile() {
   const name = await inputModal('New File', 'New file name:');
   if (!name) return;
   const path = fileCurrentPath === '/' ? '/' + name : fileCurrentPath + '/' + name;
-  api('POST', `/containers/${fileContainerName}/files/write`, { path, content: '' }).then(() => { toast('File created', 'success'); loadFiles(); }).catch(e => toast(e.message || 'Failed', 'error'));
+  api('POST', `/containers/${fileContainerName}/files/write`, { path, content: '' }).then(() => loadFiles()).then(() => { toast('File created', 'success'); }).catch(e => toast(e.message || 'Failed', 'error'));
 }
 
 async function createNewDir() {
   const name = await inputModal('New Folder', 'New folder name:');
   if (!name) return;
   const path = fileCurrentPath === '/' ? '/' + name : fileCurrentPath + '/' + name;
-  api('POST', `/containers/${fileContainerName}/files/mkdir`, { path }).then(() => { toast('Folder created', 'success'); loadFiles(); }).catch(e => toast(e.message || 'Failed', 'error'));
+  api('POST', `/containers/${fileContainerName}/files/mkdir`, { path }).then(() => loadFiles()).then(() => { toast('Folder created', 'success'); }).catch(e => toast(e.message || 'Failed', 'error'));
 }
 
 async function uploadToContainer(files) {
@@ -2853,8 +2894,8 @@ async function uploadToContainer(files) {
       if (!res.ok) throw new Error('Upload failed');
     } catch (e) { toast('Upload failed: ' + file.name, 'error'); }
   }
+  await loadFiles();
   toast('Upload complete', 'success');
-  loadFiles();
 }
 
 /* ═══════ TASK MANAGER ═══════ */
@@ -2940,8 +2981,8 @@ async function taskManagerServiceAction(service, action) {
   try {
     if (action === 'delete') { await api('DELETE', `/containers/${currentContainer.name}/services/${service}`); }
     else { await api('POST', `/containers/${currentContainer.name}/services/${service}/${action}`); }
+    await loadTaskManager();
     toast(`Service "${service}" ${past}`, 'success');
-    setTimeout(loadTaskManager, 500);
     // ankd completes the action asynchronously (the daemon may pick up
     // the request up to ~3s later) — re-poll to catch the final state.
     if (action === 'stop' || action === 'start' || action === 'restart') {
@@ -2968,9 +3009,9 @@ async function taskManagerSaveService() {
   if (!name || !cmd) { toast('Name and command required', 'error'); return; }
   try {
     await api('POST', `/containers/${currentContainer.name}/services`, { name, cmd, restart_policy: policy, enabled });
-    toast(`Service "${name}" created`, 'success');
     document.getElementById('taskmanager-add-form').style.display = 'none';
-    loadTaskManager();
+    await loadTaskManager();
+    toast(`Service "${name}" created`, 'success');
   } catch (e) { toast(`Failed: ${e.message}`, 'error'); }
 }
 
@@ -3180,8 +3221,8 @@ document.getElementById('create-form')?.addEventListener('submit', async (e) => 
         pollContainerStatus(name, 0);
       }
       closeCreateModal();
+      await loadContainers();
       toast(`Template deployed as "${name}"`, 'success');
-      loadContainers();
     } catch (e) { toast(`Failed: ${e.message}`, 'error'); }
     return;
   }
@@ -3198,8 +3239,8 @@ document.getElementById('create-form')?.addEventListener('submit', async (e) => 
     if (isRemote) { await api('POST', `/nodes/${encodeURIComponent(nodeId)}/containers`, data); }
     else { await api('POST', '/containers', data); }
     closeCreateModal();
+    await loadContainers();
     toast(`Container "${data.name}" created`, 'success');
-    loadContainers();
   } catch (e) { toast(`Failed: ${e.message}`, 'error'); }
 });
 

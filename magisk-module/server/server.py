@@ -3340,11 +3340,20 @@ small{color:#334155}
         return merged, config
 
     def _safe_path(self, merged, rel_path):
-        rel_path = rel_path.lstrip("/")
-        full = os.path.realpath(os.path.join(merged, rel_path))
-        if not full.startswith(os.path.realpath(merged)):
+        rel_path = (rel_path or "").lstrip("/")
+        merged_abs = os.path.abspath(merged)
+        lexical = os.path.normpath(os.path.join(merged_abs, rel_path)) if rel_path else merged_abs
+        if lexical != merged_abs and not lexical.startswith(merged_abs + os.sep):
             return None
-        return full
+        real_merged = os.path.realpath(merged)
+        real_full = os.path.realpath(lexical)
+        if real_full == real_merged or real_full.startswith(real_merged + os.sep):
+            return lexical
+        real_ank = os.path.realpath(ANK_DIR)
+        real_containers = os.path.realpath(CONTAINERS_DIR)
+        if real_full.startswith(real_ank + os.sep) and not real_full.startswith(real_containers + os.sep):
+            return lexical
+        return None
 
     def _file_info(self, full_path, rel_path):
         try:
@@ -3369,7 +3378,7 @@ small{color:#334155}
         rel_path = ""
         for param in qs.split("&"):
             if param.startswith("path="):
-                rel_path = unquote(param.split("=", 1)[1])
+                rel_path = unquote(param.split("=", 1)[1]).lstrip("/")
         full = self._safe_path(merged, rel_path)
         if not full or not os.path.isdir(full):
             self.send_error(400, "Invalid path")
@@ -3378,7 +3387,7 @@ small{color:#334155}
         try:
             for entry in sorted(os.listdir(full)):
                 entry_rel = os.path.join(rel_path, entry) if rel_path else entry
-                entry_full = os.path.join(merged, entry_rel)
+                entry_full = os.path.join(full, entry)
                 info = self._file_info(entry_full, entry_rel)
                 if info:
                     items.append(info)
@@ -3395,7 +3404,7 @@ small{color:#334155}
         rel_path = ""
         for param in qs.split("&"):
             if param.startswith("path="):
-                rel_path = unquote(param.split("=", 1)[1])
+                rel_path = unquote(param.split("=", 1)[1]).lstrip("/")
         full = self._safe_path(merged, rel_path)
         if not full or not os.path.isfile(full):
             self.send_error(400, "Invalid file path")
@@ -3467,8 +3476,8 @@ small{color:#334155}
         rel_path = ""
         for param in qs.split("&"):
             if param.startswith("path="):
-                rel_path = unquote(param.split("=", 1)[1])
-        if not rel_path or rel_path == "/":
+                rel_path = unquote(param.split("=", 1)[1]).lstrip("/")
+        if not rel_path:
             self.send_error(400, "Cannot delete root")
             return
         full = self._safe_path(merged, rel_path)
@@ -3517,7 +3526,7 @@ small{color:#334155}
         rel_path = ""
         for param in qs.split("&"):
             if param.startswith("path="):
-                rel_path = unquote(param.split("=", 1)[1])
+                rel_path = unquote(param.split("=", 1)[1]).lstrip("/")
         full = self._safe_path(merged, rel_path)
         if not full or not os.path.isfile(full):
             self.send_error(400, "Invalid file")
@@ -3544,7 +3553,7 @@ small{color:#334155}
         rel_path = ""
         for param in qs.split("&"):
             if param.startswith("path="):
-                rel_path = unquote(param.split("=", 1)[1])
+                rel_path = unquote(param.split("=", 1)[1]).lstrip("/")
         full = self._safe_path(merged, rel_path)
         if not full or not os.path.exists(full):
             self.send_error(404, "Not found")

@@ -432,9 +432,22 @@ class BackupManager:
             return code_map[exit_code]
         return f"ssh failed with exit code {exit_code}"
 
+    @staticmethod
+    def _safe_remote_path(base, path):
+        """Join path under base, refusing traversal outside base."""
+        import posixpath
+        base = (base or "/backups/ank").rstrip("/")
+        rel = (path or "").lstrip("/")
+        full = posixpath.normpath(posixpath.join(base, rel)) if rel else base
+        if full != base and not full.startswith(base + "/"):
+            return None
+        return full
+
     def list_remote_files(self, remote_config, path=""):
         base = remote_config.get("path", "/backups/ank").rstrip("/")
-        full_path = f"{base}/{path}".rstrip("/") if path else base
+        full_path = self._safe_remote_path(base, path)
+        if full_path is None:
+            return []
         host = str(remote_config.get("host", ""))
         port = str(remote_config.get("port", 22))
         user = str(remote_config.get("user", "root"))
@@ -459,6 +472,8 @@ class BackupManager:
             parts = line.split(None, 7)
             if len(parts) < 8:
                 continue
+            if parts[7] in (".", ".."):
+                continue
             ftype = "dir" if parts[0].startswith("d") else "file"
             try:
                 size = int(parts[4])
@@ -478,7 +493,9 @@ class BackupManager:
         port = str(remote_config.get("port", 22))
         user = str(remote_config.get("user", "root"))
         base = remote_config.get("path", "/backups/ank").rstrip("/")
-        full_path = f"{base}/{remote_path}"
+        full_path = self._safe_remote_path(base, remote_path)
+        if full_path is None:
+            raise ValueError("Invalid path outside backup root")
         password = remote_config.get("password", "")
         ssh_args = [
             "-p", port,
@@ -499,12 +516,16 @@ class BackupManager:
         user = str(remote_config.get("user", "root"))
         base = remote_config.get("path", "/backups/ank").rstrip("/")
         password = remote_config.get("password", "")
+        old_full = self._safe_remote_path(base, old_name)
+        new_full = self._safe_remote_path(base, new_name)
+        if old_full is None or new_full is None:
+            return False
         ssh_args = [
             "-p", port,
             "-o", "StrictHostKeyChecking=no",
             "-o", "UserKnownHostsFile=/dev/null",
             f"{user}@{host}",
-            "mv", f"{base}/{old_name}", f"{base}/{new_name}",
+            "mv", old_full, new_full,
         ]
         try:
             result = run_ssh_argv(["ssh"] + ssh_args, password, timeout=30)
@@ -517,7 +538,9 @@ class BackupManager:
         port = str(remote_config.get("port", 22))
         user = str(remote_config.get("user", "root"))
         base = remote_config.get("path", "/backups/ank").rstrip("/")
-        full_remote = f"{base}/{remote_name}"
+        full_remote = self._safe_remote_path(base, remote_name)
+        if full_remote is None:
+            raise ValueError("Invalid path outside backup root")
         password = remote_config.get("password", "")
         os.makedirs(os.path.dirname(local_path) or ".", exist_ok=True)
         scp_args = [
