@@ -7,9 +7,7 @@ import glob
 import datetime
 import hashlib
 import hmac
-import shlex
 import shutil
-import stat
 
 ANK_DIR = os.environ.get("ANK_DIR", "/data/local/ank")
 BACKUPS_DIR = os.path.join(ANK_DIR, "backups")
@@ -401,115 +399,8 @@ class BackupManager:
         return _result(False, self._map_ssh_failure(exit_code, stderr_tail), exit_code, stderr_tail)
 
     @staticmethod
-    def _ensure_chroot_pty(rootfs):
-        """Make sure sshpass can allocate a PTY inside the ankfs chroot.
-
-        sshpass needs /dev/ptmx + a mounted devpts to intercept ssh's
-        password prompt (exit 3 otherwise).  Strategy:
-          1. Bind-mount host /dev into chroot (best — host already has working ptmx)
-          2. Fallback: mknod ptmx + mount devpts
-        Logs every failure to stderr so [Backup] tests can diagnose.
-        """
-        import sys
-        dev = os.path.join(rootfs, "dev")
-        pts = os.path.join(dev, "pts")
-        ptmx = os.path.join(dev, "ptmx")
-
-        def _log(msg):
-            print(f"[BACKUP] _ensure_chroot_pty: {msg}", file=sys.stderr, flush=True)
-
-        try:
-            os.makedirs(pts, exist_ok=True)
-        except OSError as e:
-            _log(f"makedirs pts failed: {e}")
-
-        # 1) Is host /dev already bind-mounted here?
-        already = False
-        try:
-            with open("/proc/mounts") as f:
-                for line in f:
-                    parts = line.split()
-                    if len(parts) >= 2 and parts[1] == dev and parts[2] == "devtmpfs":
-                        already = True
-                        break
-                    # also accept a bind mount of /dev
-                    if len(parts) >= 3 and parts[1] == dev and parts[0] == "/dev":
-                        already = True
-                        break
-        except OSError as e:
-            _log(f"read /proc/mounts failed: {e}")
-
-        if not already:
-            # Primary: bind-mount host /dev (gives ptmx, pts, null, urandom, tty…)
-            try:
-                r = subprocess.run(
-                    ["mount", "--bind", "/dev", dev],
-                    capture_output=True, text=True, timeout=5,
-                )
-                _log(f"bind /dev -> {dev}: rc={r.returncode} stderr={r.stderr.strip()!r}")
-                if r.returncode != 0:
-                    # Secondary: just bind-mount host /dev/pts + ensure ptmx
-                    r2 = subprocess.run(
-                        ["mount", "--bind", "/dev/pts", pts],
-                        capture_output=True, text=True, timeout=5,
-                    )
-                    _log(f"bind /dev/pts -> {pts}: rc={r2.returncode} stderr={r2.stderr.strip()!r}")
-            except (OSError, subprocess.SubprocessError) as e:
-                _log(f"bind mount failed: {e}")
-
-        # 2) Ensure /dev/ptmx exists regardless (mknod fallback if bind failed)
-        if not os.path.exists(ptmx):
-            try:
-                os.mknod(ptmx, 0o666 | stat.S_IFCHR, os.makedev(5, 2))
-                _log(f"mknod {ptmx} ok")
-            except OSError as e:
-                _log(f"mknod {ptmx} failed: {e}")
-                # last resort: copy host's ptmx node via cat/cp -a won't work for devices;
-                # try busybox mknod
-                try:
-                    r = subprocess.run(
-                        ["mknod", ptmx, "c", "5", "2"],
-                        capture_output=True, text=True, timeout=5,
-                    )
-                    _log(f"mknod cmd rc={r.returncode} stderr={r.stderr.strip()!r}")
-                    if r.returncode == 0:
-                        os.chmod(ptmx, 0o666)
-                except (OSError, subprocess.SubprocessError) as e:
-                    _log(f"mknod cmd failed: {e}")
-        else:
-            try:
-                os.chmod(ptmx, 0o666)
-            except OSError as e:
-                _log(f"chmod ptmx failed: {e}")
-
-        # 3) Ensure devpts is mounted (if bind of whole /dev worked, pts is already there)
-        mounted = False
-        try:
-            with open("/proc/mounts") as f:
-                for line in f:
-                    parts = line.split()
-                    if len(parts) >= 2 and parts[1] in (pts, dev):
-                        # devpts on pts, or if parent /dev is bind-mounted with devpts under it
-                        if parts[2] == "devpts" or (parts[1] == dev and parts[2] in ("devtmpfs", "dev")):
-                            mounted = True
-                            break
-        except OSError:
-            pass
-        if not mounted:
-            try:
-                r = subprocess.run(
-                    ["mount", "-t", "devpts", "devpts", pts],
-                    capture_output=True, text=True, timeout=5,
-                )
-                _log(f"mount devpts -> {pts}: rc={r.returncode} stderr={r.stderr.strip()!r}")
-            except (OSError, subprocess.SubprocessError) as e:
-                _log(f"mount devpts failed: {e}")
-
-        _log(f"final: ptmx_exists={os.path.exists(ptmx)} pts_isdir={os.path.isdir(pts)}")
-
-    @staticmethod
     def _map_ssh_failure(exit_code, stderr):
-        """Map ssh/sshpass exit codes and stderr text to a short human reason."""
+        """Map ssh exit codes and stderr text to a short human reason."""
         low = (stderr or "").lower()
         if "permission denied" in low or "incorrect password" in low or "authentication failed" in low:
             return "authentication failed — wrong user or password"
@@ -522,13 +413,10 @@ class BackupManager:
             return "host unreachable — connection timed out"
         if "host key verification failed" in low:
             return "host key verification failed"
-        if "posix_openpt" in low or "/dev/ptmx" in low or "failed to create pty" in low \
-                or "pseudo terminal" in low or "failed to get a pseudo terminal" in low:
-            return "sshpass could not allocate a pty (/dev/ptmx or devpts missing in ankfs)"
         if "chroot" in low and ("operation not permitted" in low or "permission denied" in low):
             return "chroot failed — insufficient permissions"
-        if "not found" in low and ("sshpass" in low or low.endswith("ssh: not found")):
-            return "sshpass/ssh not found on device"
+        if "not found" in low and low.endswith("ssh: not found"):
+            return "ssh not found on device"
         code_map = {
             1: "ssh connection or authentication failed (exit 1)",
             2: "ssh usage/option error (exit 2)",
@@ -536,8 +424,8 @@ class BackupManager:
             6: "no password or host not resolved (exit 6)",
             124: "connection timed out — host unreachable (exit 124)",
             125: "ssh failed to start (exit 125)",
-            126: "sshpass/ssh not executable (exit 126)",
-            127: "sshpass or ssh not found on device (exit 127)",
+            126: "ssh not executable (exit 126)",
+            127: "ssh not found on device (exit 127)",
             255: "ssh could not connect or authenticate (exit 255)",
         }
         if exit_code in code_map:
@@ -546,21 +434,22 @@ class BackupManager:
 
     def list_remote_files(self, remote_config, path=""):
         base = remote_config.get("path", "/backups/ank").rstrip("/")
-        full_path = shlex.quote(f"{base}/{path}".rstrip("/") if path else base)
-        host = shlex.quote(str(remote_config.get("host", "")))
-        port = shlex.quote(str(remote_config.get("port", 22)))
-        user = shlex.quote(str(remote_config.get("user", "root")))
-        password = shlex.quote(str(remote_config.get("password", "")))
-        cmd = (
-            f"sshpass -e ssh -p {port} "
-            f"-o StrictHostKeyChecking=no "
-            f"{user}@{host} ls -la --time-style=long-iso {full_path} 2>/dev/null"
-        )
-        result = subprocess.run(
-            ["/system/bin/sh", "-c", cmd],
-            capture_output=True, text=True, timeout=30,
-            env={**os.environ, "SSHPASS": remote_config.get("password", "")}
-        )
+        full_path = f"{base}/{path}".rstrip("/") if path else base
+        host = str(remote_config.get("host", ""))
+        port = str(remote_config.get("port", 22))
+        user = str(remote_config.get("user", "root"))
+        password = remote_config.get("password", "")
+        ssh_args = [
+            "-p", port,
+            "-o", "StrictHostKeyChecking=no",
+            "-o", "UserKnownHostsFile=/dev/null",
+            f"{user}@{host}",
+            "ls", "-la", "--time-style=long-iso", full_path,
+        ]
+        try:
+            result = run_ssh_argv(["ssh"] + ssh_args, password, timeout=30)
+        except (subprocess.TimeoutExpired, OSError, ValueError, FileNotFoundError):
+            return []
         if result.returncode != 0:
             return []
         files = []
@@ -585,58 +474,65 @@ class BackupManager:
         return files
 
     def delete_remote_file(self, remote_config, remote_path):
-        host = shlex.quote(str(remote_config.get("host", "")))
-        port = shlex.quote(str(remote_config.get("port", 22)))
-        user = shlex.quote(str(remote_config.get("user", "root")))
+        host = str(remote_config.get("host", ""))
+        port = str(remote_config.get("port", 22))
+        user = str(remote_config.get("user", "root"))
         base = remote_config.get("path", "/backups/ank").rstrip("/")
-        full_path = shlex.quote(f"{base}/{remote_path}")
-        cmd = (
-            f"sshpass -e ssh -p {port} "
-            f"-o StrictHostKeyChecking=no "
-            f"{user}@{host} rm -f {full_path}"
-        )
-        result = subprocess.run(
-            ["/system/bin/sh", "-c", cmd],
-            capture_output=True, text=True, timeout=30,
-            env={**os.environ, "SSHPASS": remote_config.get("password", "")}
-        )
+        full_path = f"{base}/{remote_path}"
+        password = remote_config.get("password", "")
+        ssh_args = [
+            "-p", port,
+            "-o", "StrictHostKeyChecking=no",
+            "-o", "UserKnownHostsFile=/dev/null",
+            f"{user}@{host}",
+            "rm", "-f", full_path,
+        ]
+        try:
+            result = run_ssh_argv(["ssh"] + ssh_args, password, timeout=30)
+        except (subprocess.TimeoutExpired, OSError, ValueError, FileNotFoundError):
+            return False
         return result.returncode == 0
 
     def rename_remote_file(self, remote_config, old_name, new_name):
-        host = shlex.quote(str(remote_config.get("host", "")))
-        port = shlex.quote(str(remote_config.get("port", 22)))
-        user = shlex.quote(str(remote_config.get("user", "root")))
+        host = str(remote_config.get("host", ""))
+        port = str(remote_config.get("port", 22))
+        user = str(remote_config.get("user", "root"))
         base = remote_config.get("path", "/backups/ank").rstrip("/")
-        cmd = (
-            f"sshpass -e ssh -p {port} "
-            f"-o StrictHostKeyChecking=no "
-            f"{user}@{host} mv {shlex.quote(f'{base}/{old_name}')} {shlex.quote(f'{base}/{new_name}')}"
-        )
-        result = subprocess.run(
-            ["/system/bin/sh", "-c", cmd],
-            capture_output=True, text=True, timeout=30,
-            env={**os.environ, "SSHPASS": remote_config.get("password", "")}
-        )
+        password = remote_config.get("password", "")
+        ssh_args = [
+            "-p", port,
+            "-o", "StrictHostKeyChecking=no",
+            "-o", "UserKnownHostsFile=/dev/null",
+            f"{user}@{host}",
+            "mv", f"{base}/{old_name}", f"{base}/{new_name}",
+        ]
+        try:
+            result = run_ssh_argv(["ssh"] + ssh_args, password, timeout=30)
+        except (subprocess.TimeoutExpired, OSError, ValueError, FileNotFoundError):
+            return False
         return result.returncode == 0
 
     def download_remote_file(self, remote_config, remote_name, local_path):
-        host = shlex.quote(str(remote_config.get("host", "")))
-        port = shlex.quote(str(remote_config.get("port", 22)))
-        user = shlex.quote(str(remote_config.get("user", "root")))
+        host = str(remote_config.get("host", ""))
+        port = str(remote_config.get("port", 22))
+        user = str(remote_config.get("user", "root"))
         base = remote_config.get("path", "/backups/ank").rstrip("/")
-        full_remote = shlex.quote(f"{base}/{remote_name}")
-        local_path_safe = shlex.quote(local_path)
+        full_remote = f"{base}/{remote_name}"
+        password = remote_config.get("password", "")
         os.makedirs(os.path.dirname(local_path) or ".", exist_ok=True)
-        cmd = (
-            f"sshpass -e scp -P {port} "
-            f"-o StrictHostKeyChecking=no "
-            f"{user}@{host}:{full_remote} {local_path_safe}"
-        )
-        result = subprocess.run(
-            ["/system/bin/sh", "-c", cmd],
-            capture_output=True, text=True, timeout=600,
-            env={**os.environ, "SSHPASS": remote_config.get("password", "")}
-        )
+        scp_args = [
+            "-P", port,
+            "-o", "StrictHostKeyChecking=no",
+            "-o", "UserKnownHostsFile=/dev/null",
+            f"{user}@{host}:{full_remote}",
+            local_path,
+        ]
+        try:
+            result = run_ssh_argv(["scp"] + scp_args, password, timeout=600)
+        except subprocess.TimeoutExpired:
+            raise RuntimeError("SCP download timed out")
+        except (OSError, ValueError, FileNotFoundError) as e:
+            raise RuntimeError(f"SCP download failed: {e}")
         if result.returncode != 0:
             raise RuntimeError(f"SCP download failed: {result.stderr}")
         return local_path
