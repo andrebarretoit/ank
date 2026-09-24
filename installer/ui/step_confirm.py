@@ -125,7 +125,8 @@ class StepConfirm(QWidget):
                 "  1. Install PRoot/Termux on the device\n"
                 "  2. Install the full ANK stack (server + core + containers)\n"
                 "  3. Configure services and network\n"
-                "  4. Create the default container"
+                "  4. Create the default container\n"
+                "  5. Reboot the device"
             )
 
     # ------------------------------------------------------------------

@@ -78,39 +78,44 @@ class StepDone(QWidget):
         mode = getattr(self.app, "mode", "install")
 
         headings = {
-            "install": "\u2713 Installation complete",
-            "restore": "\u2713 Restore complete",
-            "clone": "\u2713 Clone complete",
-            "migrate": "\u2713 Migration complete",
-            "uninstall": "\u2713 Uninstall complete",
-            "reinstall": "\u2713 Reinstall complete",
-            "export": "\u2713 Export complete",
-            "restore_engine": "\u2713 Restore complete",
+            "install": "✓ Installation complete",
+            "restore": "✓ Restore complete",
+            "clone": "✓ Clone complete",
+            "migrate": "✓ Migration complete",
+            "uninstall": "✓ Uninstall complete",
+            "reinstall": "✓ Reinstall complete",
+            "export": "✓ Export complete",
+            "restore_engine": "✓ Restore complete",
         }
-        self.ok_label.setText(headings.get(mode, "\u2713 Done"))
-
-        # Uninstall/reinstall/export: no browser, no URL, no countdown
-        if mode in ("uninstall", "reinstall", "export"):
-            self.desc.setText(
-                "ANK has been completely removed from the device.\n\n"
-                "To install again, reconnect the device and run the installer."
-                if mode == "uninstall" else
-                "ANK has been reinstalled. You can now access the panel."
-                if mode == "reinstall" else
-                "ANK configuration has been exported to a file."
-            )
-            self.url_info.hide()
-            self.creds_info.hide()
-            self.device_info.hide()
-            self.mode_info.hide()
-            self.countdown_label.hide()
-            return
+        self.ok_label.setText(headings.get(mode, "✓ Done"))
 
         self.url_info.show()
         self.creds_info.show()
         self.device_info.show()
         self.mode_info.show()
         self.countdown_label.show()
+        self._countdown_timer.stop()
+
+        if mode == "uninstall":
+            self.desc.setText(
+                "ANK has been completely removed from the device.\n\n"
+                "To install again, reconnect the device and run the installer."
+            )
+            self.url_info.hide()
+            self.creds_info.hide()
+            self.mode_info.hide()
+            self.countdown_label.hide()
+            self._fill_info()
+            return
+
+        if mode == "export":
+            self.desc.setText(
+                "ANK configuration has been exported to a file.\n\n"
+                "The .ankengine file can be used to restore this setup on any device."
+            )
+            self.countdown_label.hide()
+            self._fill_info()
+            return
 
         self.desc.setText(
             "To access the panel:\n"
@@ -120,14 +125,26 @@ class StepDone(QWidget):
             "  4. Change the password immediately!"
         )
 
+        filled = self._fill_info()
+        if filled:
+            ip, protocol = filled
+            QTimer.singleShot(2000, lambda: self._open_browser(ip, protocol))
+
+        self._countdown = 5
+        self.countdown_label.setText(f"Closing in {self._countdown}s...")
+        self._countdown_timer.start(1000)
+
+    def _fill_info(self):
         device = self.app.device_data
-        if mode in ("clone", "migrate") and self.app.target_device:
+        if self.app.mode in ("clone", "migrate") and self.app.target_device:
             device = self.app.target_device
 
         if device:
             model = getattr(device, 'model', 'Unknown') or 'Unknown'
             serial = device.serial
             self.device_info.setText(f"Device: {model} ({serial})")
+        else:
+            self.device_info.hide()
 
         tier = self.app.recommended_tier
         if tier:
@@ -136,7 +153,7 @@ class StepDone(QWidget):
             self.mode_info.setText(f"Mode: {tier_name}")
             self.mode_info.setStyleSheet(f"color: {color}; font-size: 13px; font-weight: bold;")
         else:
-            self.mode_info.setText(f"Mode: {mode.capitalize()}")
+            self.mode_info.setText(f"Mode: {(self.app.mode or 'install').capitalize()}")
             self.mode_info.setStyleSheet(f"color: {COLORS['accent']}; font-size: 13px; font-weight: bold;")
 
         if device:
@@ -144,13 +161,10 @@ class StepDone(QWidget):
             detected_protocol = self._detect_protocol(ip)
             self.url_info.setText(f"URL: {detected_protocol}://{ip}:8001")
             self.app.detected_protocol = detected_protocol
+            return ip, detected_protocol
 
-            from PySide6.QtCore import QTimer
-            QTimer.singleShot(2000, lambda: self._open_browser(ip, detected_protocol))
-
-        self._countdown = 5
-        self.countdown_label.setText(f"Closing in {self._countdown}s...")
-        self._countdown_timer.start(1000)
+        self.url_info.hide()
+        return None
 
     def _countdown_tick(self):
         self._countdown -= 1

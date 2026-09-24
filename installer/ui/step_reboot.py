@@ -27,23 +27,60 @@ class RebootThread(QThread):
         self.status.emit("Rebooting device...")
         self.adb.reboot(self.serial)
 
-        time.sleep(15)
+        time.sleep(10)
 
         self.status.emit("Waiting for ADB to come back...")
-        if not self.adb.wait_for_device(self.serial, timeout=90):
+        if not self.adb.wait_for_device(self.serial, timeout=120):
             self.status.emit("Timeout waiting for ADB")
             self.done.emit(False)
             return
 
+        self.status.emit("Waiting for Android to finish booting...")
+        if not self.adb.wait_for_boot_completed(self.serial, timeout=120):
+            self.status.emit("Timeout waiting for boot to complete")
+            self.done.emit(False)
+            return
+
+        try:
+            ip = self.adb.get_device_ip(self.serial)
+            if ip:
+                self.device_ip = ip
+        except Exception:
+            pass
+
+        if not self.device_ip:
+            self.status.emit("Error: could not get the device's IP")
+            self.done.emit(False)
+            return
+
+        # Lite: start the server with retries, only mark started on success
+        try:
+            out, _ = self.adb.shell(self.serial, "ls /data/local/tmp/ank/mode 2>/dev/null")
+            if out and "mode" in out:
+                started = False
+                for attempt in range(1, 6):
+                    self.status.emit(f"Starting ANK server (lite)... attempt {attempt}/5")
+                    _, code = self.adb.shell(
+                        self.serial, "sh /data/local/tmp/ank/start-lite.sh", timeout=60
+                    )
+                    if code == 0:
+                        started = True
+                        break
+                    time.sleep(3)
+                if not started:
+                    self.status.emit("WARN: start-lite.sh failed, waiting for panel anyway...")
+                else:
+                    time.sleep(5)
+        except Exception:
+            pass
+
         self.status.emit("Waiting for the ANK server...")
 
-        _started_lite = False
         # Prefer panel_port from device config; fall back to common ports
         ports = [8001]
         try:
-            from core.adb import ADB as _A
-            _c = _A().shell(self.serial, "cat /data/local/ank/config.json 2>/dev/null")[0]
-            import json as _j, re as _re
+            _c = self.adb.shell(self.serial, "cat /data/local/ank/config.json 2>/dev/null")[0]
+            import re as _re
             m = _re.search(r'"panel_port"\s*:\s*(\d+)', _c or '')
             if m:
                 p = int(m.group(1))
@@ -69,19 +106,6 @@ class RebootThread(QThread):
                             return
                     except Exception:
                         pass
-
-            if not _started_lite and i >= 5:
-                try:
-                    from core.adb import ADB
-                    _adb = ADB()
-                    out, _ = _adb.shell(self.serial, "ls /data/local/tmp/ank/mode 2>/dev/null")
-                    if out and "mode" in out:
-                        self.status.emit("Starting ANK server (lite)...")
-                        _adb.shell(self.serial, "sh /data/local/tmp/ank/start-lite.sh")
-                        _started_lite = True
-                        time.sleep(10)
-                except Exception:
-                    pass
 
         self.done.emit(False)
 
@@ -196,6 +220,9 @@ class StepReboot(QWidget):
 
     def _on_done(self, success):
         if success:
+            if self._thread and getattr(self._thread, "device_ip", None):
+                self._device_ip = self._thread.device_ip
+                self.app.device_ip = self._device_ip
             self.status_label.setText("ANK is online!")
             self.countdown_label.setText("\u2713")
             self.countdown_label.setStyleSheet(

@@ -510,7 +510,21 @@ class LiteInstaller:
         self._log("[OK] ANK Shell installed")
 
         # Host keys + passwords
-        self._guest("ssh-keygen -A 2>/dev/null; echo root:admin123 | chpasswd; echo admin:admin123 | chpasswd; cat /dev/null > /etc/motd", timeout=180)
+        out, code = self._guest("ssh-keygen -A", timeout=120)
+        chk, _ = self._guest(
+            "test -f /etc/ssh/ssh_host_rsa_key -o -f /etc/ssh/ssh_host_ed25519_key "
+            "-o -f /etc/ssh/ssh_host_ecdsa_key && echo OK"
+        )
+        if "OK" not in chk:
+            self._log(f"[FAIL] SSH host keys not generated (keygen rc={code}): {out.strip()[:200]}")
+            return False
+        out, code = self._guest(
+            "echo root:admin123 | chpasswd && echo admin:admin123 | chpasswd", timeout=60
+        )
+        if code != 0:
+            self._log(f"[FAIL] chpasswd failed (rc={code}): {out.strip()[:200]}")
+            return False
+        self._guest("cat /dev/null > /etc/motd")
         self._log("[OK] Shadow configured")
 
         # --- Step 4: Server + scripts ---
@@ -558,7 +572,11 @@ class LiteInstaller:
         if not server_ok:
             self._log("[FAIL] Server did not start on port 8001")
             return False
-        ssh_ok = self._verify_server(port=2200, timeout=10)
+        ssh_ok = self._verify_server(port=2200, timeout=20)
+        if not ssh_ok:
+            self._log("[FAIL] SSH is not listening on port 2200")
+            return False
+        self._log("[OK] SSH listening on port 2200")
 
         # --- Cleanup ---
         self._notify("cleanup", "Cleaning up...", 0.98)

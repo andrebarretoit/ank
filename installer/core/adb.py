@@ -355,6 +355,19 @@ class ADB:
             time.sleep(3)
         return False
 
+    def wait_for_boot_completed(self, serial: str, timeout: int = 120) -> bool:
+        """Wait until sys.boot_completed == 1 after reboot."""
+        start = time.time()
+        while time.time() - start < timeout:
+            try:
+                result = self._run_device(serial, ["shell", "getprop", "sys.boot_completed"], timeout=5)
+                if result.stdout.strip() == "1":
+                    return True
+            except subprocess.TimeoutExpired:
+                pass
+            time.sleep(2)
+        return False
+
     def get_device_ip(self, serial: str) -> Optional[str]:
         """Get device IP address (wlan0)."""
         cmds = [
