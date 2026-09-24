@@ -120,66 +120,228 @@ def _find_free_ankd_port():
     return 50000
 
 
+def _guess_ip():
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.settimeout(0.5)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return "127.0.0.1"
+
+
+def _ankd_source():
+    here = os.path.dirname(os.path.abspath(__file__))
+    candidates = [
+        os.path.join(here, "ankd", "ankd.sh"),
+        os.path.join(ANK_DIR, "ankd", "ankd.sh"),
+        os.path.join(ANK_DIR, "core", "ankd", "ankd.sh"),
+        os.path.join(ANK_DIR, "core", "server", "ankd", "ankd.sh"),
+    ]
+    for c in candidates:
+        if os.path.isfile(c):
+            return c
+    return None
+
+
+def _install_ankd(merged, image, ssh_port):
+    ankd_core = os.path.join(merged, "usr/ankd/core")
+    services_d = os.path.join(merged, "etc/ankd/services.d")
+    os.makedirs(ankd_core, exist_ok=True)
+    os.makedirs(services_d, exist_ok=True)
+    os.makedirs(os.path.join(merged, "usr/ankd/services.d"), exist_ok=True)
+    os.makedirs(os.path.join(merged, "usr/ankd/services"), exist_ok=True)
+    os.makedirs(os.path.join(merged, "etc/ankd/services"), exist_ok=True)
+    os.makedirs(os.path.join(merged, "var/run/ankd"), exist_ok=True)
+    os.makedirs(os.path.join(merged, "var/log/ankd"), exist_ok=True)
+
+    src = _ankd_source()
+    if not src:
+        _log("WARN: ankd.sh source not found")
+        return False
+    dst = os.path.join(ankd_core, "ankd.sh")
+    shutil.copyfile(src, dst)
+    os.chmod(dst, 0o755)
+
+    ankctl = os.path.join(merged, "bin/ankctl")
+    os.makedirs(os.path.dirname(ankctl), exist_ok=True)
+    with open(ankctl, "w") as f:
+        f.write("#!/bin/sh\nexec /usr/ankd/core/ankd.sh \"$@\"\n")
+    os.chmod(ankctl, 0o755)
+
+    with open(os.path.join(services_d, "01-sshd.ankd"), "w") as f:
+        f.write(
+            f"NAME=sshd\n"
+            f"CMD=/usr/sbin/sshd -D -p {ssh_port} -o PasswordAuthentication=yes -o PermitRootLogin=yes -e\n"
+            f"DIR=/\n"
+            f"PID_FILE=/run/sshd.pid\n"
+            f"STOP_SIGNAL=TERM\n"
+            f"RESTART_POLICY=always\n"
+            f"RESTART_DELAY=3\n"
+        )
+
+    svc_map = {
+        "nginx": ("nginx", "nginx", "/var/www/html", "8080"),
+        "apache": ("apache", "httpd -D FOREGROUND", "/var/www/localhost/htdocs", "9090"),
+        "php": ("php", "php82 -S 0.0.0.0:8000 -t /var/www/php", "/var/www/php", "8000"),
+        "node": ("node", "node server.js", "/var/www/app", "3000"),
+        "python": ("python", "python3 server.py", "/var/www/app", "5000"),
+    }
+    for key, (svc_name, cmd, svc_dir, port) in svc_map.items():
+        if image.startswith(key):
+            with open(os.path.join(services_d, f"02-{svc_name}.ankd"), "w") as f:
+                f.write(
+                    f"NAME={svc_name}\n"
+                    f"CMD={cmd}\n"
+                    f"DIR={svc_dir}\n"
+                    f"PORT={port}\n"
+                    f"PID_FILE=/run/{svc_name}.pid\n"
+                    f"STOP_SIGNAL=TERM\n"
+                    f"RESTART_POLICY=always\n"
+                    f"RESTART_DELAY=3\n"
+                )
+            break
+    return True
+
+
 # ============================================================
 # Container Lifecycle
 # ============================================================
 
+def run_in_container(name, cmd, timeout=120):
+    merged = os.path.join(CONTAINERS_DIR, name, "merged")
+    if not os.path.exists(merged):
+        return subprocess.CompletedProcess(cmd, 1, "", "Container rootfs missing")
+    wrapped = "export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin HOME=/root TERM=xterm-256color LANG=C.UTF-8; " + cmd
+    env = dict(os.environ)
+    proot_tmp = os.path.join(ANK_DIR, "tmp")
+    try:
+        os.makedirs(proot_tmp, exist_ok=True)
+    except OSError:
+        pass
+    env["PROOT_TMP_DIR"] = proot_tmp
+    argv = [
+        PROOT_BIN, "-0", "-r", merged,
+        "-b", "/dev", "-b", "/proc", "-b", "/sys",
+        "-w", "/root",
+        "/bin/sh", "-c", wrapped,
+    ]
+    try:
+        return subprocess.run(
+            argv, capture_output=True, text=True, timeout=timeout, env=env
+        )
+    except subprocess.TimeoutExpired as e:
+        out = e.stdout or ""
+        err = e.stderr or ""
+        if isinstance(out, bytes):
+            out = out.decode("utf-8", errors="replace")
+        if isinstance(err, bytes):
+            err = err.decode("utf-8", errors="replace")
+        return subprocess.CompletedProcess(
+            cmd, -1, (out or "") + (err or ""), f"TIMEOUT after {timeout}s"
+        )
+    except Exception as e:
+        return subprocess.CompletedProcess(cmd, 1, "", str(e))
+
+
 def create_container(name, image="alpine-3.20", root_password="ank123",
                      ssh_port=None, ankd_port=None, packages=""):
-    if os.path.exists(os.path.join(CONTAINERS_DIR, name)):
-        return False, f"Container '{name}' already exists"
+    existing = os.path.join(CONTAINERS_DIR, name)
+    if os.path.exists(existing):
+        existing_cfg = _load_container_config(name)
+        existing_status = (existing_cfg or {}).get("status", "")
+        if existing_status not in ("building", "failed"):
+            return False, f"Container '{name}' already exists"
+        shutil.rmtree(existing, ignore_errors=True)
 
     if not ssh_port:
         ssh_port = _find_free_port(2201)
     if not ankd_port:
         ankd_port = _find_free_ankd_port()
 
-    merged = os.path.join(CONTAINERS_DIR, name, "merged")
+    if image.startswith("alpine-"):
+        image = f"ank-alpinebase-{image[7:]}"
+
+    base = None
+    image_dir = os.path.join(IMAGES_DIR, image)
+    if os.path.lexists(os.path.join(image_dir, "bin", "sh")):
+        base = image_dir
+    else:
+        fallback_dir = os.path.join(IMAGES_DIR, "ank-alpinebase-3.20")
+        if os.path.lexists(os.path.join(fallback_dir, "bin", "sh")):
+            base = fallback_dir
+    if not base:
+        return False, (
+            f"No usable base image for '{image}' "
+            f"(need {image_dir} or {os.path.join(IMAGES_DIR, 'ank-alpinebase-3.20')} with bin/sh)"
+        )
+
+    merged = os.path.join(existing, "merged")
     os.makedirs(merged, exist_ok=True)
 
-    # Find base rootfs (ankfs) or image
-    base = ROOTFS_DIR
-    image_dir = os.path.join(IMAGES_DIR, image)
-    if os.path.exists(os.path.join(image_dir, "bin", "sh")):
-        base = image_dir
-
-    # Copy rootfs
     _log(f"Creating '{name}' from {base}...")
     try:
         shutil.copytree(base, merged, dirs_exist_ok=True, symlinks=True)
     except Exception as e:
         return False, f"Failed to copy rootfs: {e}"
 
-    # Bind mount points for /dev
     dev_dir = os.path.join(merged, "dev")
     os.makedirs(dev_dir, exist_ok=True)
 
-    # Write portfwd config
     ank_dir = os.path.join(merged, "etc/ank")
     os.makedirs(ank_dir, exist_ok=True)
 
-    # Setup resolv.conf
     resolv = os.path.join(merged, "etc/resolv.conf")
     with open(resolv, "w") as f:
         f.write("nameserver 8.8.8.8\nnameserver 8.8.4.4\n")
 
-    # Install ankd.sh inside container
-    ankd_dir = os.path.join(merged, "usr/ankd/core")
-    os.makedirs(ankd_dir, exist_ok=True)
+    hosts = os.path.join(merged, "etc/hosts")
+    with open(hosts, "w") as f:
+        f.write("127.0.0.1 localhost\n")
 
-    # Save config
+    _install_ankd(merged, image, int(ssh_port))
+
+    if packages:
+        pkg_list = packages if isinstance(packages, str) else " ".join(packages)
+        pkg_list = pkg_list.strip()
+        if pkg_list:
+            _log(f"Installing packages in '{name}': {pkg_list}")
+            for attempt in range(1, 3):
+                r = run_in_container(
+                    name, f"apk update && apk add --allow-untrusted {pkg_list}", timeout=180
+                )
+                if r.returncode == 0:
+                    _log(f"OK: packages installed in '{name}'")
+                    break
+                if attempt < 2:
+                    _log(f"WARN: apk add failed (rc={r.returncode}), retrying in 15s...")
+                    time.sleep(15)
+
+    if root_password:
+        escaped = (root_password.replace("\\", "\\\\").replace("$", "\\$")
+                   .replace("`", "\\`").replace('"', '\\"'))
+        r = run_in_container(name, f'echo "root:{escaped}" | chpasswd', timeout=60)
+        if r.returncode != 0:
+            _log(f"WARN: chpasswd failed for '{name}': {(r.stderr or r.stdout or '').strip()[:200]}")
+
     config = {
         "name": name,
+        "instance_uuid": os.urandom(3).hex(),
         "status": "stopped",
         "image": image,
         "mode": "lite",
+        "autostart": False,
+        "ip_address": _guess_ip(),
         "ssh_port": int(ssh_port),
         "ankd_port": int(ankd_port),
-        "pid": None,
         "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "root_password": root_password,
+        "pid": None,
+        "policies": {"inter_container_p2p": False, "allow_host_access": False, "allow_internet": True},
+        "resources": {"memory_limit": "256M", "cpu_limit_percent": 50},
         "port_mappings": [],
-        "autostart": False,
+        "root_password": root_password,
     }
     _save_container_config(name, config)
     _log(f"Container '{name}' created (ssh={ssh_port}, ankd={ankd_port})")
@@ -200,14 +362,45 @@ def start_container(name):
 
     _log(f"Starting '{name}'...")
 
-    # Build PRoot command
-    env = (
-        f"HOME=/root "
-        f"TERM=xterm-256color "
-        f"LANG=C.UTF-8 "
-        f"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin "
-        f"LD_LIBRARY_PATH={merged}/lib:{merged}/usr/lib"
-    )
+    ssh_port = int(config.get("ssh_port") or 2201)
+    ankd_port = int(config.get("ankd_port") or 50000)
+    instance_uuid = config.get("instance_uuid") or name
+
+    ankd_sh = os.path.join(merged, "usr/ankd/core/ankd.sh")
+    if os.path.exists(ankd_sh):
+        inner = (
+            "export PATH=/bin:/sbin:/usr/bin:/usr/sbin HOME=/root TERM=xterm-256color "
+            f"LANG=C.UTF-8 LD_LIBRARY_PATH={merged}/lib:{merged}/usr/lib; "
+            f"ANKD_CONTAINER={name} ANKD_SSHD_PORT={ssh_port} ANKD_PORT={ankd_port} "
+            f"ANKD_INSTANCE_UUID={instance_uuid} ANK_HEALTH_FILE=/tmp/ank-health "
+            "/usr/ankd/core/ankd.sh daemon"
+        )
+    else:
+        inner = (
+            "export PATH=/bin:/sbin:/usr/bin:/usr/sbin HOME=/root TERM=xterm-256color "
+            f"LANG=C.UTF-8 LD_LIBRARY_PATH={merged}/lib:{merged}/usr/lib; "
+            "trap '' HUP PIPE; _ank_exit=0; trap '_ank_exit=1' TERM INT; "
+            "mkdir -p /run/sshd 2>/dev/null; "
+            f"hostname {name} 2>/dev/null; "
+            "cd /root 2>/dev/null || cd /; "
+            "if [ -x /usr/sbin/sshd ]; then "
+            "ssh-keygen -A 2>/dev/null; "
+            f"/usr/sbin/sshd -D -p {ssh_port} -o PasswordAuthentication=yes "
+            "-o PermitRootLogin=yes -o PidFile=/run/sshd.pid -e 2>/dev/null & "
+            "_sshd_pid=$!; fi; "
+            "if [ -f /etc/ank/service ]; then "
+            "_svc=$(cat /etc/ank/service 2>/dev/null); "
+            "case \"$_svc\" in "
+            "nginx) mkdir -p /run/nginx 2>/dev/null; nginx 2>/dev/null & ;; "
+            "apache) httpd -f -p 80 -h /var/www/localhost/htdocs 2>/dev/null & ;; "
+            "php) php -S 0.0.0.0:80 -t /var/www/php 2>/dev/null & ;; "
+            "node) cd /var/www/app 2>/dev/null; node server.js 2>/dev/null & ;; "
+            "python) cd /var/www/app 2>/dev/null; python3 server.py 2>/dev/null & ;; "
+            "esac; fi; "
+            "while [ \"$_ank_exit\" = \"0\" ]; do "
+            "if [ -n \"$_sshd_pid\" ] && ! kill -0 \"$_sshd_pid\" 2>/dev/null; then break; fi; "
+            "sleep 5 2>/dev/null || true; done"
+        )
 
     cmd = [
         PROOT_BIN,
@@ -216,14 +409,17 @@ def start_container(name):
         "-b", "/dev",
         "-b", "/proc",
         "-b", "/sys",
-        "-w", "/root",
-        "/bin/sh", "-c",
-        f"{env} /usr/bin/python3 /opt/ank/server.py"
+        "-w", "/",
+        "/bin/sh", "-c", inner,
     ]
 
-    # Start via PRoot (background)
     log_path = os.path.join(LOGS_DIR, f"{name}.log")
     os.makedirs(LOGS_DIR, exist_ok=True)
+    proot_tmp = os.path.join(ANK_DIR, "tmp")
+    os.makedirs(proot_tmp, exist_ok=True)
+
+    env = dict(os.environ)
+    env["PROOT_TMP_DIR"] = proot_tmp
 
     try:
         with open(log_path, "a") as lf:
@@ -234,13 +430,21 @@ def start_container(name):
             stdout=open(log_path, "a"),
             stderr=subprocess.STDOUT,
             preexec_fn=_setsid_safe,
+            env=env,
         )
+
+        time.sleep(2)
+        if proc.poll() is not None:
+            _log(f"ERROR: start '{name}': process died immediately after start")
+            config["pid"] = None
+            config["status"] = "failed"
+            _save_container_config(name, config)
+            return False, "Container process died immediately after start"
 
         config["pid"] = proc.pid
         config["status"] = "running"
         _save_container_config(name, config)
 
-        # Start port proxies
         _start_port_proxies(name, config)
 
         _log(f"Container '{name}' started (pid={proc.pid})")
@@ -248,6 +452,9 @@ def start_container(name):
 
     except Exception as e:
         _log(f"ERROR: start '{name}': {e}")
+        config["pid"] = None
+        config["status"] = "failed"
+        _save_container_config(name, config)
         return False, str(e)
 
 
@@ -487,6 +694,8 @@ def _start_port_proxies(name, config):
             host_port = m.get("host_port") or m.get("hostPort")
             container_port = m.get("container_port") or m.get("containerPort")
             if host_port and container_port:
+                if int(host_port) == int(container_port):
+                    continue
                 proxy = PortProxy(name, host_port, container_port)
                 proxy.start()
                 _port_proxies.setdefault(name, []).append(proxy)
@@ -514,8 +723,8 @@ def add_port_mapping(name, host_port, container_port):
     config["port_mappings"] = mappings
     _save_container_config(name, config)
 
-    # Start proxy if container is running
-    if _is_proot_running(name):
+    # Start proxy if container is running (shared netns: skip when ports are equal)
+    if _is_proot_running(name) and int(host_port) != int(container_port):
         proxy = PortProxy(name, host_port, container_port)
         proxy.start()
         with _proxy_lock:

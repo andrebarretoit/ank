@@ -2477,8 +2477,57 @@ small{color:#334155}
 
         ankd_port = self._find_free_ankd_port()
 
+        template_id = data.get("template", "")
+        template_name = data.get("template_name", "")
+        template = None
+        if template_id:
+            for t in self.IMAGE_TEMPLATES:
+                if t["id"] == template_id:
+                    template = t
+                    break
+            if template:
+                template_name = template_name or template["name"]
+                if not data.get("image") or data.get("image") == template_id:
+                    image = template["image"]
+
         # --- LITE MODE ---
         if is_lite():
+            mapped_image = image
+            if image.startswith("alpine-"):
+                mapped_image = f"ank-alpinebase-{image[7:]}"
+            tpl = template
+            if not tpl:
+                for t in self.IMAGE_TEMPLATES:
+                    if t["base"] == image or t["image"] == image or t["base"] == mapped_image or t["image"] == mapped_image:
+                        tpl = t
+                        break
+            pkgs = " ".join(tpl.get("packages", [])) if tpl else ""
+            tpl_id = template_id or (tpl["id"] if tpl else "")
+            tpl_name = template_name or (tpl["name"] if tpl else "")
+
+            stub_dir = os.path.join(CONTAINERS_DIR, name)
+            os.makedirs(stub_dir, exist_ok=True)
+            stub_config = {
+                "name": name,
+                "status": "building",
+                "image": mapped_image,
+                "mode": get_mode().get("mode", "lite"),
+                "autostart": data.get("autostart", False),
+                "ip_address": "",
+                "ssh_port": ssh_port,
+                "ankd_port": ankd_port,
+                "created_at": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "pid": None,
+                "policies": data.get("policies", {}),
+                "resources": data.get("resources", {"memory_limit": "256M", "cpu_limit_percent": 50}),
+                "port_mappings": data.get("port_mappings", []),
+                "root_password": root_password
+            }
+            if tpl_id:
+                stub_config["template"] = tpl_id
+                stub_config["template_name"] = tpl_name
+            save_container_config(name, stub_config)
+
             def _do_lite_create():
                 log_path = os.path.join(ANK_DIR, "logs", f"{name}.log")
                 try:
@@ -2486,7 +2535,7 @@ small{color:#334155}
                         lf.write(f"Creating container '{name}' (lite mode)...\n")
                         lf.flush()
                     ok, result = ank_lite.create_container(
-                        name, image, root_password, ssh_port, ankd_port)
+                        name, mapped_image, root_password, ssh_port, ankd_port, packages=pkgs)
                     if not ok:
                         with open(log_path, "a") as lf:
                             lf.write(f"ERROR: {result}\n")
@@ -2496,17 +2545,17 @@ small{color:#334155}
                             cfg["status"] = "failed"
                             save_container_config(name, cfg)
                     else:
-                        start_ok, start_result = ank_lite.start_container(name)
                         cfg = load_container_config(name)
                         if cfg:
-                            if start_ok:
-                                cfg["status"] = "running"
-                            else:
-                                cfg["status"] = "stopped"
+                            cfg["status"] = "stopped"
+                            cfg["image"] = mapped_image
+                            if tpl_id:
+                                cfg["template"] = tpl_id
+                                cfg["template_name"] = tpl_name
                             save_container_config(name, cfg)
                         with open(log_path, "a") as lf:
-                            lf.write(f"Container '{name}' created ({'running' if start_ok else 'stopped'})\n")
-                        log(f"Container {name} created (lite, {'running' if start_ok else 'stopped'})")
+                            lf.write(f"Container '{name}' created (stopped)\n")
+                        log(f"Container {name} created (lite)")
                 except Exception as e:
                     log(f"ERROR: lite create thread {name}: {e}")
                     cfg = load_container_config(name)
@@ -2538,6 +2587,9 @@ small{color:#334155}
             "port_mappings": data.get("port_mappings", []),
             "root_password": root_password
         }
+        if template_id:
+            stub_config["template"] = template_id
+            stub_config["template_name"] = template_name
         save_container_config(name, stub_config)
 
         # Run actual creation in background thread
@@ -2554,6 +2606,11 @@ small{color:#334155}
                     if t["base"] == image or t["image"] == image or t["base"] == mapped_image or t["image"] == mapped_image:
                         template = t
                         break
+                if not template and template_id:
+                    for t in self.IMAGE_TEMPLATES:
+                        if t["id"] == template_id:
+                            template = t
+                            break
                 pkgs = " ".join(template.get("packages", [])) if template else ""
                 with open(log_path, "w") as lf:
                     lf.write(f"Creating container '{name}' (image: {mapped_image})...\n")
@@ -2573,6 +2630,9 @@ small{color:#334155}
                         if template:
                             cfg["template"] = template["id"]
                             cfg["template_name"] = template["name"]
+                        elif template_id:
+                            cfg["template"] = template_id
+                            cfg["template_name"] = template_name or template_id
                     save_container_config(name, cfg)
             except Exception as e:
                 log(f"ERROR: create thread {name}: {e}")
@@ -2611,7 +2671,7 @@ small{color:#334155}
                     if cfg:
                         if not ok:
                             log(f"ERROR: lite start {name}: {result}")
-                            cfg["status"] = "stopped"
+                            cfg["status"] = "failed"
                             cfg["pid"] = None
                             save_container_config(name, cfg)
                             note_container_stopped(name)
@@ -2626,7 +2686,7 @@ small{color:#334155}
                     log(f"ERROR: lite start thread {name}: {e}")
                     cfg = load_container_config(name)
                     if cfg:
-                        cfg["status"] = "stopped"
+                        cfg["status"] = "failed"
                         cfg["pid"] = None
                         save_container_config(name, cfg)
                         note_container_stopped(name)
@@ -3955,38 +4015,10 @@ small{color:#334155}
                         cfg["template_name"] = template["name"]
                         save_container_config(container_name, cfg)
 
-                    host_ank = "/data/local/tmp/ank" if ANK_DIR == "/ank" else ANK_DIR
-                    proot_bin = os.path.join(host_ank, "proot")
-                    host_merged = os.path.join(host_ank, "containers", container_name, "merged")
-
                     def _proot(cmd, timeout=30):
-                        env = "HOME=/root TERM=xterm-256color LANG=C.UTF-8 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-                        wrapped = f"{env} {cmd}"
-                        full = f"PROOT_TMP_DIR={host_ank}/tmp {proot_bin} -0 -r {host_merged} -b /dev -b /proc -b /sys -w /root /bin/sh -c '{wrapped}'"
-                        try:
-                            return subprocess.run(
-                                [HOST_SH, "-c", full],
-                                capture_output=True, text=True, timeout=timeout
-                            )
-                        except subprocess.TimeoutExpired as e:
-                            out = e.stdout
-                            err = e.stderr
-                            if isinstance(out, bytes):
-                                out = out.decode("utf-8", errors="replace")
-                            if isinstance(err, bytes):
-                                err = err.decode("utf-8", errors="replace")
-                            partial_out = (out or "") + (err or "")
-                            class _Result:
-                                pass
-                            r = _Result()
-                            r.returncode = -1
-                            r.stdout = partial_out
-                            r.stderr = f"TIMEOUT after {timeout}s"
-                            return r
+                        return ank_lite.run_in_container(container_name, cmd, timeout=timeout)
 
                     _proot('echo "nameserver 8.8.8.8" > /etc/resolv.conf; echo "nameserver 8.8.4.4" >> /etc/resolv.conf')
-
-                    merged = host_merged
 
                 else:
                     pkgs = " ".join(template.get("packages", []))
@@ -4127,18 +4159,7 @@ small{color:#334155}
 
                 cfg = load_container_config(container_name)
                 if cfg:
-                    if is_lite_mode:
-                        start_ok, start_result = ank_lite.start_container(container_name)
-                        if start_ok:
-                            cfg["status"] = "running"
-                            with open(log_path, "a") as lf:
-                                lf.write(f"Container started.\n")
-                        else:
-                            cfg["status"] = "stopped"
-                            with open(log_path, "a") as lf:
-                                lf.write(f"Container created but not started: {start_result}\n")
-                    else:
-                        cfg["status"] = "stopped"
+                    cfg["status"] = "stopped"
                     save_container_config(container_name, cfg)
                 log(f"Template '{template['name']}' deployed as '{container_name}'")
                 with open(log_path, "a") as lf:
@@ -4163,6 +4184,22 @@ small{color:#334155}
 
     def api_build_ankfile(self, data):
         global _building
+        target_node = data.get("target_node", "local")
+        if target_node and target_node != "local":
+            nm = self._get_node_manager()
+            if not nm:
+                self.send_json({"error": "node_manager not available"}, 500)
+                return
+            payload = {k: v for k, v in data.items() if k != "target_node"}
+            result = nm._node_api_post(target_node, "/api/images/ankfile", payload)
+            if isinstance(result, dict) and result.get("error"):
+                code = result.get("status_code")
+                if not isinstance(code, int) or code < 400:
+                    code = 502
+                self.send_json(result, code)
+                return
+            self.send_json(result if isinstance(result, dict) else {"message": "Build started"})
+            return
         ankfile_content = data.get("content", "")
         container_name = data.get("name", "")
         save_as_image = data.get("save_as_image", False)
@@ -4223,25 +4260,26 @@ small{color:#334155}
         # Write stub config with "building" status immediately
         ssh_port = self._find_free_port(2201)
         ankd_port = self._find_free_ankd_port()
-        stub_dir = os.path.join(CONTAINERS_DIR, container_name)
-        os.makedirs(stub_dir, exist_ok=True)
-        stub_config = {
-            "name": container_name,
-            "status": "building",
-            "image": base_image,
-            "mode": get_mode().get("mode", "shared_host"),
-            "autostart": False,
-            "ip_address": "",
-            "ssh_port": ssh_port,
-            "ankd_port": ankd_port,
-            "created_at": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "pid": None,
-            "policies": {"inter_container_p2p": False, "allow_host_access": False, "allow_internet": True},
-            "resources": {"memory_limit": "256M", "cpu_limit_percent": 50},
-            "port_mappings": [],
-            "root_password": root_password
-        }
-        save_container_config(container_name, stub_config)
+        if not is_lite():
+            stub_dir = os.path.join(CONTAINERS_DIR, container_name)
+            os.makedirs(stub_dir, exist_ok=True)
+            stub_config = {
+                "name": container_name,
+                "status": "building",
+                "image": base_image,
+                "mode": get_mode().get("mode", "shared_host"),
+                "autostart": False,
+                "ip_address": "",
+                "ssh_port": ssh_port,
+                "ankd_port": ankd_port,
+                "created_at": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "pid": None,
+                "policies": {"inter_container_p2p": False, "allow_host_access": False, "allow_internet": True},
+                "resources": {"memory_limit": "256M", "cpu_limit_percent": 50},
+                "port_mappings": [],
+                "root_password": root_password
+            }
+            save_container_config(container_name, stub_config)
 
         def _do_build():
             global _building
@@ -4263,10 +4301,33 @@ small{color:#334155}
                         pkgs = " ".join(t.get("packages", []))
                         break
 
-                output, code = run_script("container.sh", "create", container_name, mapped_image, root_password, str(ssh_port), pkgs, timeout=300)
-                with open(log_path, "a") as lf:
-                    lf.write(output + "\n")
-                    lf.flush()
+                is_lite_mode = is_lite()
+                if is_lite_mode:
+                    ok, result = ank_lite.create_container(
+                        container_name, mapped_image, root_password, ssh_port, ankd_port)
+                    with open(log_path, "a") as lf:
+                        if ok:
+                            lf.write(f"Container created (lite, ssh={ssh_port}, ankd={ankd_port})\n")
+                        else:
+                            lf.write(f"ERROR: {result}\n")
+                        lf.flush()
+                    if not ok:
+                        log(f"ERROR: lite create {container_name}: {result}")
+                        cfg = load_container_config(container_name)
+                        if cfg:
+                            cfg["status"] = "failed"
+                            save_container_config(container_name, cfg)
+                        return
+                    code = 0
+                    cfg = load_container_config(container_name)
+                    if cfg:
+                        cfg["status"] = "building"
+                        save_container_config(container_name, cfg)
+                else:
+                    output, code = run_script("container.sh", "create", container_name, mapped_image, root_password, str(ssh_port), pkgs, timeout=300)
+                    with open(log_path, "a") as lf:
+                        lf.write(output + "\n")
+                        lf.flush()
 
                 merged = os.path.join(CONTAINERS_DIR, container_name, "merged")
 
@@ -4306,30 +4367,40 @@ small{color:#334155}
                         r.stderr = f"TIMEOUT after {timeout}s"
                         return r
 
-                _chroot('mkdir -p /etc; echo "nameserver 8.8.8.8" > /etc/resolv.conf; echo "nameserver 8.8.4.4" >> /etc/resolv.conf')
+                if is_lite_mode:
+                    def _proot(cmd, timeout=60):
+                        return ank_lite.run_in_container(container_name, cmd, timeout=timeout)
+                    run_cmd = _proot
+                else:
+                    run_cmd = _chroot
+
+                config = load_container_config(container_name)
+
+                run_cmd('mkdir -p /etc; echo "nameserver 8.8.8.8" > /etc/resolv.conf; echo "nameserver 8.8.4.4" >> /etc/resolv.conf')
 
                 for cmd in commands:
                     log(f"Ankfile RUN: {cmd}")
                     with open(log_path, "a") as lf:
                         lf.write(f"RUN: {cmd}\n")
                         lf.flush()
-                    r = _chroot(cmd, timeout=300)
+                    r = run_cmd(cmd, timeout=300)
                     output = (r.stdout or "") + (r.stderr or "")
                     if r.returncode != 0:
                         # If it's an apk add command, retry once after 15s
                         if "apk add" in cmd:
                             log(f"Ankfile RUN apk failed, retrying in 15s...")
                             import time; time.sleep(15)
-                            r = _chroot(cmd, timeout=300)
+                            r = run_cmd(cmd, timeout=300)
                             output = (r.stdout or "") + (r.stderr or "")
                             if r.returncode != 0:
                                 log(f"Ankfile RUN apk failed after retry")
-                                config["package_failure"] = {
-                                    "packages": cmd,
-                                    "error": output[-500:],
-                                    "ssh_port": config.get("ssh_port", 22)
-                                }
-                                save_container_config(container_name, config)
+                                if config:
+                                    config["package_failure"] = {
+                                        "packages": cmd,
+                                        "error": output[-500:],
+                                        "ssh_port": config.get("ssh_port", 22)
+                                    }
+                                    save_container_config(container_name, config)
                         else:
                             log(f"Ankfile RUN failed: {output[-500:]}")
                         with open(log_path, "a") as lf:
@@ -5403,7 +5474,10 @@ small{color:#334155}
                         name = cfg.get("name")
                         if name:
                             log(f"RESTART_SERVER: Stopping {name}...")
-                            run_script("container.sh", "stop", name)
+                            if is_lite():
+                                ank_lite.stop_container(name)
+                            else:
+                                run_script("container.sh", "stop", name)
                 except Exception:
                     pass
             # Kill server processes
@@ -5414,7 +5488,10 @@ small{color:#334155}
             # Restart server
             log("RESTART_SERVER: Starting server...")
             ank_dir = os.path.dirname(ANK_DIR) if ANK_DIR.endswith("/ankfs") else ANK_DIR
-            os.system(f"setsid sh {ANK_DIR}/opt/ank/start-server.sh </dev/null >{ANK_DIR}/logs/server.log 2>&1 &")
+            if is_lite():
+                os.system(f"setsid sh {ANK_DIR}/start-lite.sh </dev/null >{ANK_DIR}/logs/server.log 2>&1 &")
+            else:
+                os.system(f"setsid sh {ANK_DIR}/opt/ank/start-server.sh </dev/null >{ANK_DIR}/logs/server.log 2>&1 &")
             log("RESTART_SERVER: Done")
         threading.Thread(target=_restart, daemon=True).start()
         self.send_json({"message": "Server restarting..."})
@@ -5500,9 +5577,14 @@ small{color:#334155}
         ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         log(f"ANK_MANAGER: [UNINSTALL] {ts} from {client_ip} - Starting full uninstall...")
         import subprocess
+        if is_lite():
+            log(f"ANK_MANAGER: [UNINSTALL] {ts} from {client_ip} - Rejected (lite mode)")
+            self.send_json({"error": "Lite mode: uninstall is not available from the panel. Use the ANK Installer to uninstall ANK."}, 400)
+            return
         # Find uninstall script
         candidates = [
             "/data/adb/modules/ank/scripts/uninstall.sh",
+            os.path.join(ANK_DIR, "core", "uninstall.sh"),
             os.path.join(os.path.dirname(os.path.dirname(ANK_DIR)), "scripts", "uninstall.sh"),
             os.path.join(ANK_DIR, "scripts", "uninstall.sh"),
         ]
@@ -5559,9 +5641,9 @@ small{color:#334155}
                 alt = None
                 try:
                     fd1 = os.readlink("/proc/self/fd/1")
-                    if fd1 and os.path.isfile(fd1) and os.path.abspath(fd1) != os.path.abspath(log_file):
+                    if fd1 and not fd1.startswith(("pipe:", "socket:")) and os.path.isfile(fd1) and os.path.abspath(fd1) != os.path.abspath(log_file):
                         alt = fd1
-                except OSError:
+                except (OSError, ValueError):
                     alt = None
                 if alt:
                     try:
@@ -5628,6 +5710,17 @@ small{color:#334155}
             ssh_enabled = config.get("ssh_enabled", False)
             ssh_port = config.get("ssh_port", 2200)
             ssh_pid = os.path.join(ankfs, "run/ankd/sshd.pid")
+            sshd_conf = os.path.join(ankfs, "etc/ssh/sshd_config")
+            if is_lite():
+                if os.path.isfile(sshd_conf):
+                    import re
+                    with open(sshd_conf) as f:
+                        content = f.read()
+                    content = re.sub(r'^Port\s+\d+', f'Port {ssh_port}', content, flags=re.MULTILINE)
+                    with open(sshd_conf, 'w') as f:
+                        f.write(content)
+                log(f"sshd config updated (lite, port {ssh_port})")
+                return
             # Kill existing sshd
             try:
                 with open(ssh_pid) as f:
@@ -5641,7 +5734,6 @@ small{color:#334155}
                 log(f"sshd disabled")
                 return
             # Update port in sshd config
-            sshd_conf = os.path.join(ankfs, "etc/ssh/sshd_config")
             if os.path.isfile(sshd_conf):
                 import re
                 with open(sshd_conf) as f:
@@ -6075,9 +6167,9 @@ small{color:#334155}
         containers_size = "-"
         total_size = "-"
         try:
-            rootfs_size = self._du_human("/data/local/ank/ankfs")
-            containers_size = self._du_human("/data/local/ank/containers")
-            total_size = self._du_human("/data/local/ank")
+            rootfs_size = self._du_human(os.path.join(ANK_DIR, "ankfs"))
+            containers_size = self._du_human(os.path.join(ANK_DIR, "containers"))
+            total_size = self._du_human(ANK_DIR)
         except Exception:
             pass
         self.send_json({
@@ -6984,8 +7076,29 @@ small{color:#334155}
         if not name:
             self.send_json({"error": "Container name required"}, 400)
             return
+        template_id = data.get("template", "")
+        if template_id:
+            template = None
+            for t in self.IMAGE_TEMPLATES:
+                if t["id"] == template_id:
+                    template = t
+                    break
+            if template:
+                image = data.get("image", "")
+                if not image or image == template_id:
+                    data["image"] = template["image"]
+                data["template"] = template_id
         result = nm.create_container_on_node(node_id, data)
-        self.send_json(result if result else {"message": f"Container '{name}' creation sent"})
+        if not result:
+            self.send_json({"message": f"Container '{name}' creation sent"})
+            return
+        if isinstance(result, dict) and result.get("error"):
+            code = result.get("status_code")
+            if not isinstance(code, int) or code < 400:
+                code = 502
+            self.send_json(result, code)
+            return
+        self.send_json(result, result.get("status_code", 200) if isinstance(result, dict) else 200)
 
     # ============================================================
     # System Dashboard (aggregate across nodes)
@@ -7436,6 +7549,7 @@ def main():
         import subprocess
         candidates = [
             "/data/adb/modules/ank/scripts/restart-server.sh",
+            os.path.join(ANK_DIR, "core", "restart-server.sh"),
             os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "scripts", "restart-server.sh"),
             os.path.join(ANK_DIR, "restart-server.sh"),
         ]
@@ -7461,6 +7575,7 @@ def main():
         for candidate in [
             uninstall_script,
             "/data/adb/modules/ank/scripts/uninstall.sh",
+            os.path.join(ANK_DIR, "core", "uninstall.sh"),
             os.path.join(ANK_DIR, "uninstall.sh"),
         ]:
             if os.path.isfile(candidate):
