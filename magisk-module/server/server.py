@@ -2534,10 +2534,11 @@ small{color:#334155}
                 log_path = os.path.join(ANK_DIR, "logs", f"{name}.log")
                 try:
                     with open(log_path, "w") as lf:
-                        lf.write(f"Deploying container '{name}'...\n")
+                        lf.write(f"Creating container '{name}' (image: {mapped_image})...\n")
                         lf.flush()
                     ok, result = ank_lite.create_container(
-                        name, mapped_image, root_password, ssh_port, ankd_port)
+                        name, mapped_image, root_password, ssh_port, ankd_port,
+                        template_id=tpl_id)
                     if not ok:
                         with open(log_path, "a") as lf:
                             lf.write(f"ERROR: {result}\n")
@@ -3983,7 +3984,8 @@ small{color:#334155}
 
                 if is_lite_mode:
                     ok, result = ank_lite.create_container(
-                        container_name, base_image, root_password, ssh_port, ankd_port)
+                        container_name, base_image, root_password, ssh_port, ankd_port,
+                        template_id=template_id)
                     if not ok:
                         with open(log_path, "a") as lf:
                             lf.write(f"ERROR: {result}\n")
@@ -4004,8 +4006,6 @@ small{color:#334155}
 
                     def _proot(cmd, timeout=30):
                         return ank_lite.run_in_container(container_name, cmd, timeout=timeout)
-
-                    _proot('echo "nameserver 8.8.8.8" > /etc/resolv.conf; echo "nameserver 8.8.4.4" >> /etc/resolv.conf')
 
                 else:
                     pkgs = " ".join(template.get("packages", []))
@@ -4110,10 +4110,6 @@ small{color:#334155}
                             "ssh_port": config.get("ssh_port", 22)
                         }
                         save_container_config(container_name, config)
-                elif template.get("packages") and is_lite_mode:
-                    with open(log_path, "a") as lf:
-                        lf.write("Base image packages present, skipping apk add\n")
-                        lf.flush()
 
                 if template_id == "nginx":
                     static_dir = template["static_path"]

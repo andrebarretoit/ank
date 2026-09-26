@@ -146,7 +146,12 @@ def _ankd_source():
     return None
 
 
-def _install_ankd(merged, image, ssh_port):
+def _install_ankd(merged, image, ssh_port, template_id="", name=None):
+    def _alog(msg):
+        if name:
+            _append_container_log(name, msg)
+
+    _alog("  Installing ankd service manager...")
     ankd_core = os.path.join(merged, "usr/ankd/core")
     services_d = os.path.join(merged, "etc/ankd/services.d")
     os.makedirs(ankd_core, exist_ok=True)
@@ -159,7 +164,7 @@ def _install_ankd(merged, image, ssh_port):
 
     src = _ankd_source()
     if not src:
-        _log("WARN: ankd.sh source not found")
+        _alog("  WARN: ankd.sh not found")
         return False
     dst = os.path.join(ankd_core, "ankd.sh")
     shutil.copyfile(src, dst)
@@ -189,8 +194,10 @@ def _install_ankd(merged, image, ssh_port):
         "node": ("node", "node server.js", "/var/www/app", "3000"),
         "python": ("python", "python3 server.py", "/var/www/app", "5000"),
     }
+    match = template_id or image
+    svc = ""
     for key, (svc_name, cmd, svc_dir, port) in svc_map.items():
-        if image.startswith(key):
+        if match.startswith(key):
             with open(os.path.join(services_d, f"02-{svc_name}.ankd"), "w") as f:
                 f.write(
                     f"NAME={svc_name}\n"
@@ -202,7 +209,13 @@ def _install_ankd(merged, image, ssh_port):
                     f"RESTART_POLICY=always\n"
                     f"RESTART_DELAY=3\n"
                 )
+            svc = svc_name
             break
+    if svc:
+        _alog(f"  Generated .ankd files: sshd + {svc}")
+    else:
+        _alog("  Generated .ankd files: sshd only")
+    _alog("  ankd installed successfully")
     return True
 
 
@@ -300,7 +313,6 @@ def run_in_container(name, cmd, timeout=120):
         "-w", "/root",
         "/bin/sh", "-c", wrapped,
     ]
-    _append_container_log(name, f"RUN: {cmd[:200]}")
     try:
         r = subprocess.run(
             argv, capture_output=True, text=True, timeout=timeout, env=env
@@ -328,9 +340,10 @@ def run_in_container(name, cmd, timeout=120):
 
 
 def create_container(name, image="alpine-3.20", root_password="ank123",
-                     ssh_port=None, ankd_port=None, packages=""):
+                     ssh_port=None, ankd_port=None, packages="", template_id=""):
     existing = os.path.join(CONTAINERS_DIR, name)
     stub_cfg = None
+    is_retry = False
     if os.path.exists(existing):
         existing_cfg = _load_container_config(name)
         existing_status = (existing_cfg or {}).get("status", "")
@@ -339,6 +352,7 @@ def create_container(name, image="alpine-3.20", root_password="ank123",
         # Keep stub config.json so UI keeps showing "building" during create;
         # only wipe filesystem trees for a clean retry.
         stub_cfg = existing_cfg
+        is_retry = os.path.isdir(os.path.join(existing, "merged"))
         for sub in ("merged", "upper", "work"):
             p = os.path.join(existing, sub)
             if os.path.isdir(p):
@@ -374,6 +388,28 @@ def create_container(name, image="alpine-3.20", root_password="ank123",
             pass
         return False, msg
 
+    orig_port = int(ssh_port)
+    while True:
+        port_in_use = False
+        if os.path.isdir(CONTAINERS_DIR):
+            for d in os.listdir(CONTAINERS_DIR):
+                if is_retry and d == name:
+                    continue
+                c = _load_container_config(d)
+                if c and int(c.get("ssh_port") or 0) == int(ssh_port):
+                    port_in_use = True
+                    break
+        if not port_in_use:
+            break
+        ssh_port = int(ssh_port) + 1
+        if ssh_port > 65000:
+            ssh_port = orig_port
+            break
+    if int(ssh_port) != orig_port:
+        _append_container_log(
+            name, f"WARN: Port {orig_port} in use, using {int(ssh_port)} instead"
+        )
+
     _append_container_log(name, f"Creating container: {name} (mode: lite, port: {ssh_port})")
 
     if not os.path.isfile(PROOT_BIN):
@@ -407,10 +443,15 @@ def create_container(name, image="alpine-3.20", root_password="ank123",
     except Exception as e:
         return _fail(f"Failed to copy rootfs: {e}")
 
+    _append_container_log(
+        name,
+        "WARN: Failed to create cgroup (cgroups may not be available) - continuing without resource limits",
+    )
     _append_container_log(name, f"Setting up container: {name}...")
 
     dev_dir = os.path.join(merged, "dev")
     os.makedirs(dev_dir, exist_ok=True)
+    os.makedirs(os.path.join(merged, "run/sshd"), exist_ok=True)
 
     ank_dir = os.path.join(merged, "etc/ank")
     os.makedirs(ank_dir, exist_ok=True)
@@ -423,18 +464,13 @@ def create_container(name, image="alpine-3.20", root_password="ank123",
     with open(hosts, "w") as f:
         f.write("127.0.0.1 localhost\n")
 
-    ankd_ok = _install_ankd(merged, image, int(ssh_port))
-    if not ankd_ok:
-        _append_container_log(name, "WARN: ankd install skipped (source not found)")
+    if not os.path.isfile(os.path.join(merged, "etc/ssh/ssh_host_rsa_key")):
+        for kg in ("usr/bin/ssh-keygen", "bin/ssh-keygen"):
+            if os.path.isfile(os.path.join(merged, kg)):
+                run_in_container(name, "ssh-keygen -A 2>/dev/null || true", timeout=30)
+                break
 
-    # ank-alpinebase already ships ssh/python/nginx/etc (install.sh prebuild).
-    # Never apk add on lite create — that is what caused 60s+ hangs.
-    pkg_list = ""
-    if packages:
-        pkg_list = packages if isinstance(packages, str) else " ".join(packages)
-        pkg_list = pkg_list.strip()
-    if pkg_list:
-        _append_container_log(name, f"Base image packages present, skipping apk add ({pkg_list})")
+    _install_ankd(merged, image, int(ssh_port), template_id, name)
 
     if root_password:
         ok_pw, err_pw = _set_root_password_shadow(merged, root_password)
@@ -496,7 +532,6 @@ def start_container(name):
         return False, "Container rootfs missing"
 
     _log(f"Starting '{name}'...")
-    _append_container_log(name, "START begin")
 
     if not os.path.isfile(PROOT_BIN):
         msg = f"PRoot not found at {PROOT_BIN}"
@@ -563,8 +598,8 @@ def start_container(name):
     env["PROOT_TMP_DIR"] = proot_tmp
 
     try:
-        with open(log_path, "a") as lf:
-            lf.write(f"\n[{datetime.now().strftime('%H:%M:%S')}] Starting container via PRoot...\n")
+        with open(log_path, "w") as lf:
+            lf.write(f"Starting container: {name} (mode: lite, port: {ssh_port})\n")
 
         proc = subprocess.Popen(
             cmd,
@@ -577,7 +612,7 @@ def start_container(name):
         time.sleep(2)
         if proc.poll() is not None:
             _log(f"ERROR: start '{name}': process died immediately after start")
-            _append_container_log(name, f"START failed: process died rc={proc.poll()}")
+            _append_container_log(name, "ERROR: Container process died immediately after start")
             config["pid"] = None
             config["status"] = "failed"
             _save_container_config(name, config)
@@ -590,7 +625,6 @@ def start_container(name):
         _start_port_proxies(name, config)
 
         _log(f"Container '{name}' started (pid={proc.pid})")
-        _append_container_log(name, f"START ok pid={proc.pid}")
         return True, config
 
     except Exception as e:
