@@ -1,6 +1,7 @@
 {
   "version": "Testing Build",
-  "versionCode": 7,
+  "versionCode": 8,
   "zipUrl": "https://github.com/andrebarretoit/ank/releases/download/ank-testing/ank-magisk.zip",
-  "changelog": "Testing Build. Stacks and Backups are marked as coming soon (frozen). Lite mode frozen. Proot stability instrumentation and fixes in progress."
+  "changelog": "In-app update system (Settings > Update). Manual Alpine version input on Pull. Verified container stop/start: append-only logs, scoped kills, halt/reboot contained to target container, ankctl regeneration loop fixed, nginx user root.",
+  "sha256": "be05041b9146132682fb0a0ab41c1ff2864f562d032a7d1a30d349564fcad7ef"
 }

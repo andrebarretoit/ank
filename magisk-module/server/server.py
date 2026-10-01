@@ -18,6 +18,7 @@ import struct
 import threading
 import select
 import glob
+import urllib.request
 try:
     import pty
     HAS_PTY = True
@@ -95,6 +96,11 @@ SCRIPTS_DIR = os.path.join(ANK_DIR, "core")
 CONFIG_FILE = os.path.join(ANK_DIR, "config.json")
 STATIC_DIR = os.path.join(ANK_DIR, "ankfs/opt/ank/static")
 PORT = 8001
+
+# In-app update (UP2): state + log written by scripts/ank-updater.sh
+UPDATE_MODULE_PROP = "/data/adb/modules/ank/module.prop"
+UPDATE_STATE_FILE = os.path.join(ANK_SDCARD, "ank-update.state")
+UPDATE_LOG_FILE = os.path.join(ANK_SDCARD, "ank-update.log")
 
 def _load_port_from_config():
     """Read panel_port from config.json if present (migrate/remap writes it)."""
@@ -2153,6 +2159,8 @@ small{color:#334155}
             self.api_alpine_versions()
         elif path == "/api/system/info":
             self.api_system_info()
+        elif path == "/api/update/check":
+            self.api_update_check()
         elif path == "/api/system/cache":
             self.api_system_cache()
         elif path == "/api/networks":
@@ -2312,6 +2320,8 @@ small{color:#334155}
             self.api_update_config(data)
         elif path == "/api/config":
             self.api_update_config(data)
+        elif path == "/api/update/apply":
+            self.api_update_apply(data)
         elif path == "/api/system/uninstall":
             self.api_uninstall()
         elif path == "/api/ank-manager/stop":
@@ -2619,6 +2629,156 @@ small{color:#334155}
             except Exception as e:
                 log(f"[HEALTH] {name}: ankd_port self-heal failed: {e}")
                 return None
+
+    # ============================================================
+    # IN-APP UPDATE (UP2)
+    # ============================================================
+
+    @staticmethod
+    def _read_module_prop():
+        """Parse module.prop into a dict, or None if not present (lite mode)."""
+        try:
+            with open(UPDATE_MODULE_PROP, "r") as f:
+                info = {}
+                for line in f:
+                    line = line.strip()
+                    if "=" in line and not line.startswith("#"):
+                        k, v = line.split("=", 1)
+                        info[k] = v
+                return info
+        except OSError:
+            return None
+
+    @staticmethod
+    def _fetch_update_manifest(url, timeout=10):
+        req = urllib.request.Request(url, headers={"User-Agent": "ANK-Updater"})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+
+    @staticmethod
+    def _update_state():
+        state = "IDLE"
+        try:
+            with open(UPDATE_STATE_FILE, "r") as f:
+                state = f.read().strip() or "IDLE"
+        except OSError:
+            pass
+        log_tail = []
+        try:
+            with open(UPDATE_LOG_FILE, "r", errors="replace") as f:
+                log_tail = [l.rstrip("\n") for l in f.readlines()[-60:]]
+        except OSError:
+            pass
+        return state, log_tail
+
+    def api_update_check(self):
+        prop = self._read_module_prop()
+        cur_version = (prop or {}).get("version", "unknown")
+        try:
+            cur_vc = int((prop or {}).get("versionCode", "0"))
+        except (TypeError, ValueError):
+            cur_vc = 0
+        state, log_tail = self._update_state()
+        out = {
+            "supported": prop is not None,
+            "current_version": cur_version,
+            "current_versionCode": cur_vc,
+            "update_available": False,
+            "latest_version": None,
+            "latest_versionCode": None,
+            "zip_url": None,
+            "sha256": None,
+            "changelog": None,
+            "state": state,
+            "log": log_tail,
+        }
+        if prop is None:
+            out["error"] = "module.prop not found (lite mode?) - update not supported"
+            self.send_json(out)
+            return
+        url = prop.get("updateJson", "")
+        if not url:
+            out["error"] = "updateJson not set in module.prop"
+            self.send_json(out)
+            return
+        try:
+            manifest = self._fetch_update_manifest(url)
+        except Exception as e:
+            out["error"] = f"manifest fetch failed: {e}"
+            self.send_json(out)
+            return
+        try:
+            latest_vc = int(manifest.get("versionCode", 0))
+        except (TypeError, ValueError):
+            latest_vc = 0
+        out.update({
+            "latest_version": manifest.get("version"),
+            "latest_versionCode": latest_vc,
+            "zip_url": manifest.get("zipUrl"),
+            "sha256": manifest.get("sha256"),
+            "changelog": manifest.get("changelog"),
+            "update_available": latest_vc > cur_vc,
+        })
+        self.send_json(out)
+
+    def api_update_apply(self, data):
+        prop = self._read_module_prop()
+        if prop is None:
+            self.send_error(400, "Not supported (module.prop not found - lite mode?)")
+            return
+        state, _ = self._update_state()
+        if state.startswith("RUNNING"):
+            try:
+                age = time.time() - os.path.getmtime(UPDATE_STATE_FILE)
+                if age < 1800:
+                    self.send_error(409, "An update is already in progress")
+                    return
+                log(f"[UPDATE] stale RUNNING state ({int(age)}s old), proceeding")
+            except OSError:
+                pass
+        zip_url = (data or {}).get("zip_url")
+        sha256 = (data or {}).get("sha256")
+        if not zip_url:
+            url = prop.get("updateJson", "")
+            if not url:
+                self.send_error(400, "updateJson not set in module.prop")
+                return
+            try:
+                manifest = self._fetch_update_manifest(url)
+            except Exception as e:
+                self.send_error(502, f"manifest fetch failed: {e}")
+                return
+            zip_url = manifest.get("zipUrl")
+            sha256 = manifest.get("sha256")
+        if not zip_url:
+            self.send_error(400, "No zipUrl available for update")
+            return
+        updater = os.path.join(SCRIPTS_DIR, "ank-updater.sh")
+        if not os.path.isfile(updater):
+            self.send_error(500, "ank-updater.sh not installed - update via ANK-Installer")
+            return
+        try:
+            os.makedirs(ANK_SDCARD, exist_ok=True)
+            with open(UPDATE_STATE_FILE, "w") as f:
+                f.write("RUNNING (spawned)")
+        except OSError:
+            pass
+        args = [HOST_SH, updater, zip_url, sha256 or "-"]
+        try:
+            if os.geteuid() != 0:
+                cmd_str = " ".join(f"'{a}'" for a in args)
+                subprocess.Popen(["su", "-c", cmd_str],
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                 start_new_session=True)
+            else:
+                subprocess.Popen(args,
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                 start_new_session=True)
+        except Exception as e:
+            self.send_error(500, f"failed to spawn updater: {e}")
+            return
+        log(f"[UPDATE] started: {zip_url}")
+        self.send_json({"message": "Update started", "state": "RUNNING (spawned)"})
 
     def api_container_inspect(self, name):
         config = load_container_config(name)

@@ -1407,10 +1407,8 @@ function showImageDetail(name, node) {
 }
 
 async function pullImage() {
-  let versionOpts = ['3.22','3.21','3.20','3.19','3.18'];
-  try { const v = await api('GET', '/images/alpine-versions'); if (Array.isArray(v) && v.length) versionOpts = v; } catch(e) {}
   const result = await customModal('Pull Image', [
-    { id: 'version', label: 'Alpine Version', type: 'select', options: versionOpts.map(v => `<option value="${esc(v)}"${v==='3.20'?' selected':''}>${esc(v)}</option>`).join(''), hint: 'Fetch available versions from Alpine CDN' }
+    { id: 'version', label: 'Alpine Version', type: 'text', value: '3.20', placeholder: 'e.g. 3.20', hint: 'Type the Alpine version manually (e.g. 3.20, 3.18, 3.22)' }
   ]);
   if (!result) return;
   const version = result.version.trim();
@@ -2417,6 +2415,7 @@ let settingsInfo = {};
 function showSettingsSection(section) {
   if (_ankMgrPoll) { clearInterval(_ankMgrPoll); _ankMgrPoll = null; }
   if (window._ankMgrLogPoll) { clearInterval(window._ankMgrLogPoll); window._ankMgrLogPoll = null; }
+  if (window._updatePoll) { clearInterval(window._updatePoll); window._updatePoll = null; }
   document.querySelectorAll('#settings-sidebar .split-list-card').forEach(n => {
     n.classList.toggle('selected', n.dataset.section === section);
   });
@@ -2555,6 +2554,116 @@ function showSettingsSection(section) {
         </div>
       </div>
     </div></div>`;
+  } else if (section === 'update') {
+    if (ankLiteMode) {
+      el.innerHTML = `<div class="card"><div class="card-header"><h3><i class="bi bi-cloud-arrow-down"></i> Update</h3></div><div class="card-body"><p style="font-size:13px;color:var(--text-secondary)">Update is not available in Lite mode. Use ANK Installer to update.</p></div></div>`;
+      return;
+    }
+    el.innerHTML = `<div class="card"><div class="card-header"><h3><i class="bi bi-cloud-arrow-down"></i> Update</h3></div><div class="card-body">
+      <div class="info-grid">
+        <div class="info-item"><span class="info-label">Current Version</span><span id="upd-current">...</span></div>
+        <div class="info-item"><span class="info-label">Latest Version</span><span id="upd-latest">...</span></div>
+        <div class="info-item"><span class="info-label">Status</span><span id="upd-status">...</span></div>
+        <div class="info-item"><span class="info-label">Updater State</span><span id="upd-state">...</span></div>
+      </div>
+      <div id="upd-changelog" style="display:none;margin-top:12px;padding:12px;background:var(--bg-base);border:1px solid var(--border);border-radius:8px;font-size:12px;color:var(--text-secondary);white-space:pre-wrap"></div>
+      <div id="upd-error" style="display:none;margin-top:12px;padding:10px;background:rgba(220,53,69,.08);border:1px solid rgba(220,53,69,.3);border-radius:8px;font-size:12px;color:var(--danger)"></div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:16px">
+        <button class="btn btn-ghost btn-sm" id="upd-check"><i class="bi bi-arrow-clockwise"></i> Check for Updates</button>
+        <button class="btn btn-primary btn-sm" id="upd-apply" disabled><i class="bi bi-cloud-arrow-down"></i> Apply Update</button>
+      </div>
+      <div id="upd-progress" style="display:none;margin-top:16px">
+        <div class="form-label" style="margin-bottom:6px">Progress</div>
+        <pre id="upd-log" style="background:var(--bg-base);color:var(--text-secondary);border:1px solid var(--border);border-radius:8px;padding:12px;max-height:260px;overflow-y:auto;font-family:'Consolas','Courier New',monospace;font-size:12px;line-height:1.5;white-space:pre-wrap;word-break:break-all;min-height:80px"></pre>
+      </div>
+    </div></div>`;
+    let _updInfo = null;
+    function updRender(info) {
+      _updInfo = info;
+      const cur = document.getElementById('upd-current');
+      if (!cur) return;
+      cur.textContent = `${info.current_version || 'unknown'} (vc ${info.current_versionCode != null ? info.current_versionCode : '-'})`;
+      document.getElementById('upd-latest').textContent = info.latest_version
+        ? `${info.latest_version} (vc ${info.latest_versionCode})` : '-';
+      const statusEl = document.getElementById('upd-status');
+      if (info.update_available) {
+        statusEl.innerHTML = '<span style="color:var(--success);font-weight:600">Update available</span>';
+      } else if (info.latest_version) {
+        statusEl.innerHTML = '<span style="color:var(--text-secondary);font-weight:600">Up to date</span>';
+      } else {
+        statusEl.textContent = '-';
+      }
+      const state = info.state || 'IDLE';
+      const running = state.startsWith('RUNNING');
+      const failed = state.startsWith('FAILED');
+      const done = state.startsWith('DONE');
+      const stEl = document.getElementById('upd-state');
+      stEl.textContent = state;
+      stEl.style.color = running ? 'var(--warning)' : failed ? 'var(--danger)' : done ? 'var(--success)' : 'var(--text-secondary)';
+      const errEl = document.getElementById('upd-error');
+      if (info.error) { errEl.style.display = 'block'; errEl.textContent = info.error; }
+      else { errEl.style.display = 'none'; }
+      const cl = document.getElementById('upd-changelog');
+      if (info.changelog) { cl.style.display = 'block'; cl.textContent = `Changelog: ${info.changelog}`; }
+      else { cl.style.display = 'none'; }
+      document.getElementById('upd-apply').disabled = running || !info.update_available;
+      const prog = document.getElementById('upd-progress');
+      const logEl = document.getElementById('upd-log');
+      if (state !== 'IDLE' && info.log && info.log.length) {
+        prog.style.display = 'block';
+        logEl.textContent = info.log.join('\n');
+        logEl.scrollTop = logEl.scrollHeight;
+      } else {
+        prog.style.display = 'none';
+      }
+    }
+    function updStopPoll() {
+      if (window._updatePoll) { clearInterval(window._updatePoll); window._updatePoll = null; }
+    }
+    function updStartPoll() {
+      if (window._updatePoll) return;
+      window._updatePoll = setInterval(async () => {
+        if (!document.getElementById('upd-state')) { updStopPoll(); return; }
+        try {
+          const prev = _updInfo ? (_updInfo.state || 'IDLE') : '';
+          const info = await api('GET', '/update/check');
+          updRender(info);
+          const state = info.state || 'IDLE';
+          if (state.startsWith('DONE') && !prev.startsWith('DONE')) {
+            updStopPoll();
+            toast('Update applied - server restarting', 'success');
+          } else if (state.startsWith('FAILED') && !prev.startsWith('FAILED')) {
+            updStopPoll();
+            toast(`Update failed: ${state}`, 'error');
+          } else if (!state.startsWith('RUNNING')) {
+            updStopPoll();
+          }
+        } catch (e) {}
+      }, 3000);
+    }
+    async function updCheck(silent) {
+      try {
+        const info = await api('GET', '/update/check');
+        updRender(info);
+        const state = info.state || 'IDLE';
+        if (state.startsWith('RUNNING')) updStartPoll(); else updStopPoll();
+        if (!silent) toast(state.startsWith('RUNNING') ? `Update in progress: ${state}` : 'Update check complete', 'success');
+      } catch (e) {
+        if (!silent) toast(`Check failed: ${e.message}`, 'error');
+      }
+    }
+    document.getElementById('upd-check')?.addEventListener('click', () => updCheck(false));
+    document.getElementById('upd-apply')?.addEventListener('click', async () => {
+      const ok = await confirmAction('Apply Update', 'Download and apply the update? The server will restart when it finishes.');
+      if (!ok) return;
+      try {
+        await api('POST', '/update/apply', {});
+        toast('Update started', 'info');
+        updCheck(true);
+        updStartPoll();
+      } catch (e) { toast(`Failed: ${e.message}`, 'error'); }
+    });
+    updCheck(true);
   } else if (section === 'ank-manager') {
     el.innerHTML = `<div class="card"><div class="card-header"><h3><i class="bi bi-speedometer2"></i> ANK Manager</h3></div><div class="card-body">
       <div id="ank-mgr-status" style="display:flex;align-items:center;gap:12px;margin-bottom:20px;padding:16px;background:var(--bg-base);border-radius:8px">
