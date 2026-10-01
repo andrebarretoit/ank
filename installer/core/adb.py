@@ -408,23 +408,23 @@ class ADB:
             return "/data/local/ank"
         return "/data/local/tmp/ank"
 
+    ANK_UI_PACKAGE = "com.ank.anklauncher"
+
     def check_ank_ui_installed(self, serial: str) -> bool:
-        """Check if ANK UI (launcher) is installed."""
-        output, _ = self.shell(serial, "pm list packages 2>/dev/null | grep ank")
-        return bool(output and "ank" in output.lower())
+        """Check if ANK UI (launcher) is installed — exact package only."""
+        output, _ = self.shell(serial, f"pm path {self.ANK_UI_PACKAGE} 2>/dev/null")
+        return bool(output and "package:" in output)
 
     def uninstall_ank_ui(self, serial: str, callback=None) -> bool:
-        """Uninstall ANK UI (launcher) from the device."""
+        """Uninstall ANK UI (launcher) from the device — exact package only."""
         if callback:
             callback("Removing ANK UI...")
-        output, _ = self.shell(serial, "pm list packages 2>/dev/null | grep ank")
-        if output:
-            for line in output.strip().split("\n"):
-                pkg = line.replace("package:", "").strip()
-                if pkg:
-                    if callback:
-                        callback(f"Uninstalling {pkg}...")
-                    self.shell(serial, f"pm uninstall {pkg}")
+        pkg = self.ANK_UI_PACKAGE
+        output, _ = self.shell(serial, f"pm path {pkg} 2>/dev/null")
+        if output and "package:" in output:
+            if callback:
+                callback(f"Uninstalling {pkg}...")
+            self.shell(serial, f"pm uninstall {pkg}")
         return True
 
     def uninstall_ank_full(self, serial: str, rooted: bool = True, callback=None) -> bool:
@@ -469,7 +469,7 @@ class ADB:
             ("Removing /data/local/ank...", lambda: _sh("rm -rf /data/local/ank")),
             ("Removing /data/local/tmp/ank...", lambda: _sh("rm -rf /data/local/tmp/ank")),
             ("Removing /sdcard/AndroidKonteiner...", lambda: _sh("rm -rf /sdcard/AndroidKonteiner")),
-            ("Removing Magisk module...", lambda: _sh("rm -rf /data/adb/modules/ank* /data/adb/service.d/ank*")),
+            ("Removing Magisk module...", lambda: _sh("rm -rf /data/adb/modules/ank /data/adb/service.d/ank.sh")),
             ("Removing ANK UI...", lambda: self.uninstall_ank_ui(serial, callback)),
             ("Cleaning caches...", lambda: _sh("rm -rf /data/local/tmp/ank* 2>/dev/null")),
         ]

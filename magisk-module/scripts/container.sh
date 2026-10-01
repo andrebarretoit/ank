@@ -18,6 +18,183 @@ get_mode() {
 }
 
 # ============================================================
+# Universal unshare resolver
+# The `unshare` on PATH is often toybox, which does not know
+# --mount-proc and kills the container spawn instantly. Ladder:
+#   1. host busybox   (with --mount-proc)
+#   2. rootfs busybox (via musl loader, with --mount-proc)
+#   3. system unshare (with --mount-proc)
+#   4. same three without --mount-proc (container init mounts /proc)
+#   5. none -> caller degrades the mode to shared_host (plain chroot)
+# Outputs:
+#   ANK_UNSHARE_SCRIPT  launcher to spawn the container ("" = none)
+#   ANK_UNSHARE_PROBE   launcher for the pidns probe ("" = none)
+#   ANK_UNSHARE_MP      1 when the launcher mounts proc itself
+#   ANK_UNSHARE_DESC    human readable description (for logs)
+# ============================================================
+ANK_UNSHARE_SCRIPT=""
+ANK_UNSHARE_PROBE=""
+ANK_UNSHARE_MP=0
+ANK_UNSHARE_DESC="none"
+
+_ank_unshare_mk() {
+    # $1=launcher path  $2=argv prefix  $3=mount-proc dir ("" = none)
+    # $4=optional "export VAR=VAL" line
+    {
+        echo '#!/system/bin/sh'
+        [ -n "$4" ] && echo "$4"
+        if [ -n "$3" ]; then
+            echo "exec $2 --mount-proc=\"$3\" \"\$@\""
+        else
+            echo "exec $2 \"\$@\""
+        fi
+    } > "$1" 2>/dev/null || return 1
+    chmod 755 "$1" 2>/dev/null || return 1
+    return 0
+}
+
+_ank_unshare_try() {
+    # $1=argv prefix  $2=export line ("" allowed)  $3=description
+    [ -n "$ANK_TRY_ROOTFS" ] || return 1
+    [ -n "$ANK_TRUE" ] || ANK_TRUE="true"
+    if [ "${ANK_TRY_MP:-0}" = "1" ]; then
+        _ank_unshare_mk "$ANK_TRY_MP_PATH" "$1" "$ANK_TRY_PDIR" "$2" || return 1
+        # Launchers run through sh: /data may be noexec and SELinux may
+        # reject direct exec of files there, but sh reading them always works
+        sh "$ANK_TRY_MP_PATH" "$ANK_TRUE" >/dev/null 2>&1
+        local _mp_ok=$?
+        umount "$ANK_TRY_PDIR" 2>/dev/null
+        rmdir "$ANK_TRY_PDIR" 2>/dev/null
+        [ "$_mp_ok" -eq 0 ] || return 1
+        _ank_unshare_mk "$ANK_TRY_LP" "$1" "$ANK_TRY_ROOTFS/proc" "$2" || return 1
+        _ank_unshare_mk "$ANK_TRY_LPP" "$1" "" "$2" || return 1
+        ANK_UNSHARE_SCRIPT="$ANK_TRY_LP"
+        ANK_UNSHARE_MP=1
+        ANK_UNSHARE_DESC="$3 (mount-proc)"
+    else
+        _ank_unshare_mk "$ANK_TRY_LPP" "$1" "" "$2" || return 1
+        sh "$ANK_TRY_LPP" "$ANK_TRUE" >/dev/null 2>&1 || return 1
+        ANK_UNSHARE_SCRIPT="$ANK_TRY_LPP"
+        ANK_UNSHARE_MP=0
+        ANK_UNSHARE_DESC="$3 (no mount-proc, init mounts /proc)"
+    fi
+    ANK_UNSHARE_PROBE="$ANK_TRY_LPP"
+    return 0
+}
+
+_ank_resolve_unshare() {
+    # $1=ROOTFS  $2=container name
+    local rootfs="$1"
+    local tag="${2:-ank}"
+    local bb_list="" sys_list="" b u musl
+
+    ANK_UNSHARE_SCRIPT=""
+    ANK_UNSHARE_PROBE=""
+    ANK_UNSHARE_MP=0
+    ANK_UNSHARE_DESC="none"
+
+    [ -n "$rootfs" ] || return 1
+
+    # Absolute path for the probe program (PATH may be minimal under su)
+    ANK_TRUE="/system/bin/true"
+    [ -x "$ANK_TRUE" ] || ANK_TRUE=$(command -v true 2>/dev/null)
+    [ -n "$ANK_TRUE" ] && [ -x "$ANK_TRUE" ] || ANK_TRUE="true"
+
+    ANK_TRY_ROOTFS="$rootfs"
+    ANK_TRY_LP="$ANK_DIR/.ank-unshare-$tag.sh"
+    ANK_TRY_LPP="$ANK_DIR/.ank-unshare-$tag.plain.sh"
+    ANK_TRY_MP_PATH="$ANK_DIR/.ank-unshare-$tag.mp.sh"
+    ANK_TRY_PDIR="$ANK_DIR/.unshare-procprobe"
+
+    for b in $(command -v busybox 2>/dev/null) /data/adb/magisk/busybox /system/xbin/busybox /system/bin/busybox; do
+        [ -n "$b" ] && [ -x "$b" ] && bb_list="$bb_list $b"
+    done
+    for u in $(command -v unshare 2>/dev/null) /system/bin/unshare /system/xbin/unshare; do
+        [ -n "$u" ] && [ -x "$u" ] && sys_list="$sys_list $u"
+    done
+
+    # Pass 1: with --mount-proc
+    ANK_TRY_MP=1
+    for b in $bb_list; do
+        _ank_unshare_try "\"$b\" unshare --fork --pid" "" "busybox unshare ($b)" && return 0
+    done
+    musl=$(ls "$rootfs"/lib/ld-musl-*.so* 2>/dev/null | head -1)
+    if [ -n "$musl" ] && [ -x "$musl" ] && [ -e "$rootfs/bin/busybox" ]; then
+        _ank_unshare_try "\"$musl\" \"$rootfs/bin/busybox\" unshare --fork --pid" \
+            "export LD_LIBRARY_PATH=\"$rootfs/lib:$rootfs/usr/lib\"" \
+            "rootfs busybox via musl ($musl)" && return 0
+    fi
+    for u in $sys_list; do
+        _ank_unshare_try "$u --fork --pid" "" "system unshare ($u)" && return 0
+    done
+
+    # Pass 2: without --mount-proc (container init mounts /proc itself)
+    ANK_TRY_MP=0
+    for b in $bb_list; do
+        _ank_unshare_try "\"$b\" unshare --fork --pid" "" "busybox unshare ($b)" && return 0
+    done
+    if [ -n "$musl" ] && [ -x "$musl" ] && [ -e "$rootfs/bin/busybox" ]; then
+        _ank_unshare_try "\"$musl\" \"$rootfs/bin/busybox\" unshare --fork --pid" \
+            "export LD_LIBRARY_PATH=\"$rootfs/lib:$rootfs/usr/lib\"" \
+            "rootfs busybox via musl ($musl)" && return 0
+    fi
+    for u in $sys_list; do
+        _ank_unshare_try "$u --fork --pid" "" "system unshare ($u)" && return 0
+    done
+
+    return 1
+}
+
+# ============================================================
+# One-pass /proc scans
+# The old per-pid loops ran 3-5 subshells (readlink/basename/xargs)
+# per process, forking thousands of times during start/stop and
+# pushing runs past the server's 60s script timeout. These helpers
+# do a single `ls` pass (+ awk) instead.
+# ============================================================
+
+# Pids whose root/exe/cwd point at the given rootfs prefix (pid 1 excluded).
+_ank_pids_in_rootfs() {
+    ls -l /proc/[0-9]*/root /proc/[0-9]*/exe /proc/[0-9]*/cwd 2>/dev/null | awk -v pre="$1" '
+        {
+            i = index($0, "->")
+            if (i == 0) next
+            link = substr($0, 1, i - 1)
+            tgt = substr($0, i + 2)
+            gsub(/^[ \t]+/, "", tgt)
+            gsub(/[ \t]+$/, "", tgt)
+            ok = 0
+            if (tgt == pre || tgt == pre "/") ok = 1
+            else if (index(tgt, pre "/") == 1) ok = 1
+            if (ok && match(link, /\/proc\/[0-9]+\//)) {
+                pid = substr(link, RSTART + 6, RLENGTH - 7)
+                if (pid != "" && pid != "1") print pid
+            }
+        }' | sort -u
+}
+
+# Pids holding a given TCP socket inode (see /proc/net/tcp).
+_ank_pids_holding_socket() {
+    ls -l /proc/[0-9]*/fd 2>/dev/null | awk -v ino="$1" '
+        /^\/proc\/[0-9]+\/fd:$/ {
+            split($0, a, "/")
+            pid = a[3]
+            next
+        }
+        {
+            i = index($0, "->")
+            if (i == 0 || pid == "") next
+            tgt = substr($0, i + 2)
+            if (index(tgt, "socket:[" ino "]") > 0) print pid
+        }' | sort -u
+}
+
+# Timestamped phase marker for the start log (LOG_PATH is cmd_start's local)
+_start_phase() {
+    echo "[start] $(date "+%H:%M:%S" 2>/dev/null || echo "??:??:??") phase: $1" >> "$LOG_PATH" 2>/dev/null
+}
+
+# ============================================================
 # Lazy build ank-alpinebase-{version} if missing (streams output to stdout)
 # ============================================================
 _ensure_ankbase() {
@@ -802,6 +979,14 @@ cmd_start() {
         exit 1
     fi
 
+    # Append-only log: create/boot/start/stop all share one file (survives F5).
+    # Created before the pre-boot phases below so every phase gets a timestamp.
+    local LOG_PATH="$ANK_DIR/logs/${NAME}.log"
+    mkdir -p "$ANK_DIR/logs" 2>/dev/null
+    local ts=$(date "+%H:%M:%S" 2>/dev/null || echo "??:??:??")
+    echo "[start] $ts Starting container: $NAME (mode: $MODE)" >> "$LOG_PATH" 2>/dev/null
+    _start_phase "config read"
+
     # Pre-boot cleanup: if status didn't confirm a live container, a
     # half-dead previous run (status stopped/failed while daemon and
     # services still live) would fight this boot for ports. Same guarded
@@ -827,20 +1012,11 @@ cmd_start() {
         kill -9 "$_pg" 2>/dev/null
         rm -f "$_pgf" 2>/dev/null
     done
-    for pid_dir in /proc/[0-9]*; do
-        local p=$(basename "$pid_dir" 2>/dev/null)
-        [ -z "$p" ] && continue
-        [ "$p" = "1" ] && continue
-        [ ! -d "$pid_dir" ] && continue
-        local root=$(readlink "$pid_dir/root" 2>/dev/null)
-        local exe=$(readlink "$pid_dir/exe" 2>/dev/null)
-        local cwd=$(readlink "$pid_dir/cwd" 2>/dev/null)
-        local belongs=0
-        case "$root" in ${ROOTFS}|${ROOTFS}/) belongs=1 ;; esac
-        case "$exe" in ${ROOTFS}/*) belongs=1 ;; esac
-        case "$cwd" in ${ROOTFS}/*) belongs=1 ;; esac
-        [ "$belongs" -eq 1 ] && kill -9 "$p" 2>/dev/null
+    local p
+    for p in $(_ank_pids_in_rootfs "$ROOTFS"); do
+        kill -9 "$p" 2>/dev/null
     done
+    _start_phase "pre-boot cleanup done"
 
     local SSH_PORT=$(grep -o '"ssh_port":[^,]*' "$CONFIG" | cut -d: -f2 | tr -d ' ')
     local ANKD_PORT=$(grep -o '"ankd_port":[^,]*' "$CONFIG" | cut -d: -f2 | tr -d ' ')
@@ -848,13 +1024,13 @@ cmd_start() {
     local IMAGE=$(grep -o '"image":[^,]*' "$CONFIG" 2>/dev/null | cut -d'"' -f4)
     local TEMPLATE_ID=$(grep -o '"template_id":[^,]*' "$CONFIG" 2>/dev/null | cut -d'"' -f4)
 
-    # Append-only log: create/boot/start/stop all share one file (survives F5)
-    local LOG_PATH="$ANK_DIR/logs/${NAME}.log"
-    mkdir -p "$ANK_DIR/logs" 2>/dev/null
-    local ts=$(date "+%H:%M:%S" 2>/dev/null || echo "??:??:??")
-    echo "[start] $ts Starting container: $NAME (mode: $MODE, port: $SSH_PORT)" >> "$LOG_PATH" 2>/dev/null
-
+    # Append-only log: LOG_PATH/ts were opened above (before pre-boot phases)
     echo "Starting container: $NAME (mode: $MODE, port: $SSH_PORT)"
+
+    # Universal unshare resolution (PATH unshare may be toybox without --mount-proc)
+    _ank_resolve_unshare "$ROOTFS" "$NAME"
+    echo "  unshare: $ANK_UNSHARE_DESC"
+    _start_phase "unshare: $ANK_UNSHARE_DESC"
 
     # Ensure services are properly configured at start time
     case "${TEMPLATE_ID:-$IMAGE}" in
@@ -906,12 +1082,13 @@ cmd_start() {
         fi
     fi
 
-    if [ "$MODE" = "shared_network" ]; then
-        if ! unshare --pid --fork /bin/true 2>/dev/null; then
+    if [ "$MODE" = "shared_network" ] || [ "$MODE" = "isolated" ]; then
+        if [ -z "$ANK_UNSHARE_PROBE" ] || ! sh "$ANK_UNSHARE_PROBE" "${ANK_TRUE:-true}" 2>/dev/null; then
             echo "WARN: pidns not functional, falling back to shared_host"
             MODE="shared_host"
         fi
     fi
+    _start_phase "mode finalized: $MODE"
 
     # Mount tmpfs on /dev before any mknod (kernel 3.10 + nodev workaround)
     mkdir -p "$ROOTFS/dev/pts" "$ROOTFS/dev/shm" "$ROOTFS/run/sshd" 2>/dev/null
@@ -985,24 +1162,33 @@ cmd_start() {
         local hex_port=$(printf '%04X' "$SSHD_PORT")
         local inode=$(awk -v port="$hex_port" '$2 ~ ":"port"$" {split($2,a,":"); print $10}' /proc/net/tcp 2>/dev/null | head -1)
         if [ -n "$inode" ] && [ "$inode" != "0" ]; then
-            for fd_dir in /proc/[0-9]*/fd; do
-                local p=$(dirname "$fd_dir" | xargs basename)
-                if ls -la "$fd_dir" 2>/dev/null | grep -q "socket:\[$inode\]"; then
-                    if [ "$p" != "$PID" ] 2>/dev/null; then
-                        local holder_root=$(readlink "/proc/$p/root" 2>/dev/null)
-                        case "$holder_root" in
-                            ${ROOTFS}|${ROOTFS}/)
-                                echo "  Killing stale process $p on port $SSHD_PORT (inode=$inode)"
-                                kill -9 "$p" 2>/dev/null
-                                sleep 1
-                                ;;
-                            *)
-                                echo "  WARN: port $SSHD_PORT held by process $p outside this container, not killing"
-                                ;;
-                        esac
+            local holder_pids=$(_ank_pids_holding_socket "$inode")
+            if [ -z "$holder_pids" ]; then
+                # Fallback: one-pass ls header format unknown or holder not
+                # listable - per-pid scan, only on this rare path
+                for fd_dir in /proc/[0-9]*/fd; do
+                    local p=$(basename "$fd_dir" 2>/dev/null)
+                    [ -z "$p" ] && continue
+                    if ls -la "$fd_dir" 2>/dev/null | grep -q "socket:\[$inode\]"; then
+                        holder_pids="$p"
+                        break
                     fi
-                    break
-                fi
+                done
+            fi
+            for p in $holder_pids; do
+                [ "$p" = "$PID" ] && continue
+                local holder_root=$(readlink "/proc/$p/root" 2>/dev/null)
+                case "$holder_root" in
+                    ${ROOTFS}|${ROOTFS}/)
+                        echo "  Killing stale process $p on port $SSHD_PORT (inode=$inode)"
+                        kill -9 "$p" 2>/dev/null
+                        sleep 1
+                        ;;
+                    *)
+                        echo "  WARN: port $SSHD_PORT held by process $p outside this container, not killing"
+                        ;;
+                esac
+                break
             done
         fi
     fi
@@ -1077,12 +1263,10 @@ cmd_start() {
     fi
 
     if [ "$MODE" = "isolated" ]; then
-        nohup ip netns exec "$NS" unshare --fork --pid \
-            --mount-proc="$ROOTFS/proc" \
+        nohup ip netns exec "$NS" sh "$ANK_UNSHARE_SCRIPT" \
             chroot "$ROOTFS" "$SHELL" -c "$CONTAINER_INIT" </dev/null >>"$LOG_PATH" 2>&1 &
     elif [ "$MODE" = "shared_network" ]; then
-        nohup unshare --fork --pid \
-            --mount-proc="$ROOTFS/proc" \
+        nohup sh "$ANK_UNSHARE_SCRIPT" \
             chroot "$ROOTFS" "$SHELL" -c "$CONTAINER_INIT" </dev/null >>"$LOG_PATH" 2>&1 &
     elif [ "$MODE" = "lite" ]; then
         local PROOT_BIN="$ANK_DIR/proot"
@@ -1098,6 +1282,7 @@ cmd_start() {
     fi
 
     local PID=$!
+    _start_phase "spawned pid $PID"
 
     sleep 2
     if ! kill -0 "$PID" 2>/dev/null; then
@@ -1108,6 +1293,7 @@ cmd_start() {
         sed -i "s/\"pid\": [^,]*/\"pid\": null/" "$CONFIG"
         exit 1
     fi
+    _start_phase "process alive"
 
     # PID stays the durable init we spawned ($!): the chroot/unshare
     # process execs (or forks directly into) ankd, so it lives exactly as
@@ -1133,6 +1319,7 @@ cmd_start() {
     if [ -d "$CGROUP" ]; then
         echo "$PID" > "$CGROUP/cgroup.procs" 2>/dev/null
     fi
+    _start_phase "cgroup attached"
 
     # Setup SSH port forwarding (only for modes with network namespace)
     if [ -n "$SSH_PORT" ] && [ "$SSH_PORT" != "null" ] && [ "$IP" != "none" ] && [ -n "$IP" ]; then
@@ -1182,9 +1369,11 @@ cmd_start() {
     # Scan and record all container processes in ank.procs
     sleep 1
     _scan_container_procs "$NAME"
+    _start_phase "config marked running"
 
     echo "Container '$NAME' started (PID: $PID, SSH: $SSH_PORT)"
     echo "[start] $(date "+%H:%M:%S" 2>/dev/null) Container started (PID: $PID, SSH: $SSH_PORT)" >> "$LOG_PATH" 2>/dev/null
+    _start_phase "start complete"
     return 0
 }
 
@@ -1281,21 +1470,9 @@ cmd_stop() {
     # ============================================================
     echo "  Sweeping remaining processes..."
     local SWEEP_COUNT=0
-    for pid_dir in /proc/[0-9]*; do
-        local p=$(basename "$pid_dir" 2>/dev/null)
-        [ -z "$p" ] && continue
-        [ "$p" = "1" ] && continue
-        [ ! -d "$pid_dir" ] && continue
-        local root=$(readlink "$pid_dir/root" 2>/dev/null)
-        local exe=$(readlink "$pid_dir/exe" 2>/dev/null)
-        local cwd=$(readlink "$pid_dir/cwd" 2>/dev/null)
-        local belongs=0
-        case "$root" in ${ROOTFS}|${ROOTFS}/) belongs=1 ;; esac
-        case "$exe" in ${ROOTFS}/*) belongs=1 ;; esac
-        case "$cwd" in ${ROOTFS}/*) belongs=1 ;; esac
-        [ "$belongs" -eq 1 ] && {
-            kill -9 "$p" 2>/dev/null && SWEEP_COUNT=$((SWEEP_COUNT+1))
-        }
+    local _swp
+    for _swp in $(_ank_pids_in_rootfs "$ROOTFS"); do
+        kill -9 "$_swp" 2>/dev/null && SWEEP_COUNT=$((SWEEP_COUNT+1))
     done
     # Second pass and the old name-based passes are intentionally gone:
     # they matched ANY sshd/nginx/python on the device (cross-container
@@ -1373,28 +1550,24 @@ _scan_container_procs() {
 
     echo "# Autogenerated Ank Procs - DO NOT EDIT" > "$PROCS_FILE"
 
-    # Scan /proc for processes belonging to this container
-    for pid_dir in /proc/[0-9]*; do
-        local pid=$(basename "$pid_dir" 2>/dev/null)
+    # One-pass rootfs scan instead of per-pid readlink/tr/cat subshells
+    local _pids=$(_ank_pids_in_rootfs "$ROOTFS")
+
+    # sshd may also be matched by its -p port pattern (host-side spawn);
+    # one grep pass over cmdlines instead of per-pid tr+grep forks
+    if [ -n "$SSH_PORT" ]; then
+        local _port_pids=$(grep -a -l "sshd.*-p.*${SSH_PORT}" /proc/[0-9]*/cmdline 2>/dev/null \
+            | sed -n 's|^/proc/\([0-9][0-9]*\)/cmdline$|\1|p')
+        _pids="$_pids $_port_pids"
+    fi
+
+    local _uniq
+    _uniq=$(echo $_pids | tr ' ' '\n' | grep -v '^$' | sort -u)
+    for _uniq in $_uniq; do
+        local pid=$_uniq
         [ -z "$pid" ] && continue
-
-        # Method 1: Check if root link matches container rootfs
-        local root=$(readlink "$pid_dir/root" 2>/dev/null)
-        local exe=$(readlink "$pid_dir/exe" 2>/dev/null)
-        local cmdline=$(tr '\0' ' ' < "$pid_dir/cmdline" 2>/dev/null)
-
-        local belongs=0
-        case "$root" in ${ROOTFS}|${ROOTFS}/) belongs=1 ;; esac
-        case "$exe" in ${ROOTFS}/*) belongs=1 ;; esac
-        # Also check sshd port pattern in cmdline
-        if [ -n "$SSH_PORT" ] && echo "$cmdline" | grep -q "sshd.*-p.*${SSH_PORT}"; then
-            belongs=1
-        fi
-
-        if [ "$belongs" -eq 1 ]; then
-            local app_name=$(cat "$pid_dir/comm" 2>/dev/null || echo "unknown")
-            echo "${pid}:${app_name}" >> "$PROCS_FILE"
-        fi
+        local app_name=$(cat "/proc/$pid/comm" 2>/dev/null || echo "unknown")
+        echo "${pid}:${app_name}" >> "$PROCS_FILE"
     done
 
     local proc_count=$(tail -n +2 "$PROCS_FILE" 2>/dev/null | wc -l)
@@ -1456,15 +1629,9 @@ _kill_container_procs() {
 
     # Phase 4: Sweep - kill any remaining process in container rootfs
     local ROOTFS="$CONTAINER_DIR/merged"
-    for pid_dir in /proc/[0-9]*; do
-        local pid=$(basename "$pid_dir" 2>/dev/null)
-        [ -z "$pid" ] && continue
-        local root=$(readlink "$pid_dir/root" 2>/dev/null)
-        local exe=$(readlink "$pid_dir/exe" 2>/dev/null)
-        local cwd=$(readlink "$pid_dir/cwd" 2>/dev/null)
-        case "$root" in ${ROOTFS}|${ROOTFS}/) kill -9 "$pid" 2>/dev/null && KILL_COUNT=$((KILL_COUNT+1)) ;; esac
-        case "$exe" in ${ROOTFS}/*) kill -9 "$pid" 2>/dev/null && KILL_COUNT=$((KILL_COUNT+1)) ;; esac
-        case "$cwd" in ${ROOTFS}|${ROOTFS}/) kill -9 "$pid" 2>/dev/null && KILL_COUNT=$((KILL_COUNT+1)) ;; esac
+    local _sw
+    for _sw in $(_ank_pids_in_rootfs "$ROOTFS"); do
+        kill -9 "$_sw" 2>/dev/null && KILL_COUNT=$((KILL_COUNT+1))
     done
 
     echo "  Total killed: $KILL_COUNT processes"

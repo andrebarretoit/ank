@@ -17,8 +17,18 @@ check_netns() {
 
 check_pidns() {
     [ -f /proc/self/ns/pid ] || return 1
-    unshare --pid --fork /bin/true 2>/dev/null
-    return $?
+    local u
+    # busybox first: PATH unshare is often toybox
+    for u in $(command -v busybox 2>/dev/null) /data/adb/magisk/busybox /system/xbin/busybox /system/bin/busybox; do
+        [ -n "$u" ] && [ -x "$u" ] || continue
+        "$u" unshare --pid --fork true 2>/dev/null && return 0
+    done
+    for u in $(command -v unshare 2>/dev/null) /system/bin/unshare /system/xbin/unshare; do
+        [ -n "$u" ] && [ -x "$u" ] || continue
+        "$u" --pid --fork true 2>/dev/null && return 0
+    done
+    unshare --pid --fork true 2>/dev/null && return 0
+    return 1
 }
 
 check_overlayfs() {

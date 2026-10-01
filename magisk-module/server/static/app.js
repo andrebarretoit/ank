@@ -2352,6 +2352,18 @@ async function loadNetworks() {
   try {
     const [networks, info] = await Promise.all([api('GET', '/networks'), api('GET', '/networks/info')]);
     if (!networks || !networks.length) { el.innerHTML = '<div class="empty-state"><i class="bi bi-globe2"></i><h3>No networks</h3></div>'; return; }
+    const first = networks[0] || {};
+    const cfgBtn = document.getElementById('network-config-btn');
+    if (Number(first.netns) !== 1) {
+      el.innerHTML = `<div class="empty-state"><i class="bi bi-globe2"></i><h3>Network isolation unavailable</h3><p>This device kernel has no network namespace support (netns=0), so isolated networks cannot be created. Containers share the host network (mode: ${esc(first.mode || 'shared_host')}).</p></div>`;
+      const det = document.getElementById('network-detail');
+      if (det) det.innerHTML = '<div style="padding:20px;color:var(--text-muted)">Network isolation is not available on this device (netns=0).</div>';
+      if (cfgBtn) { cfgBtn.disabled = true; cfgBtn.title = 'Requires kernel netns support (netns=0)'; }
+      document.querySelectorAll('[data-page="networks"]').forEach(i => { i.style.opacity = '0.45'; i.title = 'Network isolation unavailable (netns=0)'; });
+      return;
+    }
+    if (cfgBtn) { cfgBtn.disabled = false; cfgBtn.title = ''; }
+    document.querySelectorAll('[data-page="networks"]').forEach(i => { i.style.opacity = ''; i.title = ''; });
     el.innerHTML = networks.map(net => `<div class="split-list-card" data-name="${esc(net.name)}" onclick="showNetworkDetail('${esc(net.name)}')">
       <div class="slc-top"><span class="slc-name"><i class="bi bi-globe2" style="color:var(--accent)"></i>${esc(net.name)}</span><span class="badge badge-success" style="font-size:10px">${net.mode}</span></div>
       <div class="slc-meta"><span>${esc(net.subnet)}</span><span>GW: ${esc(net.gateway)}</span><span>NAT: ${net.nat?'On':'Off'}</span></div>
@@ -2572,6 +2584,7 @@ function showSettingsSection(section) {
         <button class="btn btn-ghost btn-sm" id="upd-check"><i class="bi bi-arrow-clockwise"></i> Check for Updates</button>
         <button class="btn btn-primary btn-sm" id="upd-apply" disabled><i class="bi bi-cloud-arrow-down"></i> Apply Update</button>
       </div>
+      <div style="margin-top:8px;font-size:11px;color:var(--text-muted)">Remote check runs only when you click "Check for Updates". Opening this tab only reads local state.</div>
       <div id="upd-progress" style="display:none;margin-top:16px">
         <div class="form-label" style="margin-bottom:6px">Progress</div>
         <pre id="upd-log" style="background:var(--bg-base);color:var(--text-secondary);border:1px solid var(--border);border-radius:8px;padding:12px;max-height:260px;overflow-y:auto;font-family:'Consolas','Courier New',monospace;font-size:12px;line-height:1.5;white-space:pre-wrap;word-break:break-all;min-height:80px"></pre>
@@ -2601,7 +2614,10 @@ function showSettingsSection(section) {
       stEl.textContent = state;
       stEl.style.color = running ? 'var(--warning)' : failed ? 'var(--danger)' : done ? 'var(--success)' : 'var(--text-secondary)';
       const errEl = document.getElementById('upd-error');
-      if (info.error) { errEl.style.display = 'block'; errEl.textContent = info.error; }
+      if (info.error) {
+        errEl.style.display = 'block';
+        errEl.textContent = info.error + (info.hint ? `\n${info.hint}` : '');
+      }
       else { errEl.style.display = 'none'; }
       const cl = document.getElementById('upd-changelog');
       if (info.changelog) { cl.style.display = 'block'; cl.textContent = `Changelog: ${info.changelog}`; }
@@ -2626,7 +2642,7 @@ function showSettingsSection(section) {
         if (!document.getElementById('upd-state')) { updStopPoll(); return; }
         try {
           const prev = _updInfo ? (_updInfo.state || 'IDLE') : '';
-          const info = await api('GET', '/update/check');
+          const info = await api('GET', '/update/check?local=1');
           updRender(info);
           const state = info.state || 'IDLE';
           if (state.startsWith('DONE') && !prev.startsWith('DONE')) {
@@ -2641,13 +2657,16 @@ function showSettingsSection(section) {
         } catch (e) {}
       }, 3000);
     }
-    async function updCheck(silent) {
+    async function updCheck(silent, local) {
       try {
-        const info = await api('GET', '/update/check');
+        const info = await api('GET', local ? '/update/check?local=1' : '/update/check');
         updRender(info);
         const state = info.state || 'IDLE';
         if (state.startsWith('RUNNING')) updStartPoll(); else updStopPoll();
-        if (!silent) toast(state.startsWith('RUNNING') ? `Update in progress: ${state}` : 'Update check complete', 'success');
+        if (!silent) {
+          if (info.error) toast(`Check: ${info.error}`, 'error');
+          else toast(state.startsWith('RUNNING') ? `Update in progress: ${state}` : 'Update check complete', 'success');
+        }
       } catch (e) {
         if (!silent) toast(`Check failed: ${e.message}`, 'error');
       }
@@ -2659,11 +2678,11 @@ function showSettingsSection(section) {
       try {
         await api('POST', '/update/apply', {});
         toast('Update started', 'info');
-        updCheck(true);
+        updCheck(true, true);
         updStartPoll();
       } catch (e) { toast(`Failed: ${e.message}`, 'error'); }
     });
-    updCheck(true);
+    updCheck(true, true);
   } else if (section === 'ank-manager') {
     el.innerHTML = `<div class="card"><div class="card-header"><h3><i class="bi bi-speedometer2"></i> ANK Manager</h3></div><div class="card-body">
       <div id="ank-mgr-status" style="display:flex;align-items:center;gap:12px;margin-bottom:20px;padding:16px;background:var(--bg-base);border-radius:8px">

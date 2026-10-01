@@ -276,21 +276,21 @@ class InstallThread(QThread):
         if apk_path:
             self.progress.emit(0.8, "Setting ANK UI as default launcher...")
 
-            output, _ = self.adb.shell(self.serial, "pm list packages 2>/dev/null | grep ank")
-            if output:
-                for line in output.strip().split("\n"):
-                    pkg = line.replace("package:", "").strip()
-                    if pkg and ("launcher" in pkg.lower() or "ank" in pkg.lower()):
-                        self.adb.shell(self.serial,
-                            f"cmd role add-role-holder android.app.role.HOME {pkg}/.MainActivity 2>/dev/null")
-                        self.adb.shell(self.serial,
-                            f"cmd package set-home-activity {pkg}/.MainActivity 2>/dev/null")
-                        self.adb.shell(self.serial,
-                            f"pm set-home-activity {pkg}/.MainActivity 2>/dev/null")
-                        self.adb.shell(self.serial,
-                            f"am start -a android.intent.action.MAIN -c android.intent.category.HOME 2>/dev/null")
-                        self.log.emit(f"OK: {pkg} set as default launcher")
-                        break
+            ANK_UI_PKG = "com.ank.anklauncher"
+            output, _ = self.adb.shell(self.serial, f"pm path {ANK_UI_PKG} 2>/dev/null")
+            if output and "package:" in output:
+                self.adb.shell(self.serial,
+                    f"cmd role add-role-holder android.app.role.HOME {ANK_UI_PKG}/.MainActivity 2>/dev/null")
+                self.adb.shell(self.serial,
+                    f"cmd package set-home-activity {ANK_UI_PKG}/.MainActivity 2>/dev/null")
+                self.adb.shell(self.serial,
+                    f"pm set-home-activity {ANK_UI_PKG}/.MainActivity 2>/dev/null")
+                self.adb.shell(self.serial,
+                    "am start -a android.intent.action.MAIN -c android.intent.category.HOME 2>/dev/null")
+                self.log.emit(f"OK: {ANK_UI_PKG} set as default launcher")
+            else:
+                self.log.emit(f"WARN: {ANK_UI_PKG} not installed, skipping default launcher setup")
+
 
         self.progress.emit(1.0, "ANK UI installation complete!")
 

@@ -2160,7 +2160,7 @@ small{color:#334155}
         elif path == "/api/system/info":
             self.api_system_info()
         elif path == "/api/update/check":
-            self.api_update_check()
+            self.api_update_check(parsed)
         elif path == "/api/system/cache":
             self.api_system_cache()
         elif path == "/api/networks":
@@ -2671,7 +2671,7 @@ small{color:#334155}
             pass
         return state, log_tail
 
-    def api_update_check(self):
+    def api_update_check(self, parsed=None):
         prop = self._read_module_prop()
         cur_version = (prop or {}).get("version", "unknown")
         try:
@@ -2679,6 +2679,8 @@ small{color:#334155}
         except (TypeError, ValueError):
             cur_vc = 0
         state, log_tail = self._update_state()
+        qs = parse_qs(parsed.query) if parsed is not None else {}
+        local_only = qs.get("local", ["0"])[0] in ("1", "true", "yes")
         out = {
             "supported": prop is not None,
             "current_version": cur_version,
@@ -2696,6 +2698,11 @@ small{color:#334155}
             out["error"] = "module.prop not found (lite mode?) - update not supported"
             self.send_json(out)
             return
+        if local_only:
+            # Instant, offline answer: no remote manifest fetch
+            out["local_only"] = True
+            self.send_json(out)
+            return
         url = prop.get("updateJson", "")
         if not url:
             out["error"] = "updateJson not set in module.prop"
@@ -2705,6 +2712,9 @@ small{color:#334155}
             manifest = self._fetch_update_manifest(url)
         except Exception as e:
             out["error"] = f"manifest fetch failed: {e}"
+            out["hint"] = ("If updateJson points to a private GitHub repo the manifest "
+                           "cannot be fetched (404). Make the repo public, use a token URL, "
+                           "or update manually with ANK-Installer.")
             self.send_json(out)
             return
         try:
@@ -5664,7 +5674,9 @@ small{color:#334155}
             "gateway": net.get("gateway", prefix + ".1"),
             "nat": net.get("nat", True),
             "containers": containers,
-            "mode": get_mode().get("mode", "shared_host")
+            "mode": get_mode().get("mode", "shared_host"),
+            "netns": int(get_mode().get("netns", 0) or 0),
+            "pidns": int(get_mode().get("pidns", 0) or 0),
         }]
         self.send_json(networks)
 

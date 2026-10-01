@@ -14,15 +14,15 @@ TIERS = {
         "color": "#22c55e",
         "label": "Isolated",
         "label_pt": "Isolado",
-        "desc": "NETNS + PIDNS + Overlay",
-        "desc_pt": "Namespace de rede + PID + Overlay (recomendado para producao)",
+        "desc": "NETNS + PIDNS + Chroot",
+        "desc_pt": "Namespace de rede + PID + Chroot (recomendado para producao)",
     },
     "shared_network": {
         "color": "#3b82f6",
         "label": "Shared Network",
         "label_pt": "Rede Compartilhada",
-        "desc": "PIDNS + Overlay (host network)",
-        "desc_pt": "PID namespace + Overlay (rede do host)",
+        "desc": "PIDNS + Chroot (host network)",
+        "desc_pt": "PID namespace + Chroot (rede do host)",
     },
     "shared_host": {
         "color": "#eab308",
@@ -220,7 +220,17 @@ class DeviceDetector:
 
     def _check_pidns(self, serial: str) -> tuple:
         """Check if PID namespaces are available."""
-        output, code = self.adb.shell_su(serial, "unshare --pid --fork /bin/true 2>/dev/null && echo ok")
+        # busybox first: the PATH `unshare` is often toybox (no --mount-proc)
+        probes = [
+            "busybox unshare --pid --fork true",
+            "/data/adb/magisk/busybox unshare --pid --fork true",
+            "/system/xbin/busybox unshare --pid --fork true",
+            "/system/bin/busybox unshare --pid --fork true",
+            "unshare --pid --fork true",
+            "/system/bin/unshare --pid --fork true",
+        ]
+        cmd = " || ".join(f"({p} 2>/dev/null && echo ok)" for p in probes)
+        output, code = self.adb.shell_su(serial, cmd)
         return "ok" in output, "PIDNS available" if "ok" in output else "PIDNS unavailable"
 
     def _check_overlay(self, serial: str) -> tuple:
@@ -265,21 +275,22 @@ class DeviceDetector:
 
     def _determine_tier(self, result: DetectionResult) -> str:
         """Determine the best tier based on capabilities.
-        
-        Tier table:
-        | Tier            | NETNS | PIDNS | Overlay | Root |
-        |-----------------|-------|-------|---------|------|
-        | Isolated        | Yes   | Yes   | Yes     | Yes  |
-        | Shared Network  | No    | Yes   | Yes     | Yes  |
-        | Shared Host     | No    | No    | Yes     | Yes  |
-        | Native Host     | No    | No    | No      | Yes  |
-        | Lite            | No    | No    | No      | No   |
+
+        Tier table (must match install.sh / detect.sh: CHROOT is the gate,
+        not OverlayFS - those two decisions were diverging before):
+        | Tier            | NETNS | PIDNS | Chroot | Root |
+        |-----------------|-------|-------|--------|------|
+        | Isolated        | Yes   | Yes   | Yes    | Yes  |
+        | Shared Network  | No    | Yes   | Yes    | Yes  |
+        | Shared Host     | No    | No    | Yes    | Yes  |
+        | Native Host     | No    | No    | No     | Yes  |
+        | Lite            | No    | No    | No     | No   |
         """
-        if result.has_netns and result.has_pidns and result.has_overlay:
+        if result.has_netns and result.has_pidns and result.has_chroot:
             return "isolated"
-        elif result.has_pidns and result.has_overlay:
+        elif result.has_pidns and result.has_chroot:
             return "shared_network"
-        elif result.has_overlay:
+        elif result.has_chroot:
             return "shared_host"
         else:
             return "native_host"

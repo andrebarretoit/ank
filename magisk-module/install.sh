@@ -289,7 +289,18 @@ detect_arch
 NETNS=0; PIDNS=0; OVERLAY=0; CHROOT=0; CGROUPS=0
 command -v chroot >/dev/null 2>&1 && CHROOT=1
 ip netns add _ank_test 2>/dev/null && { ip netns del _ank_test 2>/dev/null; NETNS=1; }
-unshare --pid --fork /bin/true 2>/dev/null && PIDNS=1
+# pidns probe: busybox first (PATH unshare is often toybox)
+for _u in $(command -v busybox 2>/dev/null) /data/adb/magisk/busybox /system/xbin/busybox /system/bin/busybox; do
+    [ -n "$_u" ] && [ -x "$_u" ] || continue
+    if "$_u" unshare --pid --fork true 2>/dev/null; then PIDNS=1; break; fi
+done
+if [ "$PIDNS" -eq 0 ]; then
+    for _u in $(command -v unshare 2>/dev/null) /system/bin/unshare /system/xbin/unshare; do
+        [ -n "$_u" ] && [ -x "$_u" ] || continue
+        if "$_u" --pid --fork true 2>/dev/null; then PIDNS=1; break; fi
+    done
+fi
+[ "$PIDNS" -eq 0 ] && unshare --pid --fork true 2>/dev/null && PIDNS=1
 cat /proc/filesystems 2>/dev/null | grep -q overlay && OVERLAY=1
 [ -d /sys/fs/cgroup/ank ] 2>/dev/null || { mkdir -p /sys/fs/cgroup/ank 2>/dev/null && CGROUPS=1; }
 
