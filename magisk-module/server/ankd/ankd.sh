@@ -1165,6 +1165,84 @@ ANKCTL_EOF
 }
 
 # ============================================================
+# CONTAINER IDENTITY
+# Every container shares ONE kernel hostname on this device (no UTS
+# namespace), so a container's real name cannot live in the kernel.
+# ankd owns it and writes it to files at boot:
+#   /etc/hostname                source of truth
+#   /etc/profile.d/ank-prompt.sh login prompt shows this container's name
+#   /bin/hostname                reports /etc/hostname, not the kernel
+# ============================================================
+_ankd_setup_identity() {
+    local name="$1"
+    [ -z "$name" ] && name="ank"
+
+    { printf '%s\n' "$name" > /etc/hostname; } 2>/dev/null
+    _ankd_generate_prompt "$name"
+    _ankd_generate_hostname
+}
+
+_ankd_generate_prompt() {
+    local name="$1"
+    { mkdir -p /etc/profile.d
+      printf '%s\n' \
+        '# ANK container identity - written by ankd at boot.' \
+        "export ANKD_CONTAINER=$name" \
+        'if [ -n "${BASH_VERSION:-}" ] && [ -n "${PS1:-}" ] && [ -n "${ANKD_CONTAINER:-}" ]; then' \
+        '    PS1="${PS1//\\h/$ANKD_CONTAINER}"' \
+        'fi' > /etc/profile.d/ank-prompt.sh
+      chmod 644 /etc/profile.d/ank-prompt.sh 2>/dev/null
+    } 2>/dev/null
+}
+
+_ankd_generate_hostname() {
+    # Write the new binary first: if this fails, the existing hostname
+    # command must stay untouched.
+    local tmp="/bin/.hostname.ank-new"
+    { /bin/cat > "$tmp" << 'ANKHN_EOF'
+#!/bin/sh
+# ANK-HOSTNAME-WRAPPER
+# The kernel hostname is shared by every container on this device, so this
+# container reports /etc/hostname instead.
+if [ "$#" -eq 0 ]; then
+    if [ -r /etc/hostname ]; then
+        _ank_h=""
+        IFS= read -r _ank_h < /etc/hostname 2>/dev/null || true
+        printf '%s\n' "$_ank_h"
+        exit 0
+    fi
+elif [ -r /etc/hostname ]; then
+    case "$1" in
+        -*) ;;
+        *) { printf '%s\n' "$1" > /etc/hostname; } 2>/dev/null ;;
+    esac
+fi
+if [ -x /bin/hostname.real ]; then
+    exec /bin/hostname.real "$@"
+fi
+if [ -x /bin/busybox ]; then
+    exec /bin/busybox hostname "$@"
+fi
+exit 1
+ANKHN_EOF
+      chmod 755 "$tmp" 2>/dev/null
+    } 2>/dev/null
+
+    [ -f "$tmp" ] || return 0
+
+    # Never overwrite a hostname binary twice: keep the real one aside.
+    if [ -f /bin/hostname ] && ! grep -q 'ANK-HOSTNAME-WRAPPER' /bin/hostname 2>/dev/null; then
+        if [ -L /bin/hostname ]; then
+            rm -f /bin/hostname
+        else
+            mv /bin/hostname /bin/hostname.real 2>/dev/null || rm -f /bin/hostname
+        fi
+    fi
+
+    mv -f "$tmp" /bin/hostname 2>/dev/null || rm -f "$tmp"
+}
+
+# ============================================================
 # ANKD TCP HEALTH LISTENER
 # Responds to TCP connections on $ANKD_PORT with "ANKD_OK\n<status>\n"
 # The host probes this port to determine if the container is truly alive.
@@ -1203,7 +1281,7 @@ _ankd_daemon() {
     _ankd_init_dirs
 
     echo ""
-    echo "  ANK Container Boot Testing Build"
+    echo "  ANK Booting ${ANKD_CONTAINER:-ank}"
     echo "  ========================"
     _ankd_boot "INFO" "ankd starting..."
 
@@ -1216,6 +1294,7 @@ _ankd_daemon() {
     _ankd_boot "INFO" "Filesystems mounted"
 
     # Set hostname
+    _ankd_setup_identity "${ANKD_CONTAINER:-ank}"
     hostname "${ANKD_CONTAINER:-ank}" 2>/dev/null
     _ankd_boot "INFO" "Hostname: $(hostname 2>/dev/null)"
 

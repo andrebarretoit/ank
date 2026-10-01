@@ -1053,7 +1053,7 @@ async function showContainerDetail(name, nodeId) {
     document.getElementById('detail-backup-attach-btn')?.addEventListener('click', () => attachContainerToBackupRoutine());
 
     // Start log polling for running containers
-    if (s === 'running') {
+    if (s === 'running' || isBuilding) {
       detailLogTimer = setInterval(async () => {
         try {
           if (!currentContainer || currentContainer.name !== name) { clearInterval(detailLogTimer); detailLogTimer = null; return; }
@@ -1075,7 +1075,7 @@ async function showContainerDetail(name, nodeId) {
       let pollAttempt = 0;
       const pollBuilding = setInterval(async () => {
         pollAttempt++;
-        if (pollAttempt > 60) { clearInterval(pollBuilding); return; }
+        if (pollAttempt > 240) { clearInterval(pollBuilding); return; }
         try {
           const updated = await api('GET', `/containers/${name}`);
           if (updated.status !== 'building' && updated.status !== 'starting') {
@@ -1109,10 +1109,10 @@ function removePort(idx) {
   renderPortMappings(currentContainer.port_mappings);
 }
 
-async function startContainer(name) { setContainerLoading(name,'start'); try { await api('POST',`/containers/${name}/start`); toast(`Starting "${name}"...`,'info'); pollContainerStatus(name,0); } catch(e) { toast(`Failed: ${e.message}`,'error'); clearContainerLoading(name); } }
-async function stopContainer(name) { setContainerLoading(name,'stop'); try { await api('POST',`/containers/${name}/stop`); toast(`Stopping "${name}"...`,'info'); pollContainerStatus(name,0); } catch(e) { toast(`Failed: ${e.message}`,'error'); clearContainerLoading(name); } }
-async function restartContainer(name) { setContainerLoading(name,'restart'); try { await api('POST',`/containers/${name}/restart`); toast(`Restarting "${name}"...`,'info'); pollContainerStatus(name,0); } catch(e) { toast(`Failed: ${e.message}`,'error'); clearContainerLoading(name); } }
-async function deleteContainer(name) { const ok = await confirmAction('Delete Container',`Delete "${name}"? This cannot be undone.`); if (!ok) return; try { await api('DELETE',`/containers/${name}`); if(detailLogTimer){clearInterval(detailLogTimer);detailLogTimer=null;} closeContainerTerminal(); currentContainer=null; document.getElementById('container-detail').innerHTML='<div class="split-right-empty"><div><i class="bi bi-box-seam"></i><p>Select a container to manage</p></div></div>'; await loadContainers(); toast(`Deleted "${name}"`,'success'); } catch(e) { toast(`Failed: ${e.message}`,'error'); } }
+async function startContainer(name) { setContainerLoading(name,'start'); try { await api('POST',`/containers/${name}/start`); toast(`Starting "${name}"...`,'info'); pollContainerStatus(name,0); } catch(e) { toast(`Failed: ${e.message}`,'error'); clearContainerLoading(name); loadContainers(); } }
+async function stopContainer(name) { setContainerLoading(name,'stop'); try { await api('POST',`/containers/${name}/stop`); toast(`Stopping "${name}"...`,'info'); pollContainerStatus(name,0); } catch(e) { toast(`Failed: ${e.message}`,'error'); clearContainerLoading(name); loadContainers(); } }
+async function restartContainer(name) { setContainerLoading(name,'restart'); try { await api('POST',`/containers/${name}/restart`); toast(`Restarting "${name}"...`,'info'); pollContainerStatus(name,0); } catch(e) { toast(`Failed: ${e.message}`,'error'); clearContainerLoading(name); loadContainers(); } }
+async function deleteContainer(name) { const ok = await confirmAction('Delete Container',`Delete "${name}"? This cannot be undone.`); if (!ok) return; setContainerLoading(name,'delete'); try { await api('DELETE',`/containers/${name}`); delete containerBusy[name]; if(detailLogTimer){clearInterval(detailLogTimer);detailLogTimer=null;} closeContainerTerminal(); currentContainer=null; document.getElementById('container-detail').innerHTML='<div class="split-right-empty"><div><i class="bi bi-box-seam"></i><p>Select a container to manage</p></div></div>'; await loadContainers(); toast(`Deleted "${name}"`,'success'); } catch(e) { clearContainerLoading(name); loadContainers(); toast(`Failed: ${e.message}`,'error'); } }
 
 let containerBusy = {};
 
@@ -1130,7 +1130,6 @@ function setContainerLoading(name, action) {
 
 function clearContainerLoading(name) {
   delete containerBusy[name];
-  pollContainerStatus(name, 0);
 }
 
 function getStatusBadgeClass(status) {
@@ -1196,19 +1195,22 @@ function updateDetailButtons(name, status) {
 }
 
 async function pollContainerStatus(name, attempt) {
-  if (attempt > 30) { loadContainers(); return; }
+  if (attempt > 30) { delete containerBusy[name]; loadContainers(); return; }
   try {
     const c = await api('GET', `/containers/${name}`);
     updateContainerBadge(name, c.status);
-    if (c.status === 'building' || c.status === 'starting' || c.status === 'stopping') {
+    if (['building', 'starting', 'stopping', 'deleting'].includes(c.status)
+        || (c.status === 'stopped' && containerBusy[name] === 'restart')) {
       setTimeout(() => pollContainerStatus(name, attempt + 1), 2000);
     } else {
+      const pending = containerBusy[name];
       clearContainerLoading(name);
       loadContainers();
       if (c.status === 'failed') {
         toast(`Container "${name}" failed — check logs`, 'error');
-      } else if (c.status === 'stopped') {
-        toast(`Container "${name}" ready`, 'success');
+      } else if (pending) {
+        const done = { start: 'started', stop: 'stopped', restart: 'restarted' }[pending];
+        if (done) toast(`Container "${name}" ${done}`, 'success');
       }
       if (currentContainer && currentContainer.name === name) {
         currentContainer = c;
@@ -1352,6 +1354,10 @@ async function showImageSection(section) {
         await loadContainers();
         if (saveAsImage) await loadImages();
         pollContainerStatus(name, 0);
+        if (targetNode === 'local') {
+          navigateTo('containers');
+          setTimeout(() => { showContainerDetail(name); }, 200);
+        }
       } catch (e) { toast(`Failed: ${e.message}`, 'error'); }
     });
     document.getElementById('ankfile-save-image')?.addEventListener('change', (e) => {
@@ -2461,12 +2467,6 @@ function showSettingsSection(section) {
         <div class="form-group"><label class="form-label">Default Container Password</label><input type="password" class="form-input" id="setting-default-pass" placeholder="ank123" minlength="4"><small class="form-hint">Used when creating containers without specifying a password</small></div>
         <button type="submit" class="btn btn-primary"><i class="bi bi-check-lg"></i> Save</button>
       </form>
-      <hr style="border-color:var(--border);margin:16px 0">
-      <div style="display:flex;gap:10px;flex-wrap:wrap">
-        <button class="btn btn-primary btn-sm" id="restart-server-btn"><i class="bi bi-arrow-clockwise"></i> Restart Server</button>
-        <button class="btn btn-ghost btn-sm" id="restart-device-btn"><i class="bi bi-phone"></i> Restart Device</button>
-        <button class="btn btn-danger btn-sm" id="uninstall-btn"><i class="bi bi-trash3"></i> Uninstall ANK</button>
-      </div>
     </div></div>`;
     document.getElementById('setting-bind').value = cfg.bind_address || '0.0.0.0';
     document.getElementById('setting-refresh').value = cfg.refresh_interval != null ? cfg.refresh_interval : 10;
@@ -2489,21 +2489,6 @@ function showSettingsSection(section) {
         settingsConfig = await api('GET', '/config').catch(() => settingsConfig);
         toast('Server settings saved', 'success');
       } catch (e) { toast(`Failed: ${e.message}`, 'error'); }
-    });
-    document.getElementById('restart-device-btn')?.addEventListener('click', async () => {
-      const ok = await confirmAction('Restart Device', 'This will reboot the Android device. Continue?');
-      if (!ok) return;
-      showRestartModal('device');
-    });
-    document.getElementById('restart-server-btn')?.addEventListener('click', async () => {
-      const ok = await confirmAction('Restart Server', 'Restart the ANK server?');
-      if (!ok) return;
-      showRestartModal('server');
-    });
-    document.getElementById('uninstall-btn')?.addEventListener('click', async () => {
-      const ok = await confirmAction('Uninstall ANK', 'This will PERMANENTLY delete ALL containers, images, data, and ANK itself. This cannot be undone!');
-      if (!ok) return;
-      try { await api('POST', '/system/uninstall'); toast('Uninstalling...', 'info'); } catch(e) { toast(`Failed: ${e.message}`, 'error'); }
     });
   } else if (section === 'remote') {
     el.innerHTML = `<div class="card"><div class="card-header"><h3><i class="bi bi-diagram-3"></i> Remote Management & SSH</h3></div><div class="card-body">
@@ -2531,6 +2516,22 @@ function showSettingsSection(section) {
       <button class="btn btn-ghost" style="margin-top:12px" onclick="refreshCacheInfo()"><i class="bi bi-arrow-clockwise"></i> Refresh</button>
     </div></div>`;
     refreshCacheInfo();
+  } else if (section === 'coming') {
+    const features = [
+      { icon: 'bi-cloud-arrow-up', name: 'Backups', desc: 'Scheduled and on-demand container backups, with restore.' },
+      { icon: 'bi-layers', name: 'Stacks', desc: 'Multi-container stacks with scaling and load balancing.' }
+    ];
+    el.innerHTML = `<div class="card"><div class="card-header"><h3><i class="bi bi-hourglass-split"></i> Coming Features</h3></div><div class="card-body">
+      <p style="font-size:13px;color:var(--text-secondary);margin-bottom:16px">Not works in this build yet.</p>
+      ${features.map(f => `
+        <div style="display:flex;gap:12px;align-items:flex-start;padding:14px;background:var(--bg-base);border:1px solid var(--border);border-radius:8px;margin-bottom:10px">
+          <i class="bi ${f.icon}" style="font-size:20px;color:var(--accent)"></i>
+          <div>
+            <div style="font-weight:600;font-size:14px">${f.name}<span class="badge badge-warning" style="font-size:10px;margin-left:6px">Soon</span></div>
+            <div style="font-size:12px;color:var(--text-secondary);margin-top:3px">${f.desc}</div>
+          </div>
+        </div>`).join('')}
+    </div></div>`;
   } else if (section === 'about') {
     const sysInfo = settingsInfo || {};
     const diskFree = sysInfo.device_free || '-';
@@ -2547,11 +2548,11 @@ function showSettingsSection(section) {
       </div>
       <hr style="border-color:var(--border);margin:16px 0">
       <div style="text-align:center;padding:12px 0">
-        <p style="font-size:14px;font-weight:600;color:var(--text);margin-bottom:4px">Powered by <span style="color:var(--accent)">ANDREBARRETOIT</span></p>
-        <p style="font-size:12px;color:var(--text-secondary);margin-bottom:12px">Android Konteiner Platform</p>
+        <p style="font-size:14px;font-weight:600;color:var(--text);margin-bottom:4px">Powered by <span style="color:#fff">ANDREBARRETOIT</span></p>
+        <p style="font-size:12px;color:var(--text-secondary);margin-bottom:12px">ANK · Android Konteiner</p>
         <div style="display:flex;gap:12px;justify-content:center">
           <a href="https://linkedin.com/in/andrebarretoit" target="_blank" class="btn btn-ghost btn-sm"><i class="bi bi-linkedin"></i> LinkedIn</a>
-          <a href="https://andrebarretoit.com" target="_blank" class="btn btn-ghost btn-sm"><i class="bi bi-globe"></i> Portfolio</a>
+          <a href="https://andrebarreto.work" target="_blank" class="btn btn-ghost btn-sm"><i class="bi bi-globe"></i> Portfolio</a>
         </div>
       </div>
     </div></div>`;
@@ -3451,7 +3452,7 @@ function notchPreviewHide() { notchPreview.classList.remove('active'); }
 
 /* ═══════ FOOTER MODAL ═══════ */
 function openFooterModal() {
-  openModal('About ANK', `
+  openModal('Credits', `
     <div class="footer-cards">
       <a href="https://linkedin.com/in/andrebarretoit" target="_blank" rel="noopener" class="footer-card">
         <i class="bi bi-linkedin"></i><div class="fc-title">LinkedIn</div><div class="fc-desc">Connect professionally</div>

@@ -2657,7 +2657,7 @@ small{color:#334155}
             if not config:
                 self.send_error(404, f"Container '{name}' not found")
                 return
-            if config.get("status") in ("starting", "stopping"):
+            if config.get("status") in ("starting", "stopping", "deleting"):
                 self.send_error(409, f"Container '{name}' is already {config.get('status')}")
                 return
             config["status"] = "starting"
@@ -2736,7 +2736,7 @@ small{color:#334155}
             if not config:
                 self.send_error(404, f"Container '{name}' not found")
                 return
-            if config.get("status") in ("starting", "stopping"):
+            if config.get("status") in ("starting", "stopping", "deleting"):
                 self.send_error(409, f"Container '{name}' is already {config.get('status')}")
                 return
             config["status"] = "stopping"
@@ -2826,11 +2826,18 @@ small{color:#334155}
         if not config:
             self.send_error(404, f"Container '{name}' not found")
             return
+        prev_status = config.get("status", "stopped")
+        config["status"] = "deleting"
+        save_container_config(name, config)
 
         # --- LITE MODE ---
         if is_lite():
             ok, result = ank_lite.delete_container(name)
             if not ok:
+                cfg = load_container_config(name)
+                if cfg:
+                    cfg["status"] = prev_status
+                    save_container_config(name, cfg)
                 self.send_error(500, f"Failed to delete: {result}")
                 return
             self.send_json({"message": f"Container '{name}' deleted"})
@@ -2839,6 +2846,10 @@ small{color:#334155}
         # --- ROOT MODE ---
         output, code = run_script("container.sh", "delete", name)
         if code != 0:
+            cfg = load_container_config(name)
+            if cfg:
+                cfg["status"] = prev_status
+                save_container_config(name, cfg)
             self.send_error(500, f"Failed to delete: {output}")
             return
         self.send_json({"message": f"Container '{name}' deleted"})
@@ -3209,7 +3220,7 @@ small{color:#334155}
             if not config:
                 self.send_error(404, f"Container '{name}' not found")
                 return
-            if config.get("status") in ("starting", "stopping"):
+            if config.get("status") in ("starting", "stopping", "deleting"):
                 self.send_error(409, f"Container '{name}' is already {config.get('status')}")
                 return
         def do_restart():
@@ -3219,11 +3230,11 @@ small{color:#334155}
                     cfg["status"] = "stopping"
                     save_container_config(name, cfg)
                 run_script("container.sh", "stop", name, timeout=90)
-                import time; time.sleep(1)
                 cfg2 = load_container_config(name)
                 if cfg2:
                     cfg2["status"] = "starting"
                     save_container_config(name, cfg2)
+                import time; time.sleep(1)
                 output, code = run_script("container.sh", "start", name, timeout=120)
                 cfg3 = load_container_config(name)
                 if cfg3:
@@ -4336,72 +4347,163 @@ small{color:#334155}
                         save_container_config(container_name, cfg)
                     return
 
-                def _chroot(cmd, timeout=60):
+                def _chroot(cmd, timeout=600, lf=None):
                     wrapped = "export PATH=/bin:/sbin:/usr/bin:/usr/sbin; " + cmd
                     full = f"chroot {merged} /bin/sh -c '{wrapped}'"
+
+                    class _Result:
+                        pass
+
                     try:
-                        return subprocess.run(
+                        proc = subprocess.Popen(
                             [HOST_SH, "-c", full],
-                            capture_output=True, text=True, timeout=timeout
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT,
+                            bufsize=0,
+                            start_new_session=True,
                         )
-                    except subprocess.TimeoutExpired as e:
-                        # Return partial output so user can see what happened
-                        out = e.stdout
-                        err = e.stderr
-                        if isinstance(out, bytes):
-                            out = out.decode("utf-8", errors="replace")
-                        if isinstance(err, bytes):
-                            err = err.decode("utf-8", errors="replace")
-                        partial_out = (out or "") + (err or "")
-                        class _Result:
-                            pass
+                    except Exception as e:
                         r = _Result()
                         r.returncode = -1
-                        r.stdout = partial_out
-                        r.stderr = f"TIMEOUT after {timeout}s"
+                        r.stdout = ""
+                        r.stderr = str(e)
+                        if lf:
+                            lf.write(f"{e}\n")
+                            lf.flush()
                         return r
 
+                    fd = proc.stdout.fileno()
+                    deadline = time.time() + timeout
+                    raw = bytearray()
+                    pending_cr = False
+                    timed_out = False
+
+                    def _emit(chunk):
+                        nonlocal pending_cr
+                        text = chunk.decode("utf-8", "replace")
+                        if pending_cr and text.startswith("\n"):
+                            text = text[1:]
+                        pending_cr = text.endswith("\r")
+                        text = text.replace("\r\n", "\n").replace("\r", "\n")
+                        if text and lf:
+                            lf.write(text)
+                            lf.flush()
+
+                    while True:
+                        if time.time() >= deadline:
+                            timed_out = True
+                            try:
+                                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                            except Exception:
+                                try:
+                                    proc.kill()
+                                except Exception:
+                                    pass
+                            break
+                        ready, _, _ = select.select([fd], [], [], 0.5)
+                        if not ready:
+                            if proc.poll() is not None:
+                                break
+                            continue
+                        try:
+                            chunk = os.read(fd, 4096)
+                        except OSError:
+                            break
+                        if not chunk:
+                            break
+                        raw.extend(chunk)
+                        _emit(chunk)
+
+                    if timed_out:
+                        drain_until = time.time() + 2
+                        while time.time() < drain_until:
+                            ready, _, _ = select.select([fd], [], [], 0.2)
+                            if not ready:
+                                if proc.poll() is not None:
+                                    break
+                                continue
+                            try:
+                                chunk = os.read(fd, 4096)
+                            except OSError:
+                                break
+                            if not chunk:
+                                break
+                            raw.extend(chunk)
+                            _emit(chunk)
+
+                    try:
+                        proc.wait(timeout=15)
+                    except Exception:
+                        pass
+
+                    r = _Result()
+                    r.stderr = ""
+                    r.stdout = bytes(raw).decode("utf-8", "replace")
+                    if timed_out:
+                        r.returncode = -1
+                        r.stdout += f"TIMEOUT after {timeout}s\n"
+                        if lf:
+                            lf.write(f"TIMEOUT after {timeout}s\n")
+                            lf.flush()
+                    else:
+                        r.returncode = proc.returncode if proc.returncode is not None else -1
+                    return r
+
                 if is_lite_mode:
-                    def _proot(cmd, timeout=60):
-                        return ank_lite.run_in_container(container_name, cmd, timeout=timeout)
+                    def _proot(cmd, timeout=600, lf=None):
+                        r = ank_lite.run_in_container(container_name, cmd, timeout=timeout)
+                        out = (r.stdout or "") + (r.stderr or "")
+                        if isinstance(out, bytes):
+                            out = out.decode("utf-8", "replace")
+                        if out and lf:
+                            lf.write(out.replace("\r\n", "\n").replace("\r", "\n"))
+                            lf.flush()
+                        return r
                     run_cmd = _proot
                 else:
                     run_cmd = _chroot
 
-                config = load_container_config(container_name)
+                run_cmd('mkdir -p /etc; echo "nameserver 8.8.8.8" > /etc/resolv.conf; echo "nameserver 8.8.4.4" >> /etc/resolv.conf', timeout=60)
 
-                run_cmd('mkdir -p /etc; echo "nameserver 8.8.8.8" > /etc/resolv.conf; echo "nameserver 8.8.4.4" >> /etc/resolv.conf')
+                build_error = None
 
-                for cmd in commands:
-                    log(f"Ankfile RUN: {cmd}")
-                    with open(log_path, "a") as lf:
+                with open(log_path, "a") as lf:
+                    for cmd in commands:
+                        log(f"Ankfile RUN: {cmd}")
                         lf.write(f"RUN: {cmd}\n")
                         lf.flush()
-                    r = run_cmd(cmd, timeout=300)
-                    output = (r.stdout or "") + (r.stderr or "")
-                    if r.returncode != 0:
-                        # If it's an apk add command, retry once after 15s
-                        if "apk add" in cmd:
-                            log(f"Ankfile RUN apk failed, retrying in 15s...")
-                            import time; time.sleep(15)
-                            r = run_cmd(cmd, timeout=300)
-                            output = (r.stdout or "") + (r.stderr or "")
+                        r = run_cmd(cmd, timeout=600, lf=lf)
+                        if r.returncode != 0:
+                            lf.write(f"FAILED (rc={r.returncode})\nRETRY: {cmd}\n")
+                            lf.flush()
+                            log(f"Ankfile RUN failed (rc={r.returncode}), retrying: {cmd[:80]}")
+                            time.sleep(10)
+                            r = run_cmd(cmd, timeout=600, lf=lf)
                             if r.returncode != 0:
-                                log(f"Ankfile RUN apk failed after retry")
-                                if config:
-                                    config["package_failure"] = {
-                                        "packages": cmd,
-                                        "error": output[-500:],
-                                        "ssh_port": config.get("ssh_port", 22)
-                                    }
-                                    save_container_config(container_name, config)
+                                lf.write(f"FAILED (rc={r.returncode}) after retry\n")
+                                lf.flush()
+                                log(f"Ankfile RUN failed after retry (rc={r.returncode}): {cmd[:80]}")
+                                build_error = cmd
+                                break
+                            lf.write("RETRY OK\n")
+                            lf.flush()
+                            log(f"Ankfile RUN retry succeeded: {cmd[:80]}")
                         else:
-                            log(f"Ankfile RUN failed: {output[-500:]}")
-                        with open(log_path, "a") as lf:
-                            lf.write(f"FAILED (rc={r.returncode}): {output[-500:]}\n")
-                    else:
-                        with open(log_path, "a") as lf:
-                            lf.write(f"OK: {output[-300:]}\n")
+                            lf.write("OK\n")
+                            lf.flush()
+                    if build_error:
+                        lf.write(f"\nBUILD FAILED\nCommand: {build_error}\n")
+                        lf.write(f"The container could not be created. Fix the error above and rebuild.\n")
+                        lf.flush()
+
+                if build_error:
+                    cfg = load_container_config(container_name)
+                    if cfg:
+                        cfg["status"] = "failed"
+                        cfg["build_error"] = build_error[:300]
+                        save_container_config(container_name, cfg)
+                    log(f"Ankfile build FAILED for '{container_name}': {build_error[:80]}")
+                    return
 
                 if cmd_line:
                     _write_ank_config(merged, cmd_line, ports[0] if ports else "", "")
