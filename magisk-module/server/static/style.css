@@ -799,6 +799,12 @@ tr:hover td { background: var(--bg-hover); }
   display: flex;
   flex-direction: column;
 }
+/* #container-detail: pane itself never scrolls — only its inner tab content */
+#container-detail { overflow: hidden; }
+#container-detail .sr-header { flex-shrink: 0; }
+#container-detail .detail-tabs { flex-shrink: 0; }
+#container-detail .detail-tab-content.active { overflow-y: hidden; }
+#container-detail .log-output { max-height: 55vh; flex: none; }
 .split-right-empty {
   display: flex; align-items: center; justify-content: center;
   height: 100%; color: var(--text-muted); text-align: center;
@@ -1232,7 +1238,7 @@ tr:hover td { background: var(--bg-hover); }
 .detail-logs .card-header h4 i { color: var(--primary); }
 .log-output {
   background: #0d1117; border: 1px solid var(--border); border-radius: var(--radius-sm);
-  padding: 12px; min-height: 200px; overflow: auto; font-size: 11px;
+  padding: 12px; min-height: 55vh; overflow: auto; font-size: 11px;
   white-space: pre-wrap; font-family: monospace; color: var(--text-secondary); margin: 0;
   flex: 1; max-height: none;
 }

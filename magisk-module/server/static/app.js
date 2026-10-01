@@ -8,14 +8,8 @@ const ANK_SOON_PAGES = ['stacks', 'backups'];
 function isSoonPage(page) { return ANK_SOON_PAGES.includes(page); }
 
 function applySoonOverlay() {
-  ANK_SOON_PAGES.forEach(page => {
-    document.querySelectorAll(`[data-page="${page}"]`).forEach(el => {
-      el.classList.add('nav-coming-soon');
-      el.title = 'Coming soon';
-      const label = el.querySelector('.nav-label') || el.querySelector('span');
-      if (label && !label.querySelector('.coming-soon-badge')) label.insertAdjacentHTML('beforeend', ' <span class="coming-soon-badge">Soon</span>');
-    });
-  });
+  // Stacks/Backups pages open normally; loadStacks()/loadBackups() render the
+  // "Coming soon" overlay inside them. Only the Create buttons are hidden.
   ['btn-create-stack', 'btn-create-backup'].forEach(id => {
     const btn = document.getElementById(id);
     if (btn) btn.style.display = 'none';
@@ -291,7 +285,7 @@ function showTerminalContainers() {
 
 function navigateTo(page) {
   _formDirty = false;
-  if (isSoonPage(page) || (ankLiteMode && page === 'networks')) {
+  if (ankLiteMode && page === 'networks') {
     try { localStorage.removeItem('ank_tab'); sessionStorage.removeItem('ank_nav_page'); } catch (e) {}
     page = 'dashboard';
   }
@@ -567,7 +561,7 @@ async function renderDashboardContainers() {
     if (!containers || !containers.length) { el.innerHTML = '<div class="empty-state" style="padding:30px"><i class="bi bi-box-seam"></i> No containers yet</div>'; return; }
     el.innerHTML = containers.map(c => {
       const s = c.status;
-      const statusClass = s === 'running' ? 'running' : s === 'building' ? 'building' : s === 'failed' ? 'failed' : 'stopped';
+      const statusClass = s === 'running' ? 'running' : (s === 'building' || s === 'pending') ? 'building' : s === 'failed' ? 'failed' : 'stopped';
       const img = c.template_name || c.image || '-';
       const ports = (c.port_mappings || []).map(p => p.host_port).filter(Boolean).join(', ');
       const sshHint = (c.ssh_port && s === 'running') ? `SSH :${c.ssh_port}` : '';
@@ -662,6 +656,7 @@ async function renderDashboardNodes() {
 /* ═══════ CONTAINERS ═══════ */
 function isTransientStatus(s) { return /ing$/i.test(String(s || '')); }
 function containerActionDisabled(s) {
+  if (s === 'pending') return { start: true, stop: true, restart: true, delete: false, exec: true };
   if (s === 'running') return { start: true, stop: false, restart: false, delete: true, exec: false };
   if (isTransientStatus(s)) return { start: true, stop: true, restart: true, delete: true, exec: true };
   if (s === 'stopped') return { start: false, stop: true, restart: true, delete: false, exec: true };
@@ -670,6 +665,14 @@ function containerActionDisabled(s) {
 }
 let cachedContainers = [];
 let containersRenderedOnce = false;
+let containersPollTimer = null;
+// While any container is in a transient/queued state, keep the list fresh
+// (badge + buttons update without an F5).
+function scheduleContainersPoll() {
+  if (containersPollTimer) { clearTimeout(containersPollTimer); containersPollTimer = null; }
+  const busy = cachedContainers.some(c => ['building', 'starting', 'stopping', 'deleting', 'pending'].includes(c.status));
+  if (busy) containersPollTimer = setTimeout(() => { containersPollTimer = null; loadContainers(); }, 2500);
+}
 async function loadContainers() {
   const el = document.getElementById('containers-list');
   if (!el) return;
@@ -683,6 +686,7 @@ async function loadContainers() {
       renderContainers(cachedContainers, 'all');
       containersRenderedOnce = true;
     }
+    scheduleContainersPoll();
   } catch (e) { if (!containersRenderedOnce) el.innerHTML = '<div class="empty-state"><p>Failed to load</p></div>'; }
 }
 function updateContainersInPlace(containers) {
@@ -760,6 +764,7 @@ async function showContainerDetail(name, nodeId) {
     currentContainer._nodeId = nodeId || 'local';
     const s = c.status;
     const isBuilding = s === 'building';
+    const isPending = s === 'pending';
     const isFailed = s === 'failed';
     const dis = containerActionDisabled(s);
     const logText = typeof logs.logs === 'string' ? logs.logs : (Array.isArray(logs.logs) ? logs.logs.join('\n') : '');
@@ -933,8 +938,30 @@ async function showContainerDetail(name, nodeId) {
             <button class="btn btn-sm btn-primary" id="tm-save-btn"><i class="bi bi-check"></i> Save</button>
             <button class="btn btn-sm btn-secondary" id="tm-cancel-btn"><i class="bi bi-x"></i> Cancel</button>
           </div>
+      </div>
+    </div>`;
+
+    // Pending (queued) builds: no container yet — queue info + only Delete.
+    if (isPending) {
+      const qpos = c.queue_position || '?';
+      const qtot = c.queue_total || qpos;
+      el.innerHTML = `
+        <div class="sr-header">
+          <h2><i class="bi bi-box-seam" style="color:var(--accent)"></i>${esc(c.name)} <span class="badge badge-warning" style="font-size:11px">pending</span></h2>
+          <div class="sr-actions">
+            <button class="btn btn-success btn-sm" id="detail-start" disabled><i class="bi bi-play-fill"></i> Start</button>
+            <button class="btn btn-secondary btn-sm" id="detail-stop" disabled><i class="bi bi-stop-fill"></i> Stop</button>
+            <button class="btn btn-primary btn-sm" id="detail-restart" disabled><i class="bi bi-arrow-repeat"></i></button>
+            <button class="btn btn-danger btn-sm" id="detail-delete" onclick="deleteContainer('${esc(name)}')"><i class="bi bi-trash3"></i> Delete</button>
+          </div>
         </div>
-      </div>`;
+        <div class="empty-state" style="padding:48px 24px">
+          <i class="bi bi-hourglass-split" style="font-size:42px;color:var(--warning)"></i>
+          <h3 style="margin:14px 0 6px">Waiting in build queue</h3>
+          <p style="color:var(--text-muted);font-size:13px">Position ${qpos} of ${qtot} — builds run one at a time (10s gap between them).</p>
+          <p style="color:var(--text-muted);font-size:13px">Only <strong>Delete</strong> is enabled until this build starts.</p>
+        </div>`;
+    }
 
     // Bind detail tabs
     el.querySelectorAll('.detail-tab').forEach(tab => {
@@ -965,25 +992,27 @@ async function showContainerDetail(name, nodeId) {
       });
     });
 
-    // Populate settings form
-    document.getElementById('detail-autostart').checked = c.autostart || false;
-    document.getElementById('detail-mem-limit').value = c.resources?.memory_limit || '256M';
-    document.getElementById('detail-cpu-limit').value = c.resources?.cpu_limit_percent || 50;
-    document.getElementById('detail-ssh-port').value = c.ssh_port || '';
-    document.getElementById('detail-serves-static').checked = c.serves_static || false;
-    document.getElementById('detail-static-path').value = c.static_path || '';
-    document.getElementById('detail-container-ip').value = c.ip_address || '-';
-    try { const cfg = await api('GET', '/config'); document.getElementById('detail-container-subnet').value = cfg.network?.subnet || '-'; } catch(e) {}
-    document.getElementById('detail-p2p').checked = c.policies?.inter_container_p2p || false;
-    document.getElementById('detail-host').checked = c.policies?.allow_host_access || false;
-    document.getElementById('detail-internet').checked = c.policies?.allow_internet || false;
-    renderPortMappings(c.port_mappings || []);
+    // Populate settings form (skipped for pending — those elements don't exist)
+    if (!isPending) {
+      document.getElementById('detail-autostart').checked = c.autostart || false;
+      document.getElementById('detail-mem-limit').value = c.resources?.memory_limit || '256M';
+      document.getElementById('detail-cpu-limit').value = c.resources?.cpu_limit_percent || 50;
+      document.getElementById('detail-ssh-port').value = c.ssh_port || '';
+      document.getElementById('detail-serves-static').checked = c.serves_static || false;
+      document.getElementById('detail-static-path').value = c.static_path || '';
+      document.getElementById('detail-container-ip').value = c.ip_address || '-';
+      try { const cfg = await api('GET', '/config'); document.getElementById('detail-container-subnet').value = cfg.network?.subnet || '-'; } catch(e) {}
+      document.getElementById('detail-p2p').checked = c.policies?.inter_container_p2p || false;
+      document.getElementById('detail-host').checked = c.policies?.allow_host_access || false;
+      document.getElementById('detail-internet').checked = c.policies?.allow_internet || false;
+      renderPortMappings(c.port_mappings || []);
 
-    // Disable tabs if building/failed
-    if (isBuilding || isFailed) {
-      el.querySelectorAll('.detail-tab').forEach(tab => {
-        if (tab.dataset.dtab !== 'overview') { tab.style.pointerEvents = 'none'; tab.style.opacity = '0.4'; }
-      });
+      // Disable tabs if building/failed
+      if (isBuilding || isFailed) {
+        el.querySelectorAll('.detail-tab').forEach(tab => {
+          if (tab.dataset.dtab !== 'overview') { tab.style.pointerEvents = 'none'; tab.style.opacity = '0.4'; }
+        });
+      }
     }
 
     // Detail forms
@@ -1069,18 +1098,24 @@ async function showContainerDetail(name, nodeId) {
       } catch (e) {}
     }, 2000);
 
-    // Build-in-polling: auto-refresh detail when container is building
-    if (!isRemote && isBuilding) {
+    // Live detail polling: building/pending/starting/stopping — re-renders on
+    // any status change so the SSH hint, stats and tabs update without F5.
+    if (!isRemote && (isBuilding || isPending || s === 'starting' || s === 'stopping')) {
       let pollAttempt = 0;
       const pollBuilding = setInterval(async () => {
         pollAttempt++;
         if (pollAttempt > 240) { clearInterval(pollBuilding); return; }
         try {
           const updated = await api('GET', `/containers/${name}`);
-          if (updated.status !== 'building' && updated.status !== 'starting') {
+          if (updated.status !== s) {
             clearInterval(pollBuilding);
-            showContainerDetail(name, nodeId);
-            loadContainers();
+            // updateContainerBadge may have already re-rendered (running hook)
+            const already = currentContainer && currentContainer.name === name
+              && currentContainer.status === updated.status;
+            if (!already) showContainerDetail(name, nodeId);
+            if (!['building', 'starting', 'stopping', 'pending', 'deleting'].includes(updated.status)) {
+              loadContainers();
+            }
           } else {
             updateContainerBadge(name, updated.status);
           }
@@ -1138,6 +1173,7 @@ function getStatusBadgeClass(status) {
     running_degraded_ankd: 'badge-warning',
     starting: 'badge-info',
     building: 'badge-warning',
+    pending: 'badge-warning',
     stopping: 'badge-info',
     stopped: 'badge-neutral',
     failed: 'badge-danger',
@@ -1152,6 +1188,7 @@ function getStatusLabel(status) {
     running_degraded_ssh: 'degraded',
     running_degraded_ankd: 'degraded',
     building: 'building',
+    pending: 'pending',
     starting: 'starting',
     stopping: 'stopping',
     stopped: 'stopped',
@@ -1170,7 +1207,7 @@ function updateContainerBadge(name, status) {
     if (box.querySelector('.nm')?.textContent === name) {
       const dot = box.querySelector('.dot');
       const st = box.querySelector('.st');
-      box.className = `cbox ${status === 'running' ? 'running' : status === 'building' ? 'building' : status === 'failed' ? 'failed' : 'stopped'}`;
+      box.className = `cbox ${status === 'running' ? 'running' : (status === 'building' || status === 'pending') ? 'building' : status === 'failed' ? 'failed' : 'stopped'}`;
       if (st) st.textContent = status;
     }
   });
@@ -1178,6 +1215,13 @@ function updateContainerBadge(name, status) {
     const detailBadge = document.querySelector('#container-detail .sr-header .badge');
     if (detailBadge) { detailBadge.className = `badge ${getStatusBadgeClass(status)}`; detailBadge.textContent = getStatusLabel(status); }
     updateDetailButtons(name, status);
+    // Entering/leaving 'running' changes what the detail renders (SSH hint,
+    // PID, stats) — re-render live instead of requiring F5.
+    const prevStatus = currentContainer.status;
+    if (prevStatus && prevStatus !== status && (status === 'running' || prevStatus === 'running')) {
+      currentContainer.status = status;
+      showContainerDetail(name, currentContainer._nodeId || 'local');
+    }
   }
 }
 
@@ -1313,6 +1357,148 @@ function handleAnkFile(file) {
   reader.readAsText(file);
 }
 
+/* ═══════ MULTI-ANKFILE QUEUE (drag 2+ files -> review -> queue) ═══════ */
+let ankBatchItems = null;
+let ankBatchStep = 0; // 0 = edit, 1 = review
+
+function isAnkfileName(n) { return /^ankfile$/i.test(n) || /\.(ank|ankfile)$/i.test(n); }
+
+function readFileText(file) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(String(r.result || ''));
+    r.onerror = () => reject(r.error || new Error('read failed'));
+    r.readAsText(file);
+  });
+}
+
+async function handleAnkFiles(fileList) {
+  const files = Array.from(fileList || []).filter(f => isAnkfileName(f.name));
+  if (!files.length) { toast('No Ankfile found — accepted: Ankfile, .ank, .ankfile', 'error'); return; }
+  if (files.length === 1) { handleAnkFile(files[0]); return; }
+  const used = new Set();
+  const items = [];
+  for (const f of files) {
+    const content = await readFileText(f);
+    let base = f.name.replace(/(\.ankfile|\.ank)$/i, '').replace(/[^a-zA-Z0-9_-]+/g, '-').replace(/^-+|-+$/g, '') || 'ank-build';
+    let nm = base, n = 2;
+    while (used.has(nm)) { nm = `${base}-${n++}`; }
+    used.add(nm);
+    items.push({ name: nm, fileName: f.name, content, saveAsImage: false, imageName: '' });
+  }
+  ankBatchItems = items;
+  ankBatchStep = 0;
+  renderAnkBatch();
+  toast(`Loaded ${items.length} Ankfiles — review and continue`, 'info');
+}
+
+function renderAnkBatch() {
+  const host = document.getElementById('ank-batch-container');
+  if (!host) return;
+  if (!ankBatchItems || !ankBatchItems.length) { host.innerHTML = ''; return; }
+  if (ankBatchStep === 0) {
+    host.innerHTML = `<div class="card" style="border:1px solid var(--accent);margin-top:12px"><div class="card-body">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px"><i class="bi bi-files" style="color:var(--accent)"></i><strong style="font-size:13px">${ankBatchItems.length} Ankfiles loaded</strong></div>
+      <div style="display:flex;flex-direction:column;gap:10px">
+      ${ankBatchItems.map((it, i) => `
+        <div style="border:1px solid var(--border);border-radius:8px;padding:10px">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+            <span class="badge badge-info" style="font-size:10px">#${i + 1}</span>
+            <span style="font-size:12px;color:var(--text-muted);word-break:break-all">${esc(it.fileName)}</span>
+            <button class="btn btn-ghost btn-sm" style="margin-left:auto" title="Remove" onclick="ankBatchRemove(${i})"><i class="bi bi-x-lg"></i></button>
+          </div>
+          <div class="form-group" style="margin-bottom:8px"><label class="form-label">Container Name</label>
+            <input type="text" class="form-input" value="${esc(it.name)}" oninput="ankBatchSet(${i},'name',this.value)"></div>
+          <label class="checkbox-label" style="display:flex;align-items:center;gap:8px;cursor:pointer">
+            <input type="checkbox" ${it.saveAsImage ? 'checked' : ''} style="width:18px;height:18px;accent-color:var(--accent)" onchange="ankBatchSet(${i},'saveAsImage',this.checked)">
+            <i class="bi bi-bookmark"></i> Save as Image</label>
+          ${it.saveAsImage ? `<div class="form-group" style="margin-top:8px"><label class="form-label">Image Name</label>
+            <input type="text" class="form-input" value="${esc(it.imageName)}" placeholder="my-custom-image" maxlength="40" oninput="ankBatchSet(${i},'imageName',this.value)"></div>` : ''}
+        </div>`).join('')}
+      </div>
+      <div style="display:flex;gap:8px;margin-top:12px">
+        <button class="btn btn-primary" onclick="ankBatchNext()"><i class="bi bi-arrow-right"></i> Next</button>
+        <button class="btn btn-ghost" onclick="ankBatchClear()">Clear</button>
+      </div>
+    </div></div>`;
+  } else {
+    const total = ankBatchItems.length;
+    host.innerHTML = `<div class="card" style="border:1px solid var(--success);margin-top:12px"><div class="card-body">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px"><i class="bi bi-list-check" style="color:var(--success)"></i><strong style="font-size:13px">Confirm build queue (${total})</strong></div>
+      <div style="display:flex;flex-direction:column;gap:6px">
+      ${ankBatchItems.map((it, i) => `
+        <div style="border:1px solid var(--border);border-radius:8px;padding:8px 10px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+          <span class="badge badge-info" style="font-size:10px">#${i + 1}</span>
+          <strong style="font-size:13px">${esc(it.name)}</strong>
+          <span style="font-size:11px;color:var(--text-muted);word-break:break-all">${esc(it.fileName)}</span>
+          <span class="badge ${it.saveAsImage ? 'badge-warning' : 'badge-neutral'}" style="font-size:9px;margin-left:auto">${it.saveAsImage ? 'image: ' + esc(it.imageName) : 'no image'}</span>
+        </div>`).join('')}
+      </div>
+      <p style="font-size:12px;color:var(--text-muted);margin-top:10px">One build starts at a time; the rest wait as <strong>pending</strong> (10s gap). You can delete a pending build from its detail page.</p>
+      <div style="display:flex;gap:8px;margin-top:12px">
+        <button class="btn btn-primary" id="ank-batch-build-btn" onclick="ankBatchSubmit()"><i class="bi bi-hammer"></i> Build</button>
+        <button class="btn btn-ghost" onclick="ankBatchBack()"><i class="bi bi-arrow-left"></i> Back</button>
+      </div>
+    </div></div>`;
+  }
+}
+
+function ankBatchSet(i, field, value) {
+  if (!ankBatchItems || !ankBatchItems[i]) return;
+  ankBatchItems[i][field] = value;
+  if (field === 'saveAsImage') renderAnkBatch();
+}
+function ankBatchRemove(i) {
+  if (!ankBatchItems) return;
+  ankBatchItems.splice(i, 1);
+  if (!ankBatchItems.length) { ankBatchClear(); return; }
+  renderAnkBatch();
+}
+function ankBatchClear() { ankBatchItems = null; ankBatchStep = 0; renderAnkBatch(); }
+function ankBatchBack() { ankBatchStep = 0; renderAnkBatch(); }
+function ankBatchNext() {
+  if (!ankBatchItems || !ankBatchItems.length) { toast('No Ankfiles loaded', 'error'); return; }
+  const seen = new Set();
+  for (const it of ankBatchItems) {
+    const nm = (it.name || '').trim();
+    if (!nm || !/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/.test(nm)) { toast(`Invalid container name: "${nm}"`, 'error'); return; }
+    if (seen.has(nm)) { toast(`Duplicate container name: "${nm}"`, 'error'); return; }
+    seen.add(nm);
+    it.name = nm;
+    if (!it.content || !/^\s*FROM\s+/m.test(it.content)) { toast(`"${nm}": Ankfile must have a FROM instruction`, 'error'); return; }
+    if (it.saveAsImage) {
+      if (!it.imageName) { toast(`"${nm}": image name required`, 'error'); return; }
+      if (!/^[a-zA-Z0-9._-]+$/.test(it.imageName)) { toast(`"${nm}": invalid image name`, 'error'); return; }
+    }
+  }
+  ankBatchStep = 1;
+  renderAnkBatch();
+}
+async function ankBatchSubmit() {
+  if (!ankBatchItems || !ankBatchItems.length) return;
+  const btn = document.getElementById('ank-batch-build-btn');
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="bi bi-hourglass-split"></i> Queueing...'; }
+  try {
+    const targetNode = document.getElementById('ankfile-target-node')?.value || 'local';
+    const items = ankBatchItems.map(it => ({
+      name: it.name, content: it.content,
+      save_as_image: it.saveAsImage, image_name: it.imageName || '',
+      target_node: targetNode
+    }));
+    const first = items[0].name;
+    const res = await api('POST', '/containers/queue', { items });
+    const n = (res && res.queued) || items.length;
+    ankBatchClear();
+    toast(`Queued ${n} build(s) — one at a time, the rest go to pending`, 'success');
+    await loadContainers();
+    navigateTo('containers');
+    setTimeout(() => { showContainerDetail(first, 'local'); }, 200);
+  } catch (e) {
+    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="bi bi-hammer"></i> Build'; }
+    toast(`Queue failed: ${e.message}`, 'error');
+  }
+}
+
 async function showImageSection(section) {
   document.querySelectorAll('#images-list .split-list-card').forEach(c => c.classList.toggle('selected', c.dataset.section === section));
   const el = document.getElementById('image-detail');
@@ -1327,15 +1513,15 @@ async function showImageSection(section) {
       el.innerHTML = `<div class="sr-header"><h2><i class="bi bi-lightning-charge" style="color:var(--accent)"></i> Quick Deploy</h2></div><div class="empty-state" style="padding:40px"><i class="bi bi-cloud-download" style="font-size:32px;color:var(--text-muted)"></i><p style="margin-top:8px;color:var(--text-muted)">No templates available.<br>Pull an Alpine image first.</p></div>`;
     }
   } else if (section === 'ankfile') {
-    el.innerHTML = `<div class="sr-header"><h2><i class="bi bi-file-earmark-code" style="color:var(--accent)"></i> Ankfile Build</h2></div><p style="font-size:13px;color:var(--text-muted);margin-bottom:16px">Build custom images from an Ankfile (like Dockerfile).</p><div class="card" style="border:1px solid var(--accent)"><div class="card-body"><div class="form-group"><label class="form-label">Container Name</label><input type="text" class="form-input" id="ankfile-name" placeholder="my-app" value="ank-build"></div><div class="form-group"><label class="form-label">Ankfile</label><textarea class="ankfile-editor" id="ankfile-content" rows="10" placeholder="# FROM alpine-3.20&#10;PASSWD ank123&#10;RUN apk add nginx">FROM alpine-3.20\nPASSWD ank123\nRUN apk add --allow-untrusted nginx\nRUN mkdir -p /var/www/html\nRUN echo "&lt;h1&gt;Custom ANK Image&lt;/h1&gt;" > /var/www/html/index.html\nEXPOSE 8080</textarea></div><div class="form-group" style="display:flex;align-items:center;gap:8px"><label class="checkbox-label" style="display:flex;align-items:center;gap:8px;cursor:pointer"><input type="checkbox" id="ankfile-save-image" style="width:18px;height:18px;accent-color:var(--accent)"><i class="bi bi-bookmark" style="color:var(--accent)"></i> Save as Image</label></div><div class="form-group" id="ankfile-image-name-group" style="display:none"><label class="form-label">Image Name</label><input type="text" class="form-input" id="ankfile-image-name" placeholder="my-custom-image" pattern="[a-zA-Z0-9._-]+" maxlength="40"><small class="form-hint">Letters, numbers, dots, dashes only</small></div><div id="ankfile-node-select-container"></div><div style="display:flex;gap:8px"><button type="button" class="btn btn-primary" id="ankfile-build-btn"><i class="bi bi-hammer"></i> Build</button><button type="button" class="btn btn-ghost" id="ankfile-example-btn"><i class="bi bi-filetype-json"></i> Load Example</button></div></div></div><div class="card" style="border:1px dashed var(--border);margin-top:12px"><div class="card-body" id="ank-drop-zone" style="text-align:center;padding:24px;cursor:pointer;transition:background 0.2s"><i class="bi bi-cloud-arrow-up" style="font-size:28px;color:var(--accent);display:block;margin-bottom:8px"></i><p style="font-size:13px;color:var(--text-muted);margin:0">Drag & drop a <code>.ank</code> file here</p><p style="font-size:11px;color:var(--text-muted);margin:4px 0 0">or click to browse</p><input type="file" id="ank-file-input" accept=".ank,.txt" style="display:none"></div></div>`;
+    el.innerHTML = `<div class="sr-header"><h2><i class="bi bi-file-earmark-code" style="color:var(--accent)"></i> Ankfile Build</h2></div><p style="font-size:13px;color:var(--text-muted);margin-bottom:16px">Build custom images from an Ankfile (like Dockerfile).</p><div id="ank-batch-container"></div><div class="card" style="border:1px solid var(--accent)"><div class="card-body"><div class="form-group"><label class="form-label">Container Name</label><input type="text" class="form-input" id="ankfile-name" placeholder="my-app" value="ank-build"></div><div class="form-group"><label class="form-label">Ankfile</label><textarea class="ankfile-editor" id="ankfile-content" rows="10" placeholder="# FROM alpine-3.20&#10;PASSWD ank123&#10;RUN apk add nginx">FROM alpine-3.20\nPASSWD ank123\nRUN apk add --allow-untrusted nginx\nRUN mkdir -p /var/www/html\nRUN echo "&lt;h1&gt;Custom ANK Image&lt;/h1&gt;" > /var/www/html/index.html\nEXPOSE 8080</textarea></div><div class="form-group" style="display:flex;align-items:center;gap:8px"><label class="checkbox-label" style="display:flex;align-items:center;gap:8px;cursor:pointer"><input type="checkbox" id="ankfile-save-image" style="width:18px;height:18px;accent-color:var(--accent)"><i class="bi bi-bookmark" style="color:var(--accent)"></i> Save as Image</label></div><div class="form-group" id="ankfile-image-name-group" style="display:none"><label class="form-label">Image Name</label><input type="text" class="form-input" id="ankfile-image-name" placeholder="my-custom-image" pattern="[a-zA-Z0-9._-]+" maxlength="40"><small class="form-hint">Letters, numbers, dots, dashes only</small></div><div id="ankfile-node-select-container"></div><div style="display:flex;gap:8px"><button type="button" class="btn btn-primary" id="ankfile-build-btn"><i class="bi bi-hammer"></i> Build</button><button type="button" class="btn btn-ghost" id="ankfile-example-btn"><i class="bi bi-filetype-json"></i> Load Example</button></div></div></div><div class="card" style="border:1px dashed var(--border);margin-top:12px"><div class="card-body" id="ank-drop-zone" style="text-align:center;padding:24px;cursor:pointer;transition:background 0.2s"><i class="bi bi-cloud-arrow-up" style="font-size:28px;color:var(--accent);display:block;margin-bottom:8px"></i><p style="font-size:13px;color:var(--text-muted);margin:0">Drag & drop one or more Ankfiles (<code>Ankfile</code>, <code>.ank</code>, <code>.ankfile</code>) here</p><p style="font-size:11px;color:var(--text-muted);margin:4px 0 0">or click to browse</p><input type="file" id="ank-file-input" multiple accept=".ank,.ankfile,.txt" style="display:none"></div></div>`;
     document.getElementById('ank-drop-zone')?.addEventListener('click', () => document.getElementById('ank-file-input')?.click());
     const dz = document.getElementById('ank-drop-zone');
     const fi = document.getElementById('ank-file-input');
     if (dz && fi) {
       dz.addEventListener('dragover', e => { e.preventDefault(); dz.style.background = 'var(--bg-hover)'; });
       dz.addEventListener('dragleave', () => { dz.style.background = ''; });
-      dz.addEventListener('drop', e => { e.preventDefault(); dz.style.background = ''; if (e.dataTransfer.files.length) handleAnkFile(e.dataTransfer.files[0]); });
-      fi.addEventListener('change', () => { if (fi.files.length) handleAnkFile(fi.files[0]); fi.value = ''; });
+      dz.addEventListener('drop', e => { e.preventDefault(); dz.style.background = ''; if (e.dataTransfer.files.length) handleAnkFiles(e.dataTransfer.files); });
+      fi.addEventListener('change', () => { if (fi.files.length) handleAnkFiles(fi.files); fi.value = ''; });
     }
     document.getElementById('ankfile-build-btn')?.addEventListener('click', async () => {
       const content = document.getElementById('ankfile-content')?.value?.trim();
@@ -3462,13 +3648,16 @@ const pageIcons = { dashboard:'bi-grid-1x2', containers:'bi-box-seam', images:'b
 const pageNames = { dashboard:'Dashboard', containers:'Containers', images:'Images', nodes:'Nodes', stacks:'Stacks', backups:'Backups', networks:'Networks', logs:'Logs', settings:'Settings', shell:'Shell' };
 
 async function loadNotchPreview(page) {
+  if (page === 'stacks' || page === 'backups') {
+    return `<div class="np-header"><i class="bi ${pageIcons[page]||''}"></i><span>${pageNames[page]||page}</span><span class="np-goto" onclick="notchPreviewHide();navigateTo('${page}')" title="Open ${pageNames[page]}"><i class="bi bi-arrow-up-right"></i></span></div><div class="np-empty"><i class="bi bi-hourglass-split" style="display:block;text-align:center;font-size:20px;opacity:.5;margin:0 auto 6px"></i>Coming soon</div>`;
+  }
   let html = `<div class="np-header"><i class="bi ${pageIcons[page]||''}"></i><span>${pageNames[page]||page}</span><span class="np-goto" onclick="notchPreviewHide();navigateTo('${page}')" title="Open ${pageNames[page]}"><i class="bi bi-arrow-up-right"></i></span></div>`;
   try {
     if (page === 'containers') {
       const c = await api('GET', '/containers/all');
       if (!c.length) { html += '<div class="np-empty">No containers</div>'; }
       else { html += c.map(x => {
-        const color = x.status === 'running' ? 'var(--success)' : x.status === 'building' ? 'var(--warning)' : x.status === 'failed' ? 'var(--danger)' : 'var(--text-muted)';
+        const color = x.status === 'running' ? 'var(--success)' : (x.status === 'building' || x.status === 'pending') ? 'var(--warning)' : x.status === 'failed' ? 'var(--danger)' : 'var(--text-muted)';
         return `<div class="np-row" onclick="notchPreviewHide();navigateTo('containers');setTimeout(()=>showContainerDetail('${esc(x.name)}','${x.node||'local'}'),100)" style="cursor:pointer"><span class="dot" style="background:${color}"></span><span class="np-name">${esc(x.name)}</span><span class="badge ${getStatusBadgeClass(x.status)}" style="font-size:9px">${getStatusLabel(x.status)}</span></div>`;
       }).join(''); }
     } else if (page === 'images') {
@@ -3523,16 +3712,21 @@ async function loadNotchPreview(page) {
       if (containers.length) {
         html += `<div style="margin:12px 0 8px;font-size:11px;font-weight:600;color:var(--text-muted);text-transform:uppercase">Containers (${containers.length})</div>`;
         html += containers.map(x => {
-          const color = x.status === 'running' ? 'var(--success)' : x.status === 'building' ? 'var(--warning)' : x.status === 'failed' ? 'var(--danger)' : 'var(--text-muted)';
+          const color = x.status === 'running' ? 'var(--success)' : (x.status === 'building' || x.status === 'pending') ? 'var(--warning)' : x.status === 'failed' ? 'var(--danger)' : 'var(--text-muted)';
           return `<div class="np-row" onclick="notchPreviewHide();navigateTo('containers');setTimeout(()=>showContainerDetail('${esc(x.name)}','${x.node||'local'}'),100)" style="cursor:pointer"><span class="dot" style="background:${color}"></span><span class="np-name">${esc(x.name)}</span><span class="badge ${getStatusBadgeClass(x.status)}" style="font-size:9px">${getStatusLabel(x.status)}</span></div>`;
         }).join('');
       }
     } else if (page === 'settings') {
-      html += `<div class="np-row" onclick="notchPreviewHide();navigateTo('settings');setTimeout(()=>showSettingsSection('account'),100)" style="cursor:pointer"><i class="bi bi-person-gear" style="color:var(--text-muted);font-size:12px"></i><span class="np-name">Account</span><span class="text-muted text-sm">Change password</span></div>`;
-      html += `<div class="np-row" onclick="notchPreviewHide();navigateTo('settings');setTimeout(()=>showSettingsSection('server'),100)" style="cursor:pointer"><i class="bi bi-server" style="color:var(--text-muted);font-size:12px"></i><span class="np-name">Server</span><span class="text-muted text-sm">Bind, refresh, autostart</span></div>`;
-      html += `<div class="np-row" onclick="notchPreviewHide();navigateTo('settings');setTimeout(()=>showSettingsSection('ank-manager'),100)" style="cursor:pointer"><i class="bi bi-speedometer2" style="color:var(--success);font-size:12px"></i><span class="np-name">ANK Manager</span><span class="text-muted text-sm">Status, logs, stop</span></div>`;
-      html += `<div class="np-row" onclick="notchPreviewHide();navigateTo('settings');setTimeout(()=>showSettingsSection('remote'),100)" style="cursor:pointer"><i class="bi bi-diagram-3" style="color:var(--text-muted);font-size:12px"></i><span class="np-name">Remote & SSH</span><span class="text-muted text-sm">Management, port</span></div>`;
-      html += `<div class="np-row" onclick="notchPreviewHide();navigateTo('settings');setTimeout(()=>showSettingsSection('about'),100)" style="cursor:pointer"><i class="bi bi-info-circle" style="color:var(--text-muted);font-size:12px"></i><span class="np-name">About</span><span class="text-muted text-sm">Cache, storage</span></div>`;
+      // Preview mirrors the real sidebar so it never falls out of sync
+      document.querySelectorAll('#page-settings .split-list-card[data-section]').forEach(sec => {
+        const id = sec.getAttribute('data-section');
+        const nmEl = sec.querySelector('.slc-name');
+        if (!id || !nmEl) return;
+        const label = nmEl.textContent.trim();
+        if (!label) return;
+        const iconCls = (sec.querySelector('i') || {}).className || 'bi-gear';
+        html += `<div class="np-row" onclick="notchPreviewHide();navigateTo('settings');setTimeout(()=>showSettingsSection('${id}'),100)" style="cursor:pointer"><i class="${iconCls}" style="font-size:12px"></i><span class="np-name">${esc(label)}</span></div>`;
+      });
     } else if (page === 'logs') {
       html += `<div class="np-row" onclick="notchPreviewHide();navigateTo('logs')" style="cursor:pointer"><i class="bi bi-terminal" style="color:var(--text-muted);font-size:12px"></i><span class="np-name">Live Log Viewer</span><span class="text-muted text-sm">Colorize · Pause · Filter</span></div>`;
     } else if (page === 'shell') {

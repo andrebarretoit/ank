@@ -17,6 +17,7 @@ import ssl
 import struct
 import threading
 import select
+import re
 import glob
 import urllib.request
 try:
@@ -96,6 +97,178 @@ SCRIPTS_DIR = os.path.join(ANK_DIR, "core")
 CONFIG_FILE = os.path.join(ANK_DIR, "config.json")
 STATIC_DIR = os.path.join(ANK_DIR, "ankfs/opt/ank/static")
 PORT = 8001
+
+# ============================================================
+# Ankfile build queue (multi-drag): 1 build at a time, 10s gap
+# ============================================================
+QUEUE_FILE = os.path.join(ANK_DIR, "build_queue.json")
+QUEUE_BUILD_DELAY = 10  # seconds to wait after a build finishes before starting the next queued one
+_queue_lock = threading.Lock()
+_build_queue = []  # [{id, name, content, save_as_image, image_name, target_node, image, status, created_at}]
+_last_queue_build_end = [0.0]
+
+def _load_build_queue():
+    global _build_queue
+    try:
+        with open(QUEUE_FILE, "r") as f:
+            data = json.load(f)
+        _build_queue = data if isinstance(data, list) else []
+    except Exception:
+        _build_queue = []
+
+def _save_build_queue_locked():
+    try:
+        with open(QUEUE_FILE, "w") as f:
+            json.dump(_build_queue, f)
+    except Exception as e:
+        log(f"[QUEUE] failed to persist queue: {e}")
+
+def _queue_snapshot():
+    with _queue_lock:
+        return [dict(i) for i in _build_queue]
+
+def _queue_find_by_name(name):
+    with _queue_lock:
+        for i in _build_queue:
+            if i.get("name") == name:
+                return dict(i)
+    return None
+
+def _queue_position(name):
+    with _queue_lock:
+        for idx, i in enumerate(_build_queue):
+            if i.get("name") == name:
+                return idx + 1
+    return None
+
+def _queue_add(items):
+    with _queue_lock:
+        _build_queue.extend(items)
+        _save_build_queue_locked()
+
+def _queue_remove_by_name(name):
+    with _queue_lock:
+        for idx, i in enumerate(_build_queue):
+            if i.get("name") == name:
+                removed = _build_queue.pop(idx)
+                _save_build_queue_locked()
+                return removed
+    return None
+
+def _queue_remove_by_id(qid):
+    with _queue_lock:
+        for idx, i in enumerate(_build_queue):
+            if i.get("id") == qid:
+                removed = _build_queue.pop(idx)
+                _save_build_queue_locked()
+                return removed
+    return None
+
+def _queue_item_as_config(item):
+    return {
+        "name": item.get("name", ""),
+        "status": "pending",
+        "image": item.get("image", ""),
+        "mode": "queued",
+        "template": "ankfile",
+        "template_name": "Ankfile (queued)",
+        "queue_id": item.get("id", ""),
+        "queue_position": _queue_position(item.get("name", "")),
+        "queue_total": len(_queue_snapshot()),
+        "created_at": item.get("created_at", ""),
+        "pid": None,
+        "ssh_port": None,
+        "ankd_port": None,
+        "ip_address": "",
+        "port_mappings": [],
+        "resources": {"memory_limit": "256M", "cpu_limit_percent": 50},
+        "policies": {},
+        "autostart": False,
+        "node": "local",
+        "node_alias": "Local",
+    }
+
+def _queue_dispatch_local(item):
+    """Run a queued ankfile build inline (reuses api_build_ankfile with _sync)."""
+    fake = AnkHandler.__new__(AnkHandler)
+    captured = {}
+    fake.send_json = lambda obj, code=200: None
+    fake.send_error = lambda code, msg=None: captured.setdefault("error", f"{code}: {msg}")
+    fake.api_build_ankfile(item, _lock_held=True, _sync=True)
+    if captured.get("error"):
+        err = str(captured["error"])
+        log(f"[QUEUE] build rejected for '{item.get('name')}': {err}")
+        if err.startswith("409") and "already in progress" in err:
+            # busy: put it back at the front of the queue, worker retries
+            with _queue_lock:
+                _build_queue.insert(0, dict(item))
+                _save_build_queue_locked()
+        # other errors (400/409-exists): item stays dropped; config may be 'failed'
+
+def _queue_dispatch_remote(item):
+    nm = AnkHandler._get_node_manager(None)
+    if not nm:
+        raise RuntimeError("node manager unavailable")
+    payload = {k: item.get(k) for k in ("content", "name", "save_as_image", "image_name")}
+    result = nm._node_api_post(item["target_node"], "/api/images/ankfile", payload)
+    if isinstance(result, dict) and result.get("error"):
+        raise RuntimeError(str(result.get("error")))
+    deadline = time.time() + 1800
+    while time.time() < deadline:
+        time.sleep(3)
+        cfg = None
+        try:
+            cfg = nm._node_api_get(item["target_node"], f"/api/containers/{item['name']}")
+        except Exception:
+            continue
+        if isinstance(cfg, dict) and "status" in cfg:
+            st = cfg.get("status")
+            if st == "failed":
+                raise RuntimeError("remote build failed")
+            if st not in ("building", "starting", "pending", "deleting"):
+                return
+    raise RuntimeError("remote build timed out after 30min")
+
+def _queue_worker():
+    """Dispatch queued builds sequentially: 1 at a time, QUEUE_BUILD_DELAY gap."""
+    global _building
+    _load_build_queue()
+    while True:
+        time.sleep(3)
+        try:
+            snap = _queue_snapshot()
+            if not snap:
+                continue
+            item = snap[0]
+            if _building:
+                continue
+            if not _build_lock.acquire(blocking=False):
+                continue
+            did_dispatch = False
+            try:
+                wait = QUEUE_BUILD_DELAY - (time.time() - _last_queue_build_end[0])
+                if _last_queue_build_end[0] > 0 and wait > 0:
+                    time.sleep(wait)
+                # item may have been deleted from the queue while waiting
+                if _queue_remove_by_id(item.get("id")) is None:
+                    continue
+                did_dispatch = True
+                target = item.get("target_node", "local")
+                log(f"[QUEUE] starting build '{item['name']}' ({len(_queue_snapshot())} still queued, target={target})")
+                if target and target != "local":
+                    _queue_dispatch_remote(item)
+                else:
+                    _queue_dispatch_local(item)
+            finally:
+                _building = False
+                if _build_lock.locked():
+                    _build_lock.release()
+                if did_dispatch:
+                    # failed builds count too: next pending starts 10s after this attempt
+                    _last_queue_build_end[0] = time.time()
+        except Exception as e:
+            log(f"[QUEUE] worker error: {e}")
+
 
 # In-app update (UP2): state + log written by scripts/ank-updater.sh
 UPDATE_MODULE_PROP = "/data/adb/modules/ank/module.prop"
@@ -2256,6 +2429,8 @@ small{color:#334155}
             self.api_change_password(data)
         elif path == "/api/containers":
             self.api_create_container(data)
+        elif path == "/api/containers/queue":
+            self.api_queue_builds(data)
         elif "/services" in path and path.startswith("/api/containers/"):
             parts = path.split("/")
             name = parts[3]
@@ -2504,6 +2679,11 @@ small{color:#334155}
                 if config:
                     config["stats"] = get_container_stats(name)
                     containers.append(config)
+        # Pending queue items show up as status "pending" until dispatched
+        seen = {c.get("name") for c in containers}
+        for q in _queue_snapshot():
+            if q.get("name") not in seen:
+                containers.append(_queue_item_as_config(q))
         self.send_json(containers)
 
     def api_all_containers(self):
@@ -2523,6 +2703,11 @@ small{color:#334155}
                 if config:
                     config["stats"] = get_container_stats(cname)
                     containers.append(config)
+        # Pending queue items show up as status "pending" until dispatched
+        seen = {c.get("name") for c in containers}
+        for q in _queue_snapshot():
+            if q.get("name") not in seen:
+                containers.append(_queue_item_as_config(q))
         for c in containers:
             c = dict(c)
             c["node"] = "local"
@@ -2793,6 +2978,10 @@ small{color:#334155}
     def api_container_inspect(self, name):
         config = load_container_config(name)
         if not config:
+            qitem = _queue_find_by_name(name)
+            if qitem:
+                self.send_json(_queue_item_as_config(qitem))
+                return
             self.send_error(404, f"Container '{name}' not found")
             return
         config["stats"] = get_container_stats(name)
@@ -2912,6 +3101,11 @@ small{color:#334155}
                     else:
                         cfg = load_container_config(name)
                         if cfg:
+                            # Deploy complete. must hit the log BEFORE the status
+                            # flips to stopped, otherwise the UI stops tailing the
+                            # log and never shows the final line.
+                            with open(log_path, "a") as lf:
+                                lf.write("Deploy complete.\n")
                             cfg["status"] = "stopped"
                             cfg["image"] = mapped_image
                             if tpl_id:
@@ -2988,6 +3182,10 @@ small{color:#334155}
                         cfg["status"] = "failed"
                     else:
                         log(f"Container {name} created")
+                        # Deploy complete. BEFORE status=stopped: the UI only
+                        # re-renders the log after it sees a non-building status.
+                        with open(log_path, "a") as lf:
+                            lf.write("Deploy complete.\n")
                         cfg["status"] = "stopped"
                         cfg["image"] = mapped_image
                         if template:
@@ -3134,6 +3332,12 @@ small{color:#334155}
         self.send_json({"message": f"Container '{name}' stopping"})
 
     def api_delete_container(self, name):
+        # A pending (queued) build has no container yet — just dequeue it
+        removed = _queue_remove_by_name(name)
+        if removed is not None:
+            log(f"[QUEUE] removed queued build '{name}'")
+            self.send_json({"message": f"Queued build '{name}' removed"})
+            return
         config = load_container_config(name)
         if not config:
             self.send_error(404, f"Container '{name}' not found")
@@ -4433,13 +4637,15 @@ small{color:#334155}
                     _write_file(os.path.join(merged, py_dir.lstrip('/'), 'server.py'), ANK_PYTHON_SERVER.replace('{port}', str(actual_port)))
                     _write_ank_config(merged, 'python', actual_port, py_dir)
 
+                log(f"Template '{template['name']}' deployed as '{container_name}'")
+                # Deploy complete. BEFORE status=stopped so the UI log tail
+                # always shows the final line before the badge flips.
+                with open(log_path, "a") as lf:
+                    lf.write(f"Deploy complete.\n")
                 cfg = load_container_config(container_name)
                 if cfg:
                     cfg["status"] = "stopped"
                     save_container_config(container_name, cfg)
-                log(f"Template '{template['name']}' deployed as '{container_name}'")
-                with open(log_path, "a") as lf:
-                    lf.write(f"Deploy complete.\n")
 
             except Exception as e:
                 log(f"ERROR: deploy thread {container_name}: {e}")
@@ -4458,7 +4664,7 @@ small{color:#334155}
         threading.Thread(target=_do_deploy, daemon=True).start()
         self.send_json({"message": f"Deploying template '{template['name']}' as '{container_name}'...", "name": container_name}, 201)
 
-    def api_build_ankfile(self, data):
+    def api_build_ankfile(self, data, _lock_held=False, _sync=False):
         global _building
         target_node = data.get("target_node", "local")
         if target_node and target_node != "local":
@@ -4487,9 +4693,11 @@ small{color:#334155}
             self.send_error(409, "A build is already in progress. Please wait for it to finish.")
             return
         if not container_name:
-            import re
             m = re.search(r'^FROM\s+(\S+)', ankfile_content, re.MULTILINE)
             container_name = m.group(1).split("/")[-1].replace(":", "-") if m else "ank-build"
+        if not all(c.isalnum() or c in "-_" for c in container_name):
+            self.send_error(400, "Invalid container name")
+            return
 
         lines = ankfile_content.strip().split('\n')
         base_image = None
@@ -4532,6 +4740,16 @@ small{color:#334155}
 
         if not root_password:
             root_password = "ank123"
+
+        # Serialize all builds (direct builds + queue worker): acquire here,
+        # released in _do_build's finally. _lock_held=queue worker owns the lock.
+        if not _lock_held:
+            if _building or _build_lock.locked():
+                self.send_error(409, "A build is already in progress. Please wait for it to finish.")
+                return
+            if not _build_lock.acquire(blocking=False):
+                self.send_error(409, "A build is already in progress. Please wait for it to finish.")
+                return
 
         # Write stub config with "building" status immediately (both modes)
         ssh_port = self._find_free_port(2201)
@@ -4805,7 +5023,6 @@ small{color:#334155}
                     config["image"] = mapped_image
                     config["template"] = "ankfile"
                     config["template_name"] = f"Ankfile ({base_image})"
-                    config["status"] = "stopped"
                     if cmd_line:
                         config["cmd"] = cmd_line
                     if workdir and workdir != "/":
@@ -4829,8 +5046,14 @@ small{color:#334155}
                     except Exception as e:
                         log(f"ERROR: save image {image_name}: {e}")
                 log(f"Ankfile built as '{container_name}'")
+                # Build complete./Deploy complete. BEFORE status=stopped so the
+                # UI shows the final line, then flips the badge to stopped.
                 with open(log_path, "a") as lf:
-                    lf.write(f"Build complete.\n")
+                    lf.write(f"Build complete.\nDeploy complete.\n")
+                cfg = load_container_config(container_name)
+                if cfg:
+                    cfg["status"] = "stopped"
+                    save_container_config(container_name, cfg)
 
             except Exception as e:
                 log(f"ERROR: build thread {container_name}: {e}")
@@ -4845,9 +5068,73 @@ small{color:#334155}
                     save_container_config(container_name, cfg)
             finally:
                 _building = False
+                if not _lock_held:
+                    _build_lock.release()
 
-        threading.Thread(target=_do_build, daemon=True).start()
-        self.send_json({"message": f"Building Ankfile as '{container_name}'...", "name": container_name}, 201)
+        if _sync:
+            _do_build()
+        else:
+            threading.Thread(target=_do_build, daemon=True).start()
+            self.send_json({"message": f"Building Ankfile as '{container_name}'...", "name": container_name}, 201)
+
+    def api_queue_builds(self, data):
+        """POST /api/containers/queue — enqueue N ankfile builds (multi-drag).
+        First builds when free, the rest wait as pending (1 at a time, 10s gap)."""
+        items = data.get("items") if isinstance(data, dict) else None
+        if not isinstance(items, list) or not items:
+            self.send_error(400, "items list required")
+            return
+        if len(items) > 20:
+            self.send_error(400, "Too many items (max 20 per batch)")
+            return
+        existing_queue_names = {i.get("name") for i in _queue_snapshot()}
+        prepared = []
+        for raw in items:
+            if not isinstance(raw, dict):
+                self.send_error(400, "Each item must be an object")
+                return
+            name = str(raw.get("name", "")).strip()
+            content = str(raw.get("content", ""))
+            if not name or not all(c.isalnum() or c in "-_" for c in name):
+                self.send_error(400, f"Invalid container name: '{name}'")
+                return
+            if not content or not re.search(r'^\s*FROM\s+', content, re.MULTILINE):
+                self.send_error(400, f"'{name}': Ankfile must have a FROM instruction")
+                return
+            if name in existing_queue_names or any(p["name"] == name for p in prepared):
+                self.send_error(409, f"'{name}' is already in the build queue")
+                return
+            existing = None
+            if os.path.isdir(os.path.join(CONTAINERS_DIR, name)):
+                existing = load_container_config(name)
+            if existing and existing.get("status") not in ("building", "failed"):
+                self.send_error(409, f"Container '{name}' already exists")
+                return
+            save_as_image = bool(raw.get("save_as_image", False))
+            image_name = str(raw.get("image_name", "")).strip()
+            if save_as_image:
+                if not image_name:
+                    self.send_error(400, f"'{name}': image name is required when Save as Image is set")
+                    return
+                if not re.fullmatch(r'[a-zA-Z0-9._\-]+', image_name):
+                    self.send_error(400, f"'{name}': invalid image name '{image_name}'")
+                    return
+            m = re.search(r'^\s*FROM\s+(\S+)', content, re.MULTILINE)
+            prepared.append({
+                "id": f"{int(time.time() * 1000) % 100000000:08d}-{secrets.token_hex(3)}",
+                "name": name,
+                "content": content,
+                "save_as_image": save_as_image,
+                "image_name": image_name,
+                "target_node": str(raw.get("target_node", "local")) or "local",
+                "image": m.group(1) if m else "",
+                "status": "pending",
+                "created_at": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+            })
+        _queue_add(prepared)
+        names = [p["name"] for p in prepared]
+        log(f"[QUEUE] queued {len(prepared)} build(s): {', '.join(names)}")
+        self.send_json({"message": f"Queued {len(prepared)} build(s)", "queued": len(prepared), "names": names}, 201)
 
     def api_shell(self, data):
         cmd = data.get("command", "")
@@ -8052,6 +8339,14 @@ def main():
     _poller = threading.Thread(target=_status_poller, daemon=True)
     _poller.start()
     print("Status poller started (20s interval)")
+
+    # Start the ankfile build queue worker (1 build at a time, 10s gap)
+    try:
+        _load_build_queue()
+        threading.Thread(target=_queue_worker, daemon=True).start()
+        print(f"Build queue worker started ({len(_queue_snapshot())} pending)")
+    except Exception as _qe:
+        print(f"Build queue worker not started: {_qe}")
 
     server = ThreadingHTTPServer(("0.0.0.0", PORT), AnkHandler)
 

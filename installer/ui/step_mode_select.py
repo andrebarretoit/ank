@@ -13,13 +13,15 @@ from ui.theme import COLORS, MODES, MODES_INSTALLED, apply_glass_shadow
 
 
 class _DeviceDetectThread(QThread):
-    """Quick ADB scan for a connected device — retries a few times."""
+    """ADB scan for a connected device — keeps looking FOREVER until one
+    shows up (no timeout): cold adb server start / first-run ADB download /
+    authorization prompt can all delay the first listing arbitrarily. The
+    scan is stopped when the user leaves this screen or the app closes."""
     found = Signal(bool)  # True = ANK installed
 
-    def __init__(self, adb, parent=None, retries=5, delay=2):
+    def __init__(self, adb, parent=None, delay=2):
         super().__init__(parent)
         self.adb = adb
-        self.retries = retries
         self.delay = delay
         self._device = None
         self._stop = False
@@ -29,29 +31,34 @@ class _DeviceDetectThread(QThread):
 
     def run(self):
         import time
-        for attempt in range(self.retries):
-            if self._stop:
-                return
+        while not self._stop:
             try:
                 devices = self.adb.devices()
-                if devices:
-                    device = devices[0]
-                    model = self.adb.get_model(device.serial)
-                    is_rooted = self.adb.check_root(device.serial)
-                    device.model = model
-                    device.is_rooted = is_rooted
-                    self._device = device
-
+            except Exception:
+                devices = []
+            if devices:
+                device = devices[0]
+                # Per-call guards: a slow get_model/check_root/shell must not
+                # throw away an attempt where the device was already listed.
+                try:
+                    device.model = self.adb.get_model(device.serial)
+                except Exception:
+                    device.model = device.serial
+                try:
+                    device.is_rooted = self.adb.check_root(device.serial)
+                except Exception:
+                    device.is_rooted = None
+                self._device = device
+                ank_installed = False
+                try:
                     output, _ = self.adb.shell(device.serial,
                         "ls /data/local/ank/mode /data/local/tmp/ank/mode 2>/dev/null")
                     ank_installed = bool(output and "mode" in output)
-                    self.found.emit(ank_installed)
-                    return
-            except Exception:
-                pass
+                except Exception:
+                    pass
+                self.found.emit(ank_installed)
+                return
             time.sleep(self.delay)
-        if not self._stop:
-            self.found.emit(False)
 
 
 class ModeCard(QFrame):
@@ -182,26 +189,48 @@ class StepModeSelect(QWidget):
         self._start_detect()
 
     def _start_detect(self):
-        """Start background ADB scan, retry a few times for device to appear."""
+        """Start background ADB scan. Any previous scan is stopped first so
+        a stale result can't overwrite a newer one (on_show fires again on
+        every Back navigation)."""
+        prev = getattr(self, "_detect_thread", None)
+        if prev is not None:
+            try:
+                prev.stop()
+            except Exception:
+                pass
+            self._detect_thread = None
         try:
             from core.adb import ADB
             adb = ADB()
-            self._detect_thread = _DeviceDetectThread(adb, self, retries=5, delay=2)
-            self._detect_thread.found.connect(self._on_detect_done)
-            self._detect_thread.start()
+            thread = _DeviceDetectThread(adb, self)
+            # lambda binds the thread so late/stale results can be discarded
+            thread.found.connect(lambda ok, th=thread: self._on_detect_done(th, ok))
+            self._detect_thread = thread
+            thread.start()
         except Exception:
             pass
 
-    def _on_detect_done(self, ank_installed):
-        """Called when background ADB scan finishes."""
-        thread = self._detect_thread
-        if thread and hasattr(thread, '_device'):
-            device = thread._device
+    def _on_detect_done(self, thread, ank_installed):
+        """Called when a background ADB scan finishes."""
+        if thread is not self._detect_thread:
+            return  # superseded by a newer scan — ignore stale result
+        self._detect_thread = None
+        device = getattr(thread, "_device", None)
+        if device is not None:
             self.app.device_data = device
             self.app.device_label.setText(f"Device: {device.model}")
             self.app.check_ank_installed()
-        self._detect_thread = None
-        self._apply_mode(ank_installed)
+        self._apply_mode(ank_installed if device is not None else False)
+
+    def stop_detect(self):
+        """Stop a running scan (leaving this screen / app closing)."""
+        thread = getattr(self, "_detect_thread", None)
+        if thread is not None:
+            try:
+                thread.stop()
+            except Exception:
+                pass
+            self._detect_thread = None
 
     def _apply_mode(self, ank_installed):
         """Switch between fresh-install and installed-device cards."""
@@ -213,4 +242,5 @@ class StepModeSelect(QWidget):
             self._build_cards(MODES)
 
     def _on_card_clicked(self, mode_key):
+        self.stop_detect()
         self.app.select_mode(mode_key)

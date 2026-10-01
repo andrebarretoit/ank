@@ -331,17 +331,22 @@ class InstallerWindow(QMainWindow):
     # ANK Manager
     # ------------------------------------------------------------------
     def check_ank_installed(self):
-        """Check if ANK is installed on the connected device and show manager button."""
+        """Check if ANK is installed on the connected device and show manager button.
+
+        The button only appears on the mode-select page (sidebar is hidden on
+        every other step), so gate it on the current stack index too."""
         device = self.device_data
         if not device:
             self.ank_manager_btn.hide()
             return False
 
+        on_mode_select = self.stack.currentIndex() == self.MODE_SELECT_PAGE_INDEX
         try:
             output, _ = self._adb.shell(device.serial,
                 "ls /data/local/ank/mode /data/local/tmp/ank/mode 2>/dev/null")
             if output and "mode" in output:
-                self.ank_manager_btn.show()
+                if on_mode_select:
+                    self.ank_manager_btn.show()
                 return True
         except Exception:
             pass
@@ -352,6 +357,7 @@ class InstallerWindow(QMainWindow):
         """Switch to ANK Manager view."""
         self.mode = "manager"
         self.bottom.hide()
+        self.ank_manager_btn.hide()
         for row in self.step_rows:
             row.hide()
         self.device_label.setText(f"Device: {self.device_data.model if self.device_data else '--'}")
@@ -380,6 +386,7 @@ class InstallerWindow(QMainWindow):
 
         self.current_step = index
         key = flow[index]
+        self.ank_manager_btn.hide()
         self.stack.setCurrentIndex(self._page_index[key])
 
         for i, sw in enumerate(self.step_widgets):
@@ -522,6 +529,10 @@ class InstallerWindow(QMainWindow):
         """Stop any background QThreads before the app tears widgets down,
         otherwise Qt can abort on a QThread destroyed while still running
         (e.g. an endless device-poll loop that never found a device)."""
+        try:
+            self.mode_select_widget.stop_detect()
+        except Exception:
+            pass
         for widget in self.widgets.values():
             for attr in ("_thread", "_detect_thread"):
                 thread = getattr(widget, attr, None)
