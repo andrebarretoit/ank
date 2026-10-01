@@ -524,6 +524,197 @@ def run_script_stream(script, *args, output_list=None, timeout=300):
             output_list.append(f"ERROR: {e}")
         return 1
 
+def _force_kill_survivors(rootfs, cfg_pid=None):
+    """SIGKILL anything still alive inside a container rootfs: service
+    PGIDs from ankd's registry (rootfs-guarded, so a recycled pid is
+    never signalled) plus any process rooted in the rootfs. Returns the
+    pids still alive after the pass."""
+    merged_real = os.path.realpath(rootfs)
+    pids_dir = os.path.join(rootfs, "etc", "ankd", "pids")
+    try:
+        entries = os.listdir(pids_dir)
+    except OSError:
+        entries = []
+    for fn in entries:
+        if not fn.endswith(".pgid"):
+            continue
+        fp = os.path.join(pids_dir, fn)
+        try:
+            with open(fp) as f:
+                pgid = int(f.read().strip())
+        except (OSError, ValueError):
+            continue
+        try:
+            proc_root = os.path.realpath(f"/proc/{pgid}/root")
+        except OSError:
+            proc_root = None
+        if proc_root and proc_root != merged_real and not proc_root.startswith(merged_real + os.sep):
+            continue
+        try:
+            os.killpg(pgid, signal.SIGKILL)
+        except OSError:
+            pass
+        try:
+            os.kill(pgid, 0)
+        except OSError:
+            try:
+                os.remove(fp)
+            except OSError:
+                pass
+    if cfg_pid:
+        try:
+            cpid = int(cfg_pid)
+            proc_root = os.path.realpath(f"/proc/{cpid}/root")
+            if proc_root == merged_real or proc_root.startswith(merged_real + os.sep):
+                os.kill(cpid, signal.SIGKILL)
+        except (OSError, ValueError):
+            pass
+    alive = []
+    try:
+        pids = [e for e in os.listdir("/proc") if e.isdigit()]
+    except OSError:
+        pids = []
+    for e in pids:
+        pid = int(e)
+        if pid <= 1 or pid == os.getpid():
+            continue
+        try:
+            proc_root = os.path.realpath(f"/proc/{e}/root")
+        except OSError:
+            continue
+        if proc_root != merged_real and not proc_root.startswith(merged_real + os.sep):
+            continue
+        try:
+            with open(f"/proc/{e}/stat") as f:
+                state = f.read().rsplit(")", 1)[1].split()[0]
+            if state == "Z":
+                continue  # already dead, just unreaped
+        except (OSError, IndexError):
+            continue
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            continue
+        alive.append(pid)
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError:
+            pass
+    return alive
+
+def _stop_container_flow(name):
+    """Root-mode stop flow: run container.sh stop, force-kill survivors
+    and mark the container stopped ONLY when it is verifiably dead.
+    Shared by the Stop button and the in-container halt watcher."""
+    try:
+        log_path = os.path.join(ANK_DIR, "logs", f"{name}.log")
+        from datetime import datetime
+        ts = datetime.now().strftime("%H:%M:%S")
+        with open(log_path, "a") as lf:
+            lf.write(f"[boot] {ts} Stopping services...\n")
+            lf.flush()
+        output, code = run_script("container.sh", "stop", name, timeout=90)
+        # Write stop output to log
+        ts2 = datetime.now().strftime("%H:%M:%S")
+        try:
+            with open(log_path, "a") as lf:
+                for line in output.strip().split("\n"):
+                    lf.write(f"[stop] {ts2} {line}\n")
+                if "timed out" in output:
+                    lf.write(f"[stop] {ts2} ERROR: stop script timed out (90s), running force-kill pass\n")
+                lf.flush()
+        except Exception:
+            pass
+        # Force-kill survivors and verify the container is really dead
+        # before marking it stopped — never report stopped while
+        # processes are still running.
+        import time
+        rootfs = os.path.join(CONTAINERS_DIR, name, "merged")
+        alive = []
+        for _ in range(15):
+            cfg0 = load_container_config(name) or {}
+            alive = _force_kill_survivors(rootfs, cfg0.get("pid"))
+            if not alive:
+                break
+            time.sleep(1)
+        cfg = load_container_config(name)
+        if cfg:
+            if alive:
+                log(f"ERROR: stop {name}: {len(alive)} process(es) survived force-kill, status stays stopping")
+                try:
+                    with open(log_path, "a") as lf:
+                        lf.write(f"[stop] {ts2} ERROR: {len(alive)} process(es) still alive after force-kill, NOT marked stopped\n")
+                        lf.flush()
+                except Exception:
+                    pass
+            else:
+                if code != 0 and "timed out" not in output:
+                    log(f"ERROR: stop {name}: {output}")
+                try:
+                    with open(log_path, "a") as lf:
+                        lf.write(f"[stop] {ts2} Container stopped\n")
+                        lf.flush()
+                except Exception:
+                    pass
+                log(f"Container {name} stopped")
+                cfg["status"] = "stopped"
+                cfg["pid"] = None
+                save_container_config(name, cfg)
+                note_container_stopped(name)
+    except Exception as e:
+        log(f"ERROR: stop thread {name}: {e}")
+        # Unknown outcome: probe reality instead of lying.
+        try:
+            rootfs = os.path.join(CONTAINERS_DIR, name, "merged")
+            cfg0 = load_container_config(name) or {}
+            alive = _force_kill_survivors(rootfs, cfg0.get("pid"))
+            cfg = load_container_config(name)
+            if cfg:
+                cfg["status"] = "running" if alive else "stopped"
+                cfg["pid"] = None if not alive else cfg.get("pid")
+                save_container_config(name, cfg)
+                if not alive:
+                    note_container_stopped(name)
+        except Exception as e2:
+            log(f"ERROR: stop verify {name}: {e2}")
+
+def _restart_container_flow(name):
+    """Root-mode restart flow (same as the Restart button): stop, then
+    start. Shared by the button and the in-container reboot watcher."""
+    try:
+        cfg = load_container_config(name)
+        if cfg:
+            cfg["status"] = "stopping"
+            save_container_config(name, cfg)
+        run_script("container.sh", "stop", name, timeout=90)
+        cfg2 = load_container_config(name)
+        if cfg2:
+            cfg2["status"] = "starting"
+            save_container_config(name, cfg2)
+        import time; time.sleep(1)
+        output, code = run_script("container.sh", "start", name, timeout=120)
+        cfg3 = load_container_config(name)
+        if cfg3:
+            if code != 0:
+                log(f"ERROR: restart {name}: {output}")
+                cfg3["status"] = "stopped"
+                cfg3["pid"] = None
+                save_container_config(name, cfg3)
+                note_container_stopped(name)
+            else:
+                log(f"Container {name} restarted")
+                cfg3["status"] = "running"
+                save_container_config(name, cfg3)
+                note_container_started(name)
+    except Exception as e:
+        log(f"ERROR: restart thread {name}: {e}")
+        cfg = load_container_config(name)
+        if cfg:
+            cfg["status"] = "stopped"
+            cfg["pid"] = None
+            save_container_config(name, cfg)
+            note_container_stopped(name)
+
 def get_container_stats(name):
     cgroup = f"/sys/fs/cgroup/ank/{name}"
     if not os.path.isdir(cgroup):
@@ -761,6 +952,7 @@ ANK_NODE_HTML = ANK_PAGE_HTML % ('ANK - Node.js', '#339933', '#22c55e', '#339933
 ANK_PYTHON_HTML = ANK_PAGE_HTML % ('ANK - Python', '#3776AB', '#ffd43b', '#3776AB', 'Python Running', 'Edit server.py via the<br>ANK Web Panel file explorer.', ANK_BRANDING)
 
 ANK_NGINX_CONF = r"""daemon off;
+user root;
 events { worker_connections 1024; }
 http {
     include /etc/nginx/mime.types;
@@ -2613,7 +2805,7 @@ small{color:#334155}
                             template = t
                             break
                 pkgs = " ".join(template.get("packages", [])) if template else ""
-                with open(log_path, "w") as lf:
+                with open(log_path, "a") as lf:
                     lf.write(f"Creating container '{name}' (image: {mapped_image})...\n")
                     lf.flush()
                 output, code = run_script("container.sh", "create", name, mapped_image, root_password, str(ssh_port), pkgs)
@@ -2768,57 +2960,7 @@ small{color:#334155}
             return
 
         # --- ROOT MODE ---
-        def do_stop():
-            try:
-                log_path = os.path.join(ANK_DIR, "logs", f"{name}.log")
-                from datetime import datetime
-                ts = datetime.now().strftime("%H:%M:%S")
-                with open(log_path, "a") as lf:
-                    lf.write(f"[boot] {ts} Stopping services...\n")
-                    lf.flush()
-                output, code = run_script("container.sh", "stop", name, timeout=90)
-                # Write stop output to log
-                try:
-                    ts2 = datetime.now().strftime("%H:%M:%S")
-                    with open(log_path, "a") as lf:
-                        for line in output.strip().split("\n"):
-                            lf.write(f"[stop] {ts2} {line}\n")
-                        lf.write(f"[stop] {ts2} Container stopped\n")
-                        lf.flush()
-                except Exception:
-                    pass
-                # Verify container is actually dead before marking stopped
-                import time
-                for _ in range(10):
-                    cfg = load_container_config(name)
-                    if cfg:
-                        pid = cfg.get("pid")
-                        if pid:
-                            try:
-                                os.kill(pid, 0)
-                                time.sleep(1)
-                                continue
-                            except OSError:
-                                pass
-                    break
-                cfg = load_container_config(name)
-                if cfg:
-                    if code != 0 and "timed out" not in output:
-                        log(f"ERROR: stop {name}: {output}")
-                    log(f"Container {name} stopped")
-                    cfg["status"] = "stopped"
-                    cfg["pid"] = None
-                    save_container_config(name, cfg)
-                    note_container_stopped(name)
-            except Exception as e:
-                log(f"ERROR: stop thread {name}: {e}")
-                cfg = load_container_config(name)
-                if cfg:
-                    cfg["status"] = "stopped"
-                    cfg["pid"] = None
-                    save_container_config(name, cfg)
-                    note_container_stopped(name)
-        threading.Thread(target=do_stop, daemon=True).start()
+        threading.Thread(target=_stop_container_flow, args=(name,), daemon=True).start()
         self.send_json({"message": f"Container '{name}' stopping"})
 
     def api_delete_container(self, name):
@@ -3223,41 +3365,7 @@ small{color:#334155}
             if config.get("status") in ("starting", "stopping", "deleting"):
                 self.send_error(409, f"Container '{name}' is already {config.get('status')}")
                 return
-        def do_restart():
-            try:
-                cfg = load_container_config(name)
-                if cfg:
-                    cfg["status"] = "stopping"
-                    save_container_config(name, cfg)
-                run_script("container.sh", "stop", name, timeout=90)
-                cfg2 = load_container_config(name)
-                if cfg2:
-                    cfg2["status"] = "starting"
-                    save_container_config(name, cfg2)
-                import time; time.sleep(1)
-                output, code = run_script("container.sh", "start", name, timeout=120)
-                cfg3 = load_container_config(name)
-                if cfg3:
-                    if code != 0:
-                        log(f"ERROR: restart {name}: {output}")
-                        cfg3["status"] = "stopped"
-                        cfg3["pid"] = None
-                        save_container_config(name, cfg3)
-                        note_container_stopped(name)
-                    else:
-                        log(f"Container {name} restarted")
-                        cfg3["status"] = "running"
-                        save_container_config(name, cfg3)
-                        note_container_started(name)
-            except Exception as e:
-                log(f"ERROR: restart thread {name}: {e}")
-                cfg = load_container_config(name)
-                if cfg:
-                    cfg["status"] = "stopped"
-                    cfg["pid"] = None
-                    save_container_config(name, cfg)
-                    note_container_stopped(name)
-        threading.Thread(target=do_restart, daemon=True).start()
+        threading.Thread(target=_restart_container_flow, args=(name,), daemon=True).start()
         self.send_json({"message": f"Container '{name}' restarting"})
 
     def api_exec_container(self, name, data):
@@ -3986,7 +4094,7 @@ small{color:#334155}
             _building = True
             log_path = os.path.join(ANK_DIR, "logs", f"{container_name}.log")
             try:
-                with open(log_path, "w") as lf:
+                with open(log_path, "a") as lf:
                     lf.write(f"Deploying template '{template['name']}' as '{container_name}'...\n")
                     lf.flush()
 
@@ -4283,7 +4391,7 @@ small{color:#334155}
             _building = True
             log_path = os.path.join(ANK_DIR, "logs", f"{container_name}.log")
             try:
-                with open(log_path, "w") as lf:
+                with open(log_path, "a") as lf:
                     lf.write(f"Building Ankfile ({base_image}) as '{container_name}'...\n")
                     lf.flush()
 
@@ -7584,12 +7692,62 @@ def _status_poller():
     """Background thread: periodically check all containers and recover status.
     If a container has status 'running' but TCP checks fail, it will eventually
     flip to 'stopped'. But if a container has status 'stopped' and TCP checks
-    succeed, we flip it BACK to 'running'. This prevents the one-way ratchet."""
+    succeed, we flip it BACK to 'running'. This prevents the one-way ratchet.
+    Every 5s it also consumes in-container halt/reboot requests (written by
+    the ankd shims for /sbin/halt|poweroff|shutdown|reboot) and runs the
+    SAME flows as the panel's Stop/Restart buttons."""
     import time
+    tick = 0
     while True:
         try:
-            time.sleep(20)  # Check every 20 seconds
+            time.sleep(5)
             if not os.path.isdir(CONTAINERS_DIR):
+                continue
+            # --- halt/reboot requests from inside containers ---
+            for name in os.listdir(CONTAINERS_DIR):
+                req = os.path.join(CONTAINERS_DIR, name, "merged", "run",
+                                   "ankd", "requests", "host-action")
+                if not os.path.isfile(req):
+                    continue
+                try:
+                    with open(req) as f:
+                        action = f.read().strip()
+                except OSError:
+                    continue
+                if action not in ("halt", "reboot"):
+                    action = "halt"
+                lock = _get_container_lock(name)
+                with lock:
+                    cfg = load_container_config(name)
+                    if not cfg:
+                        # deleted container — drop the stale request
+                        try:
+                            os.remove(req)
+                        except OSError:
+                            pass
+                        continue
+                    if cfg.get("status") != "running":
+                        # keep the request until the container is running
+                        # again (next start clears it as stale instead)
+                        continue
+                    try:
+                        os.remove(req)
+                    except OSError:
+                        continue
+                    if action == "reboot":
+                        log(f"[POLLER] {name}: container requested reboot — running restart flow")
+                        threading.Thread(target=_restart_container_flow,
+                                         args=(name,), daemon=True).start()
+                    else:
+                        cfg["status"] = "stopping"
+                        save_container_config(name, cfg)
+                        note_container_stopped(name)
+                        log(f"[POLLER] {name}: container requested halt — running stop flow")
+                        threading.Thread(target=_stop_container_flow,
+                                         args=(name,), daemon=True).start()
+            # --- TCP-based status recovery: every 20s ---
+            tick += 1
+            if tick % 4:
                 continue
             for name in os.listdir(CONTAINERS_DIR):
                 cfg_path = os.path.join(CONTAINERS_DIR, name, "config.json")

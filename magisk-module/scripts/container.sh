@@ -371,13 +371,10 @@ _install_ankd() {
         return 1
     fi
 
-    # Generate ankdctl CLI
-    cat > "$ROOTFS/bin/ankctl" << 'ANKCTL_EOF'
-#!/bin/sh
-#ankctl - Android Konteiner Control
-exec /usr/ankd/core/ankd.sh "$@"
-ANKCTL_EOF
-    chmod +x "$ROOTFS/bin/ankctl" 2>/dev/null
+    # NOTE: no /bin/ankctl here — the ankd daemon generates the real,
+    # self-contained ankctl on boot. The old 3-line proxy this used to
+    # write (exec ankd.sh "$@") ping-ponged forever with ankd's CLI mode
+    # (which execs /bin/ankctl back).
 
     # Generate default .ankd files based on image type
     _generate_default_ank_files "$ROOTFS" "${TEMPLATE_ID:-$IMAGE}" "$SSH_PORT"
@@ -419,7 +416,11 @@ SSHD_EOF
             if [ -f "$ROOTFS/etc/nginx/nginx.conf" ]; then
                 grep -q "^daemon off" "$ROOTFS/etc/nginx/nginx.conf" 2>/dev/null || \
                     sed -i '1i daemon off;' "$ROOTFS/etc/nginx/nginx.conf" 2>/dev/null
-                sed -i '/^user[[:space:]]/s/^/# ANK: /' "$ROOTFS/etc/nginx/nginx.conf" 2>/dev/null
+                if grep -q "^[[:space:]]*user[[:space:]]" "$ROOTFS/etc/nginx/nginx.conf" 2>/dev/null; then
+                    sed -i 's/^\([[:space:]]*\)user[[:space:]].*/\1user root;/' "$ROOTFS/etc/nginx/nginx.conf" 2>/dev/null
+                else
+                    sed -i '1i user root;' "$ROOTFS/etc/nginx/nginx.conf" 2>/dev/null
+                fi
             fi
             ;;
         apache*)
@@ -801,18 +802,59 @@ cmd_start() {
         exit 1
     fi
 
+    # Pre-boot cleanup: if status didn't confirm a live container, a
+    # half-dead previous run (status stopped/failed while daemon and
+    # services still live) would fight this boot for ports. Same guarded
+    # steps as cmd_stop PHASE 0/1 — scoped to this container only — but
+    # without unmounting: existing mounts are reused as-is.
+    mkdir -p "$ROOTFS/run/ankd" "$ROOTFS/var/run/ankd" 2>/dev/null
+    touch "$ROOTFS/run/ankd/.shutdown" "$ROOTFS/var/run/ankd/.shutdown" 2>/dev/null
+    local _wk=0
+    while [ "$_wk" -lt 3 ] && [ -n "$PID" ] && [ "$PID" != "null" ] && kill -0 "$PID" 2>/dev/null; do
+        sleep 1
+        _wk=$((_wk+1))
+    done
+    if [ -n "$PID" ] && [ "$PID" != "null" ]; then
+        kill -9 -- "-$PID" 2>/dev/null
+        kill -9 "$PID" 2>/dev/null
+    fi
+    local _pgf
+    for _pgf in "$ROOTFS/etc/ankd/pids"/*.pgid; do
+        [ -f "$_pgf" ] || continue
+        local _pg=$(cat "$_pgf" 2>/dev/null)
+        [ -z "$_pg" ] && continue
+        kill -9 -- "-$_pg" 2>/dev/null
+        kill -9 "$_pg" 2>/dev/null
+        rm -f "$_pgf" 2>/dev/null
+    done
+    for pid_dir in /proc/[0-9]*; do
+        local p=$(basename "$pid_dir" 2>/dev/null)
+        [ -z "$p" ] && continue
+        [ "$p" = "1" ] && continue
+        [ ! -d "$pid_dir" ] && continue
+        local root=$(readlink "$pid_dir/root" 2>/dev/null)
+        local exe=$(readlink "$pid_dir/exe" 2>/dev/null)
+        local cwd=$(readlink "$pid_dir/cwd" 2>/dev/null)
+        local belongs=0
+        case "$root" in ${ROOTFS}|${ROOTFS}/) belongs=1 ;; esac
+        case "$exe" in ${ROOTFS}/*) belongs=1 ;; esac
+        case "$cwd" in ${ROOTFS}/*) belongs=1 ;; esac
+        [ "$belongs" -eq 1 ] && kill -9 "$p" 2>/dev/null
+    done
+
     local SSH_PORT=$(grep -o '"ssh_port":[^,]*' "$CONFIG" | cut -d: -f2 | tr -d ' ')
     local ANKD_PORT=$(grep -o '"ankd_port":[^,]*' "$CONFIG" | cut -d: -f2 | tr -d ' ')
     local IP=$(grep -o '"ip_address":[^,]*' "$CONFIG" | cut -d'"' -f4)
     local IMAGE=$(grep -o '"image":[^,]*' "$CONFIG" 2>/dev/null | cut -d'"' -f4)
     local TEMPLATE_ID=$(grep -o '"template_id":[^,]*' "$CONFIG" 2>/dev/null | cut -d'"' -f4)
 
-    echo "Starting container: $NAME (mode: $MODE, port: $SSH_PORT)"
-
-    # Clear old build logs — start output will go here
+    # Append-only log: create/boot/start/stop all share one file (survives F5)
     local LOG_PATH="$ANK_DIR/logs/${NAME}.log"
     mkdir -p "$ANK_DIR/logs" 2>/dev/null
-    : > "$LOG_PATH" 2>/dev/null
+    local ts=$(date "+%H:%M:%S" 2>/dev/null || echo "??:??:??")
+    echo "[start] $ts Starting container: $NAME (mode: $MODE, port: $SSH_PORT)" >> "$LOG_PATH" 2>/dev/null
+
+    echo "Starting container: $NAME (mode: $MODE, port: $SSH_PORT)"
 
     # Ensure services are properly configured at start time
     case "${TEMPLATE_ID:-$IMAGE}" in
@@ -820,7 +862,11 @@ cmd_start() {
             if [ -f "$ROOTFS/etc/nginx/nginx.conf" ]; then
                 grep -q "^daemon off" "$ROOTFS/etc/nginx/nginx.conf" 2>/dev/null || \
                     sed -i '1i daemon off;' "$ROOTFS/etc/nginx/nginx.conf" 2>/dev/null
-                sed -i '/^user[[:space:]]/s/^/# ANK: /' "$ROOTFS/etc/nginx/nginx.conf" 2>/dev/null
+                if grep -q "^[[:space:]]*user[[:space:]]" "$ROOTFS/etc/nginx/nginx.conf" 2>/dev/null; then
+                    sed -i 's/^\([[:space:]]*\)user[[:space:]].*/\1user root;/' "$ROOTFS/etc/nginx/nginx.conf" 2>/dev/null
+                else
+                    sed -i '1i user root;' "$ROOTFS/etc/nginx/nginx.conf" 2>/dev/null
+                fi
             fi
             ;;
         apache*)
@@ -943,9 +989,17 @@ cmd_start() {
                 local p=$(dirname "$fd_dir" | xargs basename)
                 if ls -la "$fd_dir" 2>/dev/null | grep -q "socket:\[$inode\]"; then
                     if [ "$p" != "$PID" ] 2>/dev/null; then
-                        echo "  Killing stale process $p on port $SSHD_PORT (inode=$inode)"
-                        kill -9 "$p" 2>/dev/null
-                        sleep 1
+                        local holder_root=$(readlink "/proc/$p/root" 2>/dev/null)
+                        case "$holder_root" in
+                            ${ROOTFS}|${ROOTFS}/)
+                                echo "  Killing stale process $p on port $SSHD_PORT (inode=$inode)"
+                                kill -9 "$p" 2>/dev/null
+                                sleep 1
+                                ;;
+                            *)
+                                echo "  WARN: port $SSHD_PORT held by process $p outside this container, not killing"
+                                ;;
+                        esac
                     fi
                     break
                 fi
@@ -965,6 +1019,10 @@ cmd_start() {
         # Update ankd.sh from host (in case of upgrades)
         local ANKD_SRC="$SCRIPTS_DIR/ankd/ankd.sh"
         [ -f "$ANKD_SRC" ] && cp "$ANKD_SRC" "$ROOTFS/usr/ankd/core/ankd.sh" 2>/dev/null
+        # Clear stale shutdown signal and any unconsumed halt/reboot
+        # request from the previous run
+        rm -f "$ROOTFS/run/ankd/.shutdown" "$ROOTFS/var/run/ankd/.shutdown" 2>/dev/null
+        rm -rf "$ROOTFS/run/ankd/requests" 2>/dev/null
         echo "  Using ankd service manager"
         local INSTANCE_UUID=$(grep -o '"instance_uuid": *"[^"]*"' "$CONFIG" 2>/dev/null | cut -d'"' -f4)
         local HEALTH_FILE="/tmp/ank-health"
@@ -1021,11 +1079,11 @@ cmd_start() {
     if [ "$MODE" = "isolated" ]; then
         nohup ip netns exec "$NS" unshare --fork --pid \
             --mount-proc="$ROOTFS/proc" \
-            chroot "$ROOTFS" "$SHELL" -c "$CONTAINER_INIT" </dev/null >"$LOG_PATH" 2>&1 &
+            chroot "$ROOTFS" "$SHELL" -c "$CONTAINER_INIT" </dev/null >>"$LOG_PATH" 2>&1 &
     elif [ "$MODE" = "shared_network" ]; then
         nohup unshare --fork --pid \
             --mount-proc="$ROOTFS/proc" \
-            chroot "$ROOTFS" "$SHELL" -c "$CONTAINER_INIT" </dev/null >"$LOG_PATH" 2>&1 &
+            chroot "$ROOTFS" "$SHELL" -c "$CONTAINER_INIT" </dev/null >>"$LOG_PATH" 2>&1 &
     elif [ "$MODE" = "lite" ]; then
         local PROOT_BIN="$ANK_DIR/proot"
         if [ ! -e "$PROOT_BIN" ]; then
@@ -1034,9 +1092,9 @@ cmd_start() {
         fi
         LD_LIBRARY_PATH="$ROOTFS/lib:$ROOTFS/usr/lib" \
         nohup "$PROOT_BIN" -0 -r "$ROOTFS" \
-            "$SHELL" -c "$CONTAINER_INIT" </dev/null >"$LOG_PATH" 2>&1 &
+            "$SHELL" -c "$CONTAINER_INIT" </dev/null >>"$LOG_PATH" 2>&1 &
     else
-        nohup chroot "$ROOTFS" "$SHELL" -c "$CONTAINER_INIT" </dev/null >"$LOG_PATH" 2>&1 &
+        nohup chroot "$ROOTFS" "$SHELL" -c "$CONTAINER_INIT" </dev/null >>"$LOG_PATH" 2>&1 &
     fi
 
     local PID=$!
@@ -1044,33 +1102,20 @@ cmd_start() {
     sleep 2
     if ! kill -0 "$PID" 2>/dev/null; then
         echo "ERROR: Container process died immediately after start"
+        echo "[start] $(date "+%H:%M:%S" 2>/dev/null) ERROR: Container process died immediately after start" >> "$LOG_PATH" 2>/dev/null
         [ -f "$ANK_DIR/logs/${NAME}.log" ] && tail -5 "$ANK_DIR/logs/${NAME}.log" 2>/dev/null
         sed -i "s/\"status\": \"[^\"]*\"/\"status\": \"stopped\"/" "$CONFIG"
         sed -i "s/\"pid\": [^,]*/\"pid\": null/" "$CONFIG"
         exit 1
     fi
 
-    # Verify PID is the actual chroot process, not a transient one.
-    # Multiple processes can share this rootfs in shared_host mode (the
-    # wrapper shell, ankd.sh, and everything ankd spawns), so instead of
-    # trusting the first match of /proc/[0-9]* (shell orders lexicographically
-    # -- "10" comes before "9" -- picking an ephemeral process), collect all
-    # candidate PIDs and pick the numerically smallest: the oldest, therefore
-    # most stable, for this rootfs.
-    local REAL_PID=""
-    local candidates=""
-    for p_dir in /proc/[0-9]*/; do
-        local p_pid=$(basename "$p_dir")
-        local p_root=$(readlink "/proc/$p_pid/root" 2>/dev/null)
-        [ "$p_root" = "$ROOTFS" ] && candidates="$candidates $p_pid"
-    done
-    if [ -n "$candidates" ]; then
-        REAL_PID=$(printf '%s\n' $candidates | sort -n | head -1)
-    fi
-    if [ -n "$REAL_PID" ] && [ "$REAL_PID" != "$PID" ]; then
-        echo "  Real container PID: $REAL_PID (was wrapper PID: $PID)"
-        PID="$REAL_PID"
-    fi
+    # PID stays the durable init we spawned ($!): the chroot/unshare
+    # process execs (or forks directly into) ankd, so it lives exactly as
+    # long as the container. The old "smallest PID with this rootfs"
+    # scan adopted leftover ORPHANS from previous runs (they are lower),
+    # wrote them into config/boot log and then reported a pid that was
+    # not this container's process at all. Leftovers are already removed
+    # by the pre-boot cleanup above.
 
     # Move to cgroup. The cgroup dir is only created once by `cmd_create`,
     # but `cmd_stop` removes it again on every stop (PHASE 6), so on any
@@ -1139,6 +1184,7 @@ cmd_start() {
     _scan_container_procs "$NAME"
 
     echo "Container '$NAME' started (PID: $PID, SSH: $SSH_PORT)"
+    echo "[start] $(date "+%H:%M:%S" 2>/dev/null) Container started (PID: $PID, SSH: $SSH_PORT)" >> "$LOG_PATH" 2>/dev/null
     return 0
 }
 
@@ -1177,17 +1223,26 @@ cmd_stop() {
     local KILL_COUNT=0
 
     # ============================================================
-    # PHASE 0: Kill ankd daemon + container init to stop restart loop
-    #          and all child processes in one shot via process group
+    # PHASE 0: Graceful shutdown signal first — the daemon sees the
+    #          flag, stops the RESTART_POLICY loop and exits on its
+    #          own (no resurrection during stop). Then kill the
+    #          daemon group as backup. The flag stays until the next
+    #          start clears it, so a slow daemon can never bring a
+    #          service back mid-stop.
     # ============================================================
-    echo "  Stopping ankd daemon..."
+    echo "  Signaling ankd shutdown..."
+    mkdir -p "$ROOTFS/run/ankd" "$ROOTFS/var/run/ankd" 2>/dev/null
+    touch "$ROOTFS/run/ankd/.shutdown" "$ROOTFS/var/run/ankd/.shutdown" 2>/dev/null
+    local _w=0
+    while [ "$_w" -lt 5 ] && [ -n "$PID" ] && [ "$PID" != "null" ] && kill -0 "$PID" 2>/dev/null; do
+        sleep 1
+        _w=$((_w+1))
+    done
     if [ -n "$PID" ] && [ "$PID" != "null" ]; then
         kill -9 -- "-$PID" 2>/dev/null
         kill -9 "$PID" 2>/dev/null
-        echo "    ankd daemon killed (PGID $PID)"
+        echo "    ankd daemon stopped (PGID $PID)"
     fi
-    # Brief wait for restart loop to notice daemon death
-    sleep 1
 
     # ============================================================
     # PHASE 1: Kill all services by PGID, read straight from the pgid
@@ -1242,51 +1297,13 @@ cmd_stop() {
             kill -9 "$p" 2>/dev/null && SWEEP_COUNT=$((SWEEP_COUNT+1))
         }
     done
-    # Second pass: catch processes via mount namespace (handles SELinux readlink blocks)
-    local MY_MNT=""
-    [ -d "/proc/1/ns/mnt" ] && MY_MNT=$(readlink /proc/1/ns/mnt 2>/dev/null)
-    if [ -n "$MY_MNT" ]; then
-        for pid_dir in /proc/[0-9]*; do
-            local p=$(basename "$pid_dir" 2>/dev/null)
-            [ -z "$p" ] && continue
-            [ "$p" = "1" ] && continue
-            [ ! -d "$pid_dir" ] && continue
-            local their_mnt=$(readlink "$pid_dir/ns/mnt" 2>/dev/null)
-            [ "$their_mnt" = "$MY_MNT" ] && continue
-            local exe=$(readlink "$pid_dir/exe" 2>/dev/null)
-            case "$exe" in
-                */sshd|*/httpd|*/nginx|*/php*|*/node|*/python*)
-                    kill -9 "$p" 2>/dev/null && SWEEP_COUNT=$((SWEEP_COUNT+1))
-                    ;;
-            esac
-        done
-    fi
+    # Second pass and the old name-based passes are intentionally gone:
+    # they matched ANY sshd/nginx/python on the device (cross-container
+    # and host kills — stopping one container used to drop every other
+    # container's SSH). Everything above is scoped to this container's
+    # rootfs only; unreapable leftovers are caught by the host-side
+    # force-kill verification in server.py.
     [ "$SWEEP_COUNT" -gt 0 ] && echo "    Cleaned $SWEEP_COUNT remaining process(es)"
-
-    # ============================================================
-    # PHASE 2.5: Final kill — pkill by exe name inside container rootfs
-    # This catches any orphaned processes that survived the PGID kill
-    # and the /proc sweep (e.g. re-attached sshd sessions).
-    # ============================================================
-    if [ -d "$ROOTFS" ]; then
-        for svc_exe in sshd httpd nginx php-fpm node python3 python; do
-            local exe_path="$ROOTFS/usr/sbin/$svc_exe"
-            [ -f "$exe_path" ] || exe_path="$ROOTFS/usr/bin/$svc_exe"
-            [ -f "$exe_path" ] || exe_path="$ROOTFS/bin/$svc_exe"
-            if [ -f "$exe_path" ]; then
-                for pid_dir in /proc/[0-9]*; do
-                    local p=$(basename "$pid_dir" 2>/dev/null)
-                    [ -z "$p" ] && continue
-                    [ "$p" = "1" ] && continue
-                    [ ! -d "$pid_dir" ] && continue
-                    local exe=$(readlink "$pid_dir/exe" 2>/dev/null)
-                    case "$exe" in
-                        */$svc_exe) kill -9 "$p" 2>/dev/null ;;
-                    esac
-                done
-            fi
-        done
-    fi
 
     # Brief wait for zombie reaping
     [ "$SWEEP_COUNT" -gt 0 ] && sleep 1

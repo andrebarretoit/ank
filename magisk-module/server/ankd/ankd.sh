@@ -692,6 +692,71 @@ _ankd_daemon_start_service() {
 }
 
 # ============================================================
+# GENERATE HALT/REBOOT SHIMS
+# ============================================================
+_ankd_generate_haltshims() {
+    local tmp="/run/ankd/.shim"
+    local d n
+    mkdir -p /run/ankd 2>/dev/null
+
+    cat > "$tmp.halt" << 'HALT_EOF'
+#!/bin/sh
+# ANK: stop THIS container only (host runs its Stop flow) — never the device.
+mkdir -p /run/ankd/requests 2>/dev/null
+echo "halt" > /run/ankd/requests/host-action 2>/dev/null
+touch /run/ankd/.shutdown 2>/dev/null
+echo "Shutdown requested: the host will stop this container."
+exit 0
+HALT_EOF
+
+    cat > "$tmp.reboot" << 'REBOOT_EOF'
+#!/bin/sh
+# ANK: restart THIS container only (host runs its Restart flow) — never the device.
+mkdir -p /run/ankd/requests 2>/dev/null
+echo "reboot" > /run/ankd/requests/host-action 2>/dev/null
+touch /run/ankd/.shutdown 2>/dev/null
+echo "Restart requested: the host will restart this container."
+exit 0
+REBOOT_EOF
+
+    cat > "$tmp.shutdown" << 'SHUT_EOF'
+#!/bin/sh
+# ANK: shutdown for THIS container only — never the device.
+_reboot=0
+for _a in "$@"; do
+    case "$_a" in
+        -r|--reboot|-r*) _reboot=1 ;;
+    esac
+done
+mkdir -p /run/ankd/requests 2>/dev/null
+if [ "$_reboot" -eq 1 ]; then
+    echo "reboot" > /run/ankd/requests/host-action 2>/dev/null
+    echo "Restart requested: the host will restart this container."
+else
+    echo "halt" > /run/ankd/requests/host-action 2>/dev/null
+    echo "Shutdown requested: the host will stop this container."
+fi
+touch /run/ankd/.shutdown 2>/dev/null
+exit 0
+SHUT_EOF
+
+    chmod 755 "$tmp.halt" "$tmp.reboot" "$tmp.shutdown" 2>/dev/null
+    # rm BEFORE cp: these paths are usually busybox symlinks, and cp
+    # would otherwise follow the link and overwrite the busybox binary.
+    for d in /sbin /usr/sbin /usr/local/sbin /usr/bin /bin; do
+        mkdir -p "$d" 2>/dev/null
+        for n in halt poweroff reboot shutdown; do
+            rm -f "$d/$n" 2>/dev/null
+        done
+        cp "$tmp.halt" "$d/halt" 2>/dev/null
+        cp "$tmp.halt" "$d/poweroff" 2>/dev/null
+        cp "$tmp.reboot" "$d/reboot" 2>/dev/null
+        cp "$tmp.shutdown" "$d/shutdown" 2>/dev/null
+    done
+    rm -f "$tmp.halt" "$tmp.reboot" "$tmp.shutdown" 2>/dev/null
+}
+
+# ============================================================
 # GENERATE ANKCTL CLI
 # ============================================================
 _ankd_generate_ankctl() {
@@ -1298,17 +1363,20 @@ _ankd_daemon() {
     hostname "${ANKD_CONTAINER:-ank}" 2>/dev/null
     _ankd_boot "INFO" "Hostname: $(hostname 2>/dev/null)"
 
-    # Generate ankctl if not exists
-    if [ ! -x "/bin/ankctl" ]; then
-        _ankd_generate_ankctl
-        _ankd_boot "INFO" "Generated /bin/ankctl"
-    fi
+    # (Re)generate ankctl on every boot: version-synced like svckill,
+    # executable, and heals containers still carrying the old
+    # exec-proxy ankctl (proxy + CLI-mode exec = infinite loop)
+    _ankd_generate_ankctl 2>/dev/null
+    _ankd_boot "INFO" "ankctl regenerated"
 
     # Regenerate the service-stop helper so it always matches this
     # ankd version, and purge ctl requests from a previous run.
     mkdir -p "$ANKD_STOPPED" "$ANKD_CTL" 2>/dev/null
     rm -f "$ANKD_CTL"/* 2>/dev/null
+    # Never boot with a leftover shutdown signal from a previous stop
+    rm -f "$ANKD_RUN/.shutdown" 2>/dev/null
     _ankd_generate_svckill 2>/dev/null
+    _ankd_generate_haltshims 2>/dev/null
 
     # Count services
     local svc_count=0
@@ -1458,6 +1526,9 @@ _ankd_daemon() {
             # resurrect, never count as a failure.
             [ -f "$ANKD_STOPPED/$svc_name" ] && continue
 
+            # Shutdown requested: stop watching/resurrecting services now
+            [ -f "$ANKD_RUN/.shutdown" ] && break
+
             # Skip services that already gave up
             local _already_gave_up=0
             for gu in $_given_up; do
@@ -1502,6 +1573,8 @@ _ankd_daemon() {
                 elif [ "$policy" = "always" ] || [ "$policy" = "on-failure" ]; then
                     _ankd_boot "INFO" "Restarting $svc_name in ${delay}s (policy: $policy, attempt $rcount)"
                     _ankd_sleep "$delay"
+                    # Shutdown requested while waiting: do not respawn
+                    [ -f "$ANKD_RUN/.shutdown" ] && break
 
                     local existing_sh="$ANKD_GENERATED/${svc_uuid}-${svc_name}.sh"
                     if [ -f "$existing_sh" ]; then
@@ -1607,11 +1680,9 @@ case "$1" in
         _ankd_signal_restart "$2"
         ;;
     *)
-        # CLI mode - proxy to ankctl
-        # Ensure /bin/ankctl exists (generate if missing)
-        if [ ! -x "/bin/ankctl" ]; then
-            _ankd_generate_ankctl 2>/dev/null
-        fi
+        # CLI mode - proxy to ankctl. Always regenerate first: an old
+        # exec-proxy ankctl plus this exec would ping-pong forever.
+        _ankd_generate_ankctl 2>/dev/null
         if [ -x "/bin/ankctl" ]; then
             exec /bin/ankctl "$@"
         else

@@ -1052,23 +1052,22 @@ async function showContainerDetail(name, nodeId) {
     // Backup attach button
     document.getElementById('detail-backup-attach-btn')?.addEventListener('click', () => attachContainerToBackupRoutine());
 
-    // Start log polling for running containers
-    if (s === 'running' || isBuilding) {
-      detailLogTimer = setInterval(async () => {
-        try {
-          if (!currentContainer || currentContainer.name !== name) { clearInterval(detailLogTimer); detailLogTimer = null; return; }
-          let logs;
-          if (isRemote) {
-            logs = await api('GET', `/nodes/${encodeURIComponent(nodeId)}/containers/${encodeURIComponent(name)}/logs`);
-          } else {
-            logs = await api('GET', `/containers/${name}/logs`);
-          }
-          const logText = typeof logs.logs === 'string' ? logs.logs : (Array.isArray(logs.logs) ? logs.logs.join('\n') : '');
-          const el = document.getElementById('detail-log-output');
-          if (el) el.textContent = logText || 'No logs available';
-        } catch (e) { clearInterval(detailLogTimer); detailLogTimer = null; }
-      }, 3000);
-    }
+    // Poll container log while detail is open (log file is append-only, survives F5)
+    detailLogTimer = setInterval(async () => {
+      try {
+        const outEl = document.getElementById('detail-log-output');
+        if (!currentContainer || currentContainer.name !== name || !outEl) { clearInterval(detailLogTimer); detailLogTimer = null; return; }
+        let logs;
+        if (isRemote) {
+          logs = await api('GET', `/nodes/${encodeURIComponent(nodeId)}/containers/${encodeURIComponent(name)}/logs`);
+        } else {
+          logs = await api('GET', `/containers/${name}/logs`);
+        }
+        const logText = typeof logs.logs === 'string' ? logs.logs : (Array.isArray(logs.logs) ? logs.logs.join('\n') : '');
+        const next = logText || 'No logs available';
+        if (outEl.textContent !== next) outEl.textContent = next;
+      } catch (e) {}
+    }, 2000);
 
     // Build-in-polling: auto-refresh detail when container is building
     if (!isRemote && isBuilding) {
