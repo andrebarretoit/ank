@@ -2069,7 +2069,7 @@ ank_core_status() {
         local _local=$(echo "$json" | grep -o '"local"[[:space:]]*:[[:space:]]*{[^}]*}')
         local _cluster=$(echo "$json" | grep -o '"cluster"[[:space:]]*:[[:space:]]*{[^}]*}')
 
-        echo "ANK Engine v${_ver}"
+        echo "ANK Engine ${_ver}"
         echo ""
         echo "--- Local ---"
         local _lr=$(echo "$_local" | grep -o '"containers_running"[[:space:]]*:[[:space:]]*[0-9]*' | head -1 | grep -o '[0-9]*$')
@@ -3105,7 +3105,7 @@ ank_man() {
             echo ""
             echo "EXAMPLES"
             echo "    ank --version"
-            echo "    ANK Engine v2.0.0"
+            echo "    ANK Engine Testing Build"
             echo "    Containers: 3 running, 1 stopped, 4 total"
             echo "    Mode:       compat"
             echo "    Port:       8001"
@@ -3147,7 +3147,7 @@ ank_core_man() {
             echo "    - Server port"
             echo ""
             echo "OUTPUT"
-            echo "    ANK Engine v2.0.0"
+            echo "    ANK Engine Testing Build"
             echo "    Containers: 3 running, 1 stopped, 4 total"
             echo "    Mode:       compat"
             echo "    Port:       8001"

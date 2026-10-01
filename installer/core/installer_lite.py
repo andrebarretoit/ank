@@ -366,7 +366,7 @@ class LiteInstaller:
         # Header
         self._log("[ANK-INSTALLER] Starting lite installation, please wait...")
         self._log("  ================================")
-        self._log("   ANK - Android Konteiner v2.0.0")
+        self._log("   ANK - Android Konteiner Testing Build")
         self._log("  ================================")
 
         # --- Step 1: Clean ---
@@ -548,7 +548,7 @@ class LiteInstaller:
         self._notify("config", "Writing configuration...", 0.88)
         device_model = self._get_device_model()
         config = {
-            "version": "2.0.0",
+            "version": "Testing Build",
             "panel_port": 8001,
             "username": "admin",
             "password": "admin123",
@@ -563,7 +563,7 @@ class LiteInstaller:
 
         self._sh(f"mkdir -p /sdcard/AndroidKonteiner")
         self._push_text(
-            "ANK v2.0.0 (Lite)\n"
+            "ANK Testing Build (Lite)\n"
             "Painel: https://localhost:8001\n"
             "Usuario: admin\n"
             "Senha: admin123\n",

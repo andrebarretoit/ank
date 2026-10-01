@@ -1984,7 +1984,7 @@ try:
     nodes = d.get('nodes', [])
     ver = d.get('version', '?')
 
-    print(f'ANK Engine v{ver}')
+    print(f'ANK Engine {ver}')
     print(f'')
     print(f'--- Local ---')
     print(f'Containers: {local.get(\"containers_running\",0)} running / {local.get(\"containers_stopped\",0)} stopped')
@@ -2990,7 +2990,7 @@ ank_man() {
             echo ""
             echo "EXAMPLES"
             echo "    ank --version"
-            echo "    ANK Engine v2.0.0"
+            echo "    ANK Engine Testing Build"
             echo "    Containers: 3 running, 1 stopped, 4 total"
             echo "    Mode:       compat"
             echo "    Port:       8001"
@@ -3032,7 +3032,7 @@ ank_core_man() {
             echo "    - Server port"
             echo ""
             echo "OUTPUT"
-            echo "    ANK Engine v2.0.0"
+            echo "    ANK Engine Testing Build"
             echo "    Containers: 3 running, 1 stopped, 4 total"
             echo "    Mode:       compat"
             echo "    Port:       8001"

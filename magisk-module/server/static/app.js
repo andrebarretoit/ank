@@ -4,6 +4,25 @@ let isLoggedIn = !!ankToken;
 let ankLiteMode = false;
 let ankModeFeatures = {};
 
+const ANK_SOON_PAGES = ['stacks', 'backups'];
+function isSoonPage(page) { return ANK_SOON_PAGES.includes(page); }
+
+function applySoonOverlay() {
+  ANK_SOON_PAGES.forEach(page => {
+    document.querySelectorAll(`[data-page="${page}"]`).forEach(el => {
+      el.classList.add('nav-coming-soon');
+      el.title = 'Coming soon';
+      const label = el.querySelector('.nav-label') || el.querySelector('span');
+      if (label && !label.querySelector('.coming-soon-badge')) label.insertAdjacentHTML('beforeend', ' <span class="coming-soon-badge">Soon</span>');
+    });
+  });
+  ['btn-create-stack', 'btn-create-backup'].forEach(id => {
+    const btn = document.getElementById(id);
+    if (btn) btn.style.display = 'none';
+  });
+}
+applySoonOverlay();
+
 async function api(method, path, body = null) {
   const headers = { 'Content-Type': 'application/json', 'X-ANK-Client': 'ank-panel' };
   if (ankToken) headers['Authorization'] = 'Bearer ' + ankToken;
@@ -272,7 +291,7 @@ function showTerminalContainers() {
 
 function navigateTo(page) {
   _formDirty = false;
-  if (ankLiteMode && (page === 'networks' || page === 'stacks')) {
+  if (isSoonPage(page) || (ankLiteMode && page === 'networks')) {
     try { localStorage.removeItem('ank_tab'); sessionStorage.removeItem('ank_nav_page'); } catch (e) {}
     page = 'dashboard';
   }
@@ -1678,10 +1697,10 @@ function updateNodeSelectors(nodes) {
 async function loadStacks() {
   const el = document.getElementById('stacks-list');
   if (!el) return;
-  if (ankLiteMode) {
-    el.innerHTML = '<div class="empty-state"><i class="bi bi-hourglass-split"></i><h3>Coming soon</h3><p>Stacks are not available in lite mode</p></div>';
+  if (isSoonPage('stacks')) {
+    el.innerHTML = '<div class="empty-state"><i class="bi bi-hourglass-split"></i><h3>Coming soon</h3><p>Stacks are coming soon</p></div>';
     const det = document.getElementById('stack-detail');
-    if (det) det.innerHTML = '<div class="split-right-empty"><div><i class="bi bi-hourglass-split"></i><p>Coming soon in lite mode</p></div></div>';
+    if (det) det.innerHTML = '<div class="split-right-empty"><div><i class="bi bi-hourglass-split"></i><p>Coming soon</p></div></div>';
     return;
   }
   try {
@@ -1816,6 +1835,12 @@ async function deleteStack(name) {
 async function loadBackups() {
   const el = document.getElementById('backups-list');
   if (!el) return;
+  if (isSoonPage('backups')) {
+    el.innerHTML = '<div class="empty-state"><i class="bi bi-hourglass-split"></i><h3>Coming soon</h3><p>Backups are coming soon</p></div>';
+    const det = document.getElementById('backup-detail');
+    if (det) det.innerHTML = '<div class="split-right-empty"><div><i class="bi bi-hourglass-split"></i><p>Coming soon</p></div></div>';
+    return;
+  }
   try {
     const data = await api('GET', '/backups');
     const routines = data.routines || [];
@@ -1836,6 +1861,7 @@ async function loadBackups() {
 let currentBackupId = null;
 
 async function showBackupDetail(id) {
+  if (isSoonPage('backups')) return;
   currentBackupId = id;
   document.querySelectorAll('#backups-list .split-list-card').forEach(c => c.classList.toggle('selected', c.dataset.id === id));
   const el = document.getElementById('backup-detail');
@@ -2024,6 +2050,11 @@ async function loadContainerBackupTab(containerName) {
   const statusEl = document.getElementById('detail-backup-status');
   const selectEl = document.getElementById('detail-backup-attach-routine');
   if (!statusEl || !selectEl) return;
+  if (isSoonPage('backups')) {
+    statusEl.innerHTML = '<div style="color:var(--text-muted);font-size:13px">Backups are coming soon</div>';
+    selectEl.innerHTML = '<option value="">Coming soon</option>';
+    return;
+  }
   statusEl.innerHTML = '<div style="color:var(--text-muted);font-size:13px">Loading...</div>';
   selectEl.innerHTML = '<option value="">Loading routines...</option>';
   try {
@@ -2087,6 +2118,7 @@ async function attachContainerToBackupRoutine() {
 }
 
 function openBackupWizardForContainer(containerName) {
+  if (isSoonPage('backups')) { toast('Backups are coming soon', 'info'); return; }
   pendingBackupContainer = containerName || '';
   backupWizardReset();
   loadBackupExistingConnections();
@@ -2504,7 +2536,7 @@ function showSettingsSection(section) {
     const diskFree = sysInfo.device_free || '-';
     el.innerHTML = `<div class="card"><div class="card-header"><h3><i class="bi bi-info-circle"></i> About</h3></div><div class="card-body">
       <div class="info-grid">
-        <div class="info-item"><span class="info-label">Version</span><span>2.0.0</span></div>
+        <div class="info-item"><span class="info-label">Version</span><span>Testing Build</span></div>
         <div class="info-item"><span class="info-label">Panel Port</span><span>${sysInfo.panel_port||8001}</span></div>
         <div class="info-item"><span class="info-label">Device</span><span>${esc(sysInfo.device||'unknown')}</span></div>
         <div class="info-item"><span class="info-label">Kernel</span><span>${esc(sysInfo.kernel||'unknown')}</span></div>
@@ -3428,7 +3460,7 @@ function openFooterModal() {
         <i class="bi bi-globe2"></i><div class="fc-title">Portfolio</div><div class="fc-desc">View projects & work</div>
       </a>
     </div>
-    <div style="text-align:center;margin-top:20px"><span class="text-sm text-muted">ANK · Android Konteiner v2.0.0</span></div>
+    <div style="text-align:center;margin-top:20px"><span class="text-sm text-muted">ANK · Android Konteiner · Testing Build</span></div>
   `);
 }
 

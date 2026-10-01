@@ -1,6 +1,6 @@
 {
-  "version": "2.0.0",
-  "versionCode": 6,
-  "zipUrl": "https://github.com/andrebarretoit/ank/releases/download/v2.0.0/ank-magisk.zip",
-  "changelog": "Security hardening (role-based tokens, shell denylist, config never exposes password). Danger Zone + stack logs/metrics/inspect + battery guard + exec runner in UI. Dead code removal. Reboot retry in installer. Dynamic panel_port. versionCode=6."
+  "version": "Testing Build",
+  "versionCode": 7,
+  "zipUrl": "https://github.com/andrebarretoit/ank/releases/download/ank-testing/ank-magisk.zip",
+  "changelog": "Testing Build. Stacks and Backups are marked as coming soon (frozen). Lite mode frozen. Proot stability instrumentation and fixes in progress."
 }

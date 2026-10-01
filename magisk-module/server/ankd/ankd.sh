@@ -1203,7 +1203,7 @@ _ankd_daemon() {
     _ankd_init_dirs
 
     echo ""
-    echo "  ANK Container Boot v2.0.0"
+    echo "  ANK Container Boot Testing Build"
     echo "  ========================"
     _ankd_boot "INFO" "ankd starting..."
 

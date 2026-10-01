@@ -10,7 +10,7 @@ Docker-like container platform for Android — runs Linux containers via chroot/
 [![Python](https://img.shields.io/badge/Python-3.x-3776AB?style=flat&logo=python&logoColor=white)](https://www.python.org/)
 [![Magisk](https://img.shields.io/badge/Magisk-20.4%2B-F44336?style=flat&logo=android&logoColor=white)](https://www.magiskapp.com/)
 [![License](https://img.shields.io/badge/License-AKSAL--1.0-FF6B35.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/Version-2.0.0-2196F3)](https://github.com/andrebarretoit/ank)
+[![Version](https://img.shields.io/badge/Version-Testing%20Build-2196F3)](https://github.com/andrebarretoit/ank)
 [![Platform](https://img.shields.io/badge/Platform-Android-3DDC84?style=flat&logo=android&logoColor=white)](https://www.android.com/)
 
 <br>
@@ -65,13 +65,13 @@ Docker-like container platform for Android — runs Linux containers via chroot/
 - **ankd service daemon** — Lightweight service management via shell scripts
 - **Security** — Token Bearer auth, self-signed HTTPS, rate limiting, security headers
 - **Complete uninstall** — Uninstall via panel with full removal
-- **Stacks** — Manage container groups with load balancing and auto-scaling
-- **Load Balancer** — Python reverse proxy for stacks with health check
-- **Auto-scaling** — Automatic scaling based on triggers (CPU, memory, requests/sec)
-- **Backups** — Backup routines via sshpass+scp with scheduling and retention
+- **Stacks** *(coming soon)* — Manage container groups with load balancing and auto-scaling
+- **Load Balancer** *(coming soon)* — Python reverse proxy for stacks with health check
+- **Auto-scaling** *(coming soon)* — Automatic scaling based on triggers (CPU, memory, requests/sec)
+- **Backups** *(coming soon)* — Backup routines via sshpass+scp with scheduling and retention
 - **Multi-device nodes** — Manage multiple remote ANK devices via HTTP API
-- **Shared volumes** — Bind mount from host into stack containers
-- **Ankfile in Stacks** — Deploy custom images via Ankfile within stacks
+- **Shared volumes** *(coming soon)* — Bind mount from host into stack containers
+- **Ankfile in Stacks** *(coming soon)* — Deploy custom images via Ankfile within stacks
 
 ---
 
@@ -286,6 +286,8 @@ ANK automatically detects the highest isolation tier supported by your device ke
 
 ## Stacks & Orchestration
 
+> **Coming soon** — not enabled in the Testing Build.
+
 Manage groups of identical containers with load balancing and auto-scaling.
 
 | Feature | Description |
@@ -302,6 +304,8 @@ Access from the web panel in the **Stacks** tab.
 ---
 
 ## Backups
+
+> **Coming soon** — not enabled in the Testing Build.
 
 Automate your data backups with scheduling and retention.
 
@@ -642,7 +646,8 @@ ank/
 
 | Version | Status | Download |
 |---------|--------|----------|
-| v2.0.0 | **Latest** | [ank-magisk.zip](https://github.com/andrebarretoit/ank/releases/download/v2.0.0/ank-magisk.zip) + [ANK-Installer.exe](https://github.com/andrebarretoit/ank/releases/download/v2.0.0/ANK-Installer.exe) |
+| Testing Build | **Testing** | [ank-magisk.zip](https://github.com/andrebarretoit/ank/releases/download/ank-testing/ank-magisk.zip) + [ANK-Installer.exe](https://github.com/andrebarretoit/ank/releases/download/ank-testing/ANK-Installer.exe) |
+| v2.0.0 | Stable | [ank-magisk.zip](https://github.com/andrebarretoit/ank/releases/download/v2.0.0/ank-magisk.zip) + [ANK-Installer.exe](https://github.com/andrebarretoit/ank/releases/download/v2.0.0/ANK-Installer.exe) |
 
 ---
 

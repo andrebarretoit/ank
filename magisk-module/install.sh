@@ -1,5 +1,5 @@
 #!/system/bin/sh
-ANK_VERSION="2.0.0"
+ANK_VERSION="Testing Build"
 ANK_DIR="/data/local/ank"
 ANKFS="$ANK_DIR/ankfs"
 ANK_SDCARD="/sdcard/AndroidKonteiner"
@@ -9,7 +9,7 @@ BASE_IMAGE="alpine-3.20"
 
 init_log() {
     mkdir -p "$ANK_DIR/logs"
-    echo "=== ANK Install v${ANK_VERSION} > $(date) ===" > "$LOG_FILE"
+    echo "=== ANK Install ${ANK_VERSION} > $(date) ===" > "$LOG_FILE"
 }
 
 log() {
@@ -305,7 +305,7 @@ fi
 
 ui_print ""
 ui_print "  ================================"
-ui_print "   ANK - Android Konteiner v${ANK_VERSION}"
+ui_print "   ANK - Android Konteiner ${ANK_VERSION}"
 ui_print "  ================================"
 ui_print ""
 
@@ -760,7 +760,7 @@ fi
 
 mkdir -p "$ANK_SDCARD"
 cat > "$ANK_SDCARD/CREDENCIAIS.txt" << EOF
-ANK v$ANK_VERSION
+ANK $ANK_VERSION
 Painel: https://localhost:8001
 Usuario: admin
 Senha: admin123

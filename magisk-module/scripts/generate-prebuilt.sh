@@ -1,8 +1,8 @@
 #!/system/bin/sh
 # Generate pre-built ankfs tarball from current installation
-# Output: /sdcard/Download/ankfs-v{VERSION}-{ARCH}.tar.xz
+# Output: /sdcard/Download/ankfs-testing-{ARCH}.tar.xz
 
-ANK_VERSION="2.0.0"
+ANK_VERSION="Testing Build"
 ANK_DIR="${ANK_DIR:-/data/local/ank}"
 ANK_SDCARD="/sdcard/AndroidKonteiner"
 ANKFS="$ANK_DIR/ankfs"
@@ -15,7 +15,7 @@ case "$ARCH" in
     *)              ARCH_NAME="$ARCH" ;;
 esac
 
-OUT="/sdcard/Download/ankfs-v${ANK_VERSION}-${ARCH_NAME}.tar.xz"
+OUT="/sdcard/Download/ankfs-testing-${ARCH_NAME}.tar.xz"
 
 if [ ! -f "$ANKFS/usr/bin/python3" ]; then
     echo "ERROR: python3 not found in ankfs"
@@ -27,7 +27,7 @@ if [ ! -f "$ANKFS/opt/ank/server.py" ]; then
     exit 1
 fi
 
-echo "Generating pre-built ankfs: $ARCH_NAME v$ANK_VERSION"
+echo "Generating pre-built ankfs: $ARCH_NAME $ANK_VERSION"
 echo "  Source: $ANKFS"
 echo "  Output: $OUT"
 

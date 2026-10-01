@@ -287,7 +287,7 @@ def load_config():
         with open(CONFIG_FILE, "r") as f:
             return json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
-        return {"version": "2.0.0", "panel_port": 8001, "username": "ank",
+        return {"version": "Testing Build", "panel_port": 8001, "username": "ank",
                 "password": "ank123", "first_boot": True,
                 "ssh_enabled": True, "ssh_port": 2200,
                 "default_container_password": "ank123",
@@ -4747,7 +4747,7 @@ small{color:#334155}
                 with open("/proc/uptime", "r") as f: uptime_sec = float(f.read().split()[0])
             except (OSError, ValueError): pass
             lines = [
-                f"ANK Engine v{config.get('version','0.1')}",
+                f"ANK Engine {config.get('version','Testing Build')}",
                 f"Uptime:     {int(uptime_sec//3600)}h {int((uptime_sec%3600)//60)}m",
                 f"Containers: {running} running, {stopped} stopped, {total} total",
                 f"Mode:       {get_mode().get('mode','compat')}",
@@ -5084,7 +5084,7 @@ small{color:#334155}
                 "    - Operating mode (compat or isolated)\n"
                 "    - Server port\n\n"
                 "OUTPUT\n"
-                "    ANK Engine v2.0.0\n"
+                "    ANK Engine Testing Build\n"
                 "    Containers: 3 running, 1 stopped, 4 total\n"
                 "    Mode:       compat\n"
                 "    Port:       8001\n\n"
@@ -7576,7 +7576,7 @@ def main():
     signal.signal(signal.SIGUSR1, _handle_sigusr1)
     signal.signal(signal.SIGUSR2, _handle_sigusr2)
     signal.signal(signal.SIGHUP, _handle_sighup)
-    print(f"Ank Container Engine v2.0.0")
+    print(f"Ank Container Engine Testing Build")
     print(f"Starting server on 0.0.0.0:{PORT}...")
 
     # Ensure server directory is in sys.path for module imports
