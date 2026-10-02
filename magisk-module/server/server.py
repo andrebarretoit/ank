@@ -392,8 +392,17 @@ def _validate_token(token):
                     with open(os.path.join(nodes_dir, fname)) as f:
                         cfg = json.load(f)
                     if cfg.get("token") == token:
+                        # A manager-role record holds a token this very server
+                        # minted during pairing login: after a restart or the 24h
+                        # in-memory expiry, the persisted token still authenticates
+                        # as admin so the paired manager reconnects automatically.
+                        if cfg.get("role") == "manager":
+                            return "admin"
                         # Node tokens are NOT admin — only valid for node-scoped proxy
                         return "node"
+                    if token and cfg.get("manager_token") == token:
+                        # Token we minted for the remote manager at pairing time.
+                        return "admin"
                 except Exception:
                     pass
     except Exception:
@@ -7511,6 +7520,9 @@ small{color:#334155}
             return
         try:
             data["manager_ip"] = self.client_address[0]
+            # Mint a parent-issued admin token the child uses to call back home;
+            # it stays valid across child restarts (persisted in the node record).
+            data["manager_token"] = _create_token(load_config().get("username", "admin"))
             node = nm.send_pairing_request(data)
             self.send_json(node)
         except Exception as e:

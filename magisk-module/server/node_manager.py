@@ -97,6 +97,42 @@ class NodeManager:
     # Heartbeat
     # ============================================================
 
+    @staticmethod
+    def _outbound_token(config):
+        """Token used for calls WE make to the peer. A manager-role record keeps the
+        token we use to call home in manager_token (minted by the manager), while
+        token holds the peer-minted token they use to call us."""
+        if config.get("role") == "manager":
+            return config.get("manager_token") or config.get("token", "")
+        return config.get("token", "")
+
+    def _relogin(self, config):
+        """Re-authenticate with a node whose token stopped working (peer restart,
+        24h expiry, revoked pairing). Needs user+password stored in the node config."""
+        if config.get("role") == "manager":
+            return False
+        user = config.get("user", "")
+        password = config.get("password", "")
+        if not user or not password:
+            return False
+        ip = config.get("ip", "")
+        port = config.get("port", 8001)
+        try:
+            code, body, _ = _http_request(
+                f"http://{ip}:{port}/api/auth/login",
+                method="POST",
+                data={"username": user, "password": password},
+                timeout=10,
+            )
+        except Exception:
+            return False
+        if code == 200 and isinstance(body, dict) and body.get("token"):
+            config["token"] = body["token"]
+            config["fail_count"] = 0
+            _log(f"Re-authenticated with node {ip}:{port}")
+            return True
+        return False
+
     def start_heartbeat(self, interval=30):
         if self._running:
             return
@@ -125,15 +161,26 @@ class NodeManager:
                 continue
             ip = config.get("ip", "")
             port = config.get("port", 8001)
-            token = config.get("token", "")
+            token = self._outbound_token(config)
             url = f"http://{ip}:{port}/api/status"
             online = False
+            code = None
             try:
                 headers = {"Authorization": f"Bearer {token}"}
                 code, body, _ = _http_request(url, headers=headers, timeout=5)
                 online = (code == 200)
             except Exception:
                 online = False
+
+            # Auth died (restart/expiry/revocation) -> try a fresh login once
+            if not online and code in (401, 403) and self._relogin(config):
+                token = self._outbound_token(config)
+                try:
+                    headers = {"Authorization": f"Bearer {token}"}
+                    code, body, _ = _http_request(url, headers=headers, timeout=5)
+                    online = (code == 200)
+                except Exception:
+                    online = False
 
             if online:
                 config["status"] = "online"
@@ -159,7 +206,7 @@ class NodeManager:
         real, current numbers instead of placeholder dashes."""
         ip = config.get("ip", "")
         port = config.get("port", 8001)
-        token = config.get("token", "")
+        token = self._outbound_token(config)
         headers = {"Authorization": f"Bearer {token}"}
 
         try:
@@ -216,10 +263,12 @@ class NodeManager:
             return None
         ip = config.get("ip", "")
         port = config.get("port", 8001)
-        token = config.get("token", "")
         try:
-            headers = {"Authorization": f"Bearer {token}"}
+            headers = {"Authorization": f"Bearer {self._outbound_token(config)}"}
             code, body, _ = _http_request(f"http://{ip}:{port}/api/status", headers=headers, timeout=8)
+            if code in (401, 403) and self._relogin(config):
+                headers = {"Authorization": f"Bearer {self._outbound_token(config)}"}
+                code, body, _ = _http_request(f"http://{ip}:{port}/api/status", headers=headers, timeout=8)
             if code == 200:
                 config["status"] = "online"
                 config["fail_count"] = 0
@@ -244,7 +293,7 @@ class NodeManager:
                 continue
             ip = config.get("ip", "")
             port = config.get("port", 8001)
-            token = config.get("token", "")
+            token = self._outbound_token(config)
             try:
                 headers = {"Authorization": f"Bearer {token}"}
                 code, info, _ = _http_request(f"http://{ip}:{port}/api/system/info", headers=headers, timeout=10)
@@ -360,6 +409,7 @@ class NodeManager:
             "ip": ip,
             "port": port,
             "user": user,
+            "password": password,
             "token": token,
             "status": "online",
             "role": "managed",
@@ -426,6 +476,7 @@ class NodeManager:
             "manager_ip": config.get("manager_ip", "") or self._detect_own_ip(ip),
             "alias": alias,
             "token": token,
+            "manager_token": config.get("manager_token", ""),
             "device_model": device_model,
             "kernel": kernel
         }
@@ -443,7 +494,9 @@ class NodeManager:
             "ip": ip,
             "port": port,
             "user": user,
+            "password": password,
             "token": token,
+            "manager_token": config.get("manager_token", ""),
             "status": "pending",
             "role": "managed",
             "last_seen": _utcnow(),
@@ -465,6 +518,7 @@ class NodeManager:
         manager_ip = data.get("manager_ip", "")
         alias = data.get("alias", "")
         token = data.get("token", "")
+        manager_token = data.get("manager_token", "")
         device_model = data.get("device_model", "")
         kernel = data.get("kernel", "")
 
@@ -475,6 +529,7 @@ class NodeManager:
             "manager_ip": manager_ip,
             "alias": alias,
             "token": token,
+            "manager_token": manager_token,
             "device_model": device_model,
             "kernel": kernel,
             "status": "pending",
@@ -524,6 +579,7 @@ class NodeManager:
             "port": 8001,
             "user": "",
             "token": req.get("token", ""),
+            "manager_token": req.get("manager_token", ""),
             "status": "online",
             "role": "manager",
             "last_seen": _utcnow(),

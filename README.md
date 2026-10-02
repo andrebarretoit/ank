@@ -378,6 +378,7 @@ Manage multiple ANK devices from a central panel.
 |---------|-------------|
 | Connection | Connect via HTTP API (URL + remote panel credentials), with pairing requests |
 | Heartbeat | Monitoring with online/offline status |
+| Reconnect | Fully automatic — after a node restarts, the token expires or the link drops, the parent re-authenticates on its own (stored credentials / persisted token); no revoke + re-pair needed |
 | Dashboard | Aggregated view of all nodes (CPU, RAM, disk, containers) |
 | Containers | Create, start, stop and delete containers on remote nodes |
 | Proxy | Transparent HTTP/WS communication between nodes |
