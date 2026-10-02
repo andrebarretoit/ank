@@ -2,9 +2,15 @@
 # ANK Updater - download, verify and apply a module update zip.
 # Usage: ank-updater.sh <zip_url> [sha256]
 #
-# Flow: download (retry once after 5s) -> sha256 -> extract -> swap module
-#       -> resync runtime copies -> propagate ankd.sh to containers
+# Flow: download (retry once after 5s) -> sha256 -> backup (module code copy
+#       + runtime server tarball) -> extract OVER the current module (merge;
+#       the module's ankfs/ payloads and the runtime rootfs are never touched)
+#       -> validate -> resync runtime copies -> propagate ankd.sh to containers
 #       -> DONE -> restart server.
+# Rollback: any failure after extraction restores the module code from the
+#           backup copy and, if the resync already started, the runtime server
+#           (ankfs/opt/ank) from the tarball. The backup is kept after a
+#           successful update until the next one starts.
 # Log:  /sdcard/AndroidKonteiner/ank-update.log
 # State: /sdcard/AndroidKonteiner/ank-update.state (RUNNING (...)/DONE (...)/FAILED: ...)
 
@@ -17,13 +23,15 @@ if [ ! -d "$ANK_DIR" ] && [ -d "/data/local/tmp/ank" ]; then
 fi
 ANKFS="$ANK_DIR/ankfs"
 MODULE_DIR="/data/adb/modules/ank"
-STAGING="/data/adb/modules/.ank-update-new"
 BACKUP="/data/adb/modules/.ank-update-old"
 TMP_DIR="$ANK_DIR/tmp"
 SDCARD="/sdcard/AndroidKonteiner"
 LOG="$SDCARD/ank-update.log"
 STATE="$SDCARD/ank-update.state"
 ZIP="$TMP_DIR/ank-update.zip"
+
+EXTRACT_STARTED=0
+RESYNC_STARTED=0
 
 log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >> "$LOG" 2>/dev/null
@@ -34,14 +42,41 @@ set_state() {
     log "STATE -> $1"
 }
 
+# Restore module code (everything except ankfs/) from the backup copy and,
+# when the resync had already touched it, the runtime server from the tarball.
+restore_backups() {
+    if [ -f "$BACKUP/module/module.prop" ]; then
+        mkdir -p "$MODULE_DIR" 2>/dev/null
+        for e in "$MODULE_DIR"/*; do
+            [ -e "$e" ] || continue
+            [ "$(basename "$e")" = "ankfs" ] && continue
+            rm -rf "$e" 2>/dev/null
+        done
+        R_OK=1
+        for e in "$BACKUP/module"/*; do
+            [ -e "$e" ] || continue
+            cp -R "$e" "$MODULE_DIR/" 2>/dev/null || R_OK=0
+        done
+        if [ "$R_OK" = 1 ]; then
+            log "ROLLBACK: module code restored from backup"
+        else
+            log "ROLLBACK FAILED: module code restore incomplete"
+        fi
+    fi
+    if [ "$RESYNC_STARTED" = 1 ] && [ -f "$BACKUP/runtime-server.tgz" ] && [ -d "$ANKFS" ]; then
+        if tar xzf "$BACKUP/runtime-server.tgz" -C "$ANKFS" 2>/dev/null; then
+            log "ROLLBACK: runtime server restored from tarball"
+        else
+            log "ROLLBACK FAILED: runtime server restore"
+        fi
+    fi
+}
+
 fail() {
     set_state "FAILED: $*"
-    rm -rf "$STAGING" 2>/dev/null
     rm -f "$ZIP" 2>/dev/null
-    if [ ! -f "$MODULE_DIR/module.prop" ] && [ -d "$BACKUP" ]; then
-        rm -rf "$MODULE_DIR" 2>/dev/null
-        mv "$BACKUP" "$MODULE_DIR" 2>/dev/null
-        log "ROLLBACK: previous module restored from backup"
+    if [ "$EXTRACT_STARTED" = 1 ]; then
+        restore_backups
     fi
     log "=== UPDATE FAILED ==="
     exit 1
@@ -115,44 +150,61 @@ else
     log "no sha256 provided, skipping verification"
 fi
 
-# ---- Extract to staging ----
-set_state "RUNNING (extract)"
-rm -rf "$STAGING"
-mkdir -p "$STAGING" || fail "cannot create staging dir"
-if command -v unzip >/dev/null 2>&1; then
-    unzip -o -q "$ZIP" -d "$STAGING" 2>/dev/null || fail "unzip failed"
-elif [ -x "$ANKFS/usr/bin/unzip" ]; then
-    "$ANKFS/usr/bin/unzip" -o -q "$ZIP" -d "$STAGING" 2>/dev/null || fail "unzip failed"
-else
-    fail "unzip not available"
-fi
-[ -f "$STAGING/module.prop" ] || fail "zip has no module.prop"
-[ -f "$STAGING/server/server.py" ] || fail "zip has no server/server.py"
-[ -d "$STAGING/scripts" ] || fail "zip has no scripts/"
-
-# ---- Swap module dir (mv = same-filesystem rename, instant) ----
-set_state "RUNNING (swap)"
+# ---- Backup: module code (without ankfs/) + runtime server tarball ----
+# The ankfs payloads (~73 MB) are never copied, moved or touched: only the
+# code that the update can actually change gets a backup (~3-4 MB), plus the
+# runtime server dir (ankfs/opt/ank, ~5 MB) as a state tarball.
+set_state "RUNNING (backup)"
 rm -rf "$BACKUP" 2>/dev/null
-if [ -d "$MODULE_DIR" ]; then
-    mv "$MODULE_DIR" "$BACKUP" || fail "cannot move current module aside"
-fi
-mv "$STAGING" "$MODULE_DIR" || fail "cannot move new module into place"
-[ -f "$MODULE_DIR/module.prop" ] || fail "swapped module is invalid"
-
-# Slim upgrade zips ship without ankfs/ (prebuilt rootfs payloads, ~73 MB).
-# The live rootfs at $ANKFS is untouched, but keep the module dir complete
-# so future re-flashes still have the payloads: carry it forward (instant
-# same-fs rename). A failure here is not fatal - the engine keeps running.
-if [ -d "$BACKUP/ankfs" ] && [ ! -d "$MODULE_DIR/ankfs" ]; then
-    if mv "$BACKUP/ankfs" "$MODULE_DIR/ankfs" 2>/dev/null; then
-        log "carried ankfs/ forward (slim upgrade zip)"
+mkdir -p "$BACKUP/module" || fail "cannot create backup dir"
+for e in "$MODULE_DIR"/*; do
+    [ -e "$e" ] || continue
+    [ "$(basename "$e")" = "ankfs" ] && continue
+    cp -R "$e" "$BACKUP/module/" 2>/dev/null || log "WARN: backup skipped $(basename "$e")"
+done
+[ -f "$BACKUP/module/module.prop" ] || fail "module code backup failed"
+if [ -d "$ANKFS/opt/ank" ]; then
+    if tar czf "$BACKUP/runtime-server.tgz" -C "$ANKFS" opt/ank 2>/dev/null; then
+        log "backup ok (module code + runtime server tarball)"
     else
-        log "WARN: could not carry ankfs/ into the new module"
+        log "WARN: runtime server tarball failed (resync rollback unavailable)"
     fi
+else
+    log "WARN: no runtime server dir to back up"
 fi
+
+# ---- Extract OVER the current module (merge; ankfs/ stays untouched) ----
+set_state "RUNNING (extract)"
+UNZIP=""
+if command -v unzip >/dev/null 2>&1; then
+    UNZIP="unzip"
+elif [ -x "$ANKFS/usr/bin/unzip" ]; then
+    UNZIP="$ANKFS/usr/bin/unzip"
+fi
+[ -n "$UNZIP" ] || fail "unzip not available"
+
+# Best-effort structural check before touching anything.
+LIST=$($UNZIP -l "$ZIP" 2>/dev/null)
+if [ -n "$LIST" ]; then
+    echo "$LIST" | grep -q "module.prop" || fail "zip has no module.prop"
+    echo "$LIST" | grep -q "server/server.py" || fail "zip has no server/server.py"
+    echo "$LIST" | grep -q "scripts/ank-updater.sh" || fail "zip has no scripts/ank-updater.sh"
+fi
+
+EXTRACT_STARTED=1
+$UNZIP -o -q "$ZIP" -d "$MODULE_DIR" 2>/dev/null || fail "unzip failed"
+
+set_state "RUNNING (validate)"
+[ -f "$MODULE_DIR/module.prop" ] || fail "module.prop missing after extract"
+NEW_VC=$(grep '^versionCode=' "$MODULE_DIR/module.prop" 2>/dev/null | head -1 | cut -d= -f2)
+[ -n "$NEW_VC" ] || fail "module.prop has no versionCode"
+[ -f "$MODULE_DIR/server/server.py" ] || fail "server/server.py missing after extract"
+[ -f "$MODULE_DIR/scripts/ank-updater.sh" ] || fail "scripts/ank-updater.sh missing after extract"
+log "extracted over current module (versionCode=$NEW_VC)"
 
 # ---- Resync runtime copies (same layout as install.sh) ----
 set_state "RUNNING (resync)"
+RESYNC_STARTED=1
 NEW_SCRIPTS="$MODULE_DIR/scripts"
 NEW_SERVER="$MODULE_DIR/server"
 mkdir -p "$ANK_DIR/core/ankd" "$ANK_DIR/core/static" "$ANKFS/opt/ank/scripts" "$ANKFS/opt/ank/static"
@@ -211,11 +263,9 @@ if [ -f "$NEW_SERVER/ankd/ankd.sh" ]; then
 fi
 
 # ---- Finish ----
-rm -rf "$BACKUP" "$STAGING" 2>/dev/null
 rm -f "$ZIP" 2>/dev/null
-NEW_VC=$(grep '^versionCode=' "$MODULE_DIR/module.prop" 2>/dev/null | head -1 | cut -d= -f2)
 set_state "DONE (versionCode=$NEW_VC)"
-log "=== UPDATE DONE ==="
+log "=== UPDATE DONE === (previous-version backup kept at $BACKUP)"
 
 if [ -f "$ANK_DIR/core/restart-server.sh" ]; then
     log "restarting server..."

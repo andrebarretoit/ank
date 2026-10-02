@@ -11,7 +11,11 @@ fi
 ANKFS="$ANK_DIR/ankfs"
 LOG_DIR="$ANK_DIR/logs"
 SERVER_LOG="$LOG_DIR/server.log"
-START_SCRIPT="$ANKFS/opt/ank/start-server.sh"
+# start-server.sh lives under opt/ank/scripts/ (install + updater resync);
+# core/ is the second resynced copy. Keep the legacy direct path as last resort.
+START_SCRIPT="$ANKFS/opt/ank/scripts/start-server.sh"
+[ -f "$START_SCRIPT" ] || START_SCRIPT="$ANK_DIR/core/start-server.sh"
+[ -f "$START_SCRIPT" ] || START_SCRIPT="$ANKFS/opt/ank/start-server.sh"
 # Canonical PID location (server.py writes logs/server.pid)
 PID_FILE="$LOG_DIR/server.pid"
 # Legacy fallback
@@ -113,10 +117,10 @@ elif [ -x "$START_SCRIPT" ] || [ -f "$START_SCRIPT" ]; then
 elif [ -x "$ANKFS/opt/ank/start-lite.sh" ] || [ -f "$ANKFS/opt/ank/start-lite.sh" ]; then
     sh "$ANKFS/opt/ank/start-lite.sh" >> "$SERVER_LOG" 2>&1
 elif [ -f "$ANKFS/usr/bin/python3" ] && ls "$ANKFS/lib/ld-musl-"* >/dev/null 2>&1; then
-    # Rooted mode fallback
+    # Rooted mode fallback (host musl run, no chroot: needs the real path)
     cd "$ANKFS"
     LD_LIBRARY_PATH="$ANKFS/lib:$ANKFS/usr/lib" \
-    nohup "$ANKFS/lib/ld-musl-"* "$ANKFS/usr/bin/python3" /opt/ank/server.py \
+    nohup "$ANKFS/lib/ld-musl-"* "$ANKFS/usr/bin/python3" "$ANKFS/opt/ank/server.py" \
         >> "$SERVER_LOG" 2>&1 &
     echo "$!" > "$PID_FILE"
     echo "$!" > "$LEGACY_PID_FILE"

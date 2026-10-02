@@ -132,8 +132,11 @@ All screenshots (including Networks, Nodes, Logs, Stacks and Backups) live in [`
 > **Do not reinstall to "upgrade"** — you will lose every container and all panel data.
 > The only update path that preserves data is the in-panel updater:
 > **Settings → Update** in the web panel (root installs): it downloads `ank-upgrade.zip`
-> (~3 MB — code only, no prebuilt rootfs payloads), verifies the SHA-256 and swaps the
-> module in place, carrying the existing `ankfs/` payloads forward — your data stays intact.
+> (~3 MB — code only, no prebuilt rootfs payloads), verifies the SHA-256, backs up the
+> module code + runtime server (~8 MB) and extracts the new code **over** the installed
+> module — the `ankfs/` payloads and the live rootfs are never moved or touched.
+> On any failure the backups are restored automatically (state tarball kept for
+> manual recovery until the next update). Your data stays intact.
 > Lite/no-root has no in-panel update — reinstalling it also wipes the Lite install.
 
 ### Option 1: ANK Installer (Recommended — Windows PC)
@@ -790,8 +793,10 @@ forgets blobs), while adding nothing readable. Git here tracks **source only**;
   for manual download — no need to grab the full zip or the installer.
 - **Panel updates (`ank-upgrade.zip`):** this slim zip is **code only** — it
   deliberately excludes `ankfs/` (plus `META-INF/`/`install.sh`, so flashing it
-  fails cleanly). The updater carries the installed module's existing `ankfs/`
-  forward into the swapped module automatically.
+  fails cleanly instead of half-installing). The updater extracts it **over**
+  the installed module: the module's `ankfs/` payloads and the runtime rootfs
+  stay where they are, only `server/`/`scripts/`/hooks are replaced (with the
+  previous code and the runtime server kept as rollback backups).
 - **Root (Magisk) install:** `install.sh` prefers the prebuild from the zip
   (instant, works offline). If the prebuild is missing it automatically falls
   back to downloading Alpine minirootfs and building the rootfs at install time

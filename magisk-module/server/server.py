@@ -6357,7 +6357,7 @@ small{color:#334155}
             if is_lite():
                 os.system(f"setsid sh {ANK_DIR}/start-lite.sh </dev/null >{ANK_DIR}/logs/server.log 2>&1 &")
             else:
-                os.system(f"setsid sh {ANK_DIR}/opt/ank/start-server.sh </dev/null >{ANK_DIR}/logs/server.log 2>&1 &")
+                os.system(f"setsid sh {ANK_DIR}/ankfs/opt/ank/start-server.sh </dev/null >{ANK_DIR}/logs/server.log 2>&1 &")
             log("RESTART_SERVER: Done")
         threading.Thread(target=_restart, daemon=True).start()
         self.send_json({"message": "Server restarting..."})
