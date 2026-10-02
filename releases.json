@@ -1,7 +1,7 @@
 {
   "version": "Testing Build",
-  "versionCode": 9,
+  "versionCode": 10,
   "zipUrl": "https://github.com/andrebarretoit/ank/releases/download/ank-testing/ank-magisk.zip",
-  "changelog": "Ankfile build queue (one build at a time, pending status, auto-dispatch). Stacks/Backups tabs now open their pages with a Coming soon overlay instead of a toast. SSH hint updates live when a container starts/stops (no refresh). ANK Installer: device detection never times out and the ANK Manager button only shows on the home screen. README rewritten to match the real project state (testing phase, Lite demo, disabled features).",
-  "sha256": "8905c4c40f26c541218b127e8e7bbab4f05e448105d48c9d5e489bd8501f4ce8"
+  "changelog": "Nodes reconnect automatically: persisted pairing tokens survive node restarts and token expiry, and the parent re-logins with stored credentials when auth fails - no revoke + re-pair needed. README: reinstalling via Magisk zip or ANK Installer wipes all data; only Settings -> Update preserves it. Prebuilts attached to the release as standalone assets.",
+  "sha256": "6ebb9541b4290736b9226f92d9c89d49260bcaef0d706e15cdd92d1c6b085e41"
 }
