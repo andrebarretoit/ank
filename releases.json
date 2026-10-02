@@ -1,7 +1,7 @@
 {
   "version": "Testing Build",
-  "versionCode": 12,
+  "versionCode": 13,
   "zipUrl": "https://github.com/andrebarretoit/ank/releases/download/ank-testing/ank-magisk.zip",
-  "changelog": "Updater test build (v12): DNS fallback for update checks, bundled resolv.conf, node pairing auto-reconnect - exercises the Settings -> Update in-panel flow.",
-  "sha256": "4a129a38f6dc6e0460da151a5416b91416006073901d4ea04491dade40e2613f"
+  "changelog": "TLS fix: update checks now verify GitHub using the ankfs CA bundle (Android hosts have no /etc/ssl/certs). Error hints no longer point to ANK-Installer - upgrades are panel-only via Settings -> Update.",
+  "sha256": "284ad1422761e9aee9ca290255ebac59f287f1c699800ffd5093224965564e27"
 }
