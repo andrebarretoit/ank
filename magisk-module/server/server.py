@@ -15,11 +15,14 @@ import secrets
 import hashlib
 import ssl
 import struct
+import socket
+import http.client
 import threading
 import select
 import re
 import glob
 import urllib.request
+import urllib.error
 try:
     import pty
     HAS_PTY = True
@@ -1807,6 +1810,115 @@ def _ws_shell_session(handler, cols=80, rows=24):
         _ws_send_close(handler.request)
 
 
+def _raw_dns_lookup(hostname, timeout=5):
+    """Resolve A records with a direct UDP DNS query (no /etc/resolv.conf needed).
+
+    The Android host has no /etc/resolv.conf, so musl-linked processes fail
+    libc name resolution with EAI_AGAIN. This bypasses the libc resolver.
+    """
+    servers = ["8.8.8.8", "1.1.1.1", "8.8.4.4"]
+    try:
+        with open("/etc/resolv.conf") as f:
+            for line in f:
+                if line.strip().startswith("nameserver"):
+                    servers.append(line.split()[1])
+    except OSError:
+        pass
+    tid = secrets.randbelow(0x10000)
+    qname = b"".join(bytes([len(p)]) + p.encode() for p in hostname.split(".") if p) + b"\x00"
+    query = struct.pack(">HHHHHH", tid, 0x0100, 1, 0, 0, 0) + qname + struct.pack(">HH", 1, 1)
+
+    def skip_name(pos):
+        while pos < len(data):
+            ln = data[pos]
+            if ln == 0:
+                return pos + 1
+            if ln & 0xC0 == 0xC0:
+                return pos + 2
+            pos += 1 + ln
+        return len(data)
+
+    for server in dict.fromkeys(servers):
+        data = None
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sock.settimeout(timeout)
+            sock.sendto(query, (server, 53))
+            data, _ = sock.recvfrom(4096)
+            sock.close()
+        except OSError:
+            continue
+        if data is None or len(data) < 12 or data[0:2] != struct.pack(">H", tid):
+            continue
+        flags = struct.unpack(">H", data[2:4])[0]
+        if not (flags & 0x8000) or (flags & 0x000F):
+            continue
+        qd, an = struct.unpack(">HH", data[4:8])
+        pos = 12
+        for _ in range(qd):
+            pos = skip_name(pos) + 4
+        ips = []
+        for _ in range(an):
+            pos = skip_name(pos)
+            if pos + 10 > len(data):
+                break
+            rtype, rclass, _ttl, rdlen = struct.unpack(">HHIH", data[pos:pos + 10])
+            pos += 10
+            if pos + rdlen > len(data):
+                break
+            if rtype == 1 and rclass == 1 and rdlen == 4:
+                ips.append(socket.inet_ntoa(data[pos:pos + 4]))
+            pos += rdlen
+        if ips:
+            return ips
+    raise socket.gaierror(getattr(socket, "EAI_AGAIN", -3),
+                          "direct DNS lookup failed (no /etc/resolv.conf, UDP 53 unreachable)")
+
+
+def _fetch_url_by_ip(url, timeout=10):
+    """Fetch a URL by connecting to resolved IPs, keeping Host header + TLS SNI."""
+    parts = urlparse(url)
+    host = parts.hostname
+    if not host:
+        raise ValueError(f"no hostname in {url}")
+    path = parts.path or "/"
+    if parts.query:
+        path += "?" + parts.query
+    https = parts.scheme == "https"
+    port = parts.port or (443 if https else 80)
+    ips = _raw_dns_lookup(host, timeout=timeout)
+    last_err = None
+    for ip in ips:
+        sock = None
+        try:
+            sock = socket.create_connection((ip, port), timeout)
+            if https:
+                ctx = ssl.create_default_context()
+                sock = ctx.wrap_socket(sock, server_hostname=host)
+            req = (f"GET {path} HTTP/1.1\r\nHost: {host}\r\n"
+                   f"User-Agent: ANK-Updater\r\nAccept: */*\r\nConnection: close\r\n\r\n")
+            sock.sendall(req.encode("ascii"))
+            resp = http.client.HTTPResponse(sock)
+            resp.begin()
+            if resp.status in (301, 302, 303, 307, 308):
+                raise RuntimeError(f"redirect to {resp.getheader('Location')} not followed by DNS fallback")
+            body = resp.read()
+            if resp.status != 200:
+                raise urllib.error.HTTPError(url, resp.status, f"HTTP {resp.status} via {ip}",
+                                             resp.headers, None)
+            return json.loads(body.decode("utf-8"))
+        except Exception as e:
+            last_err = e
+            continue
+        finally:
+            try:
+                if sock is not None:
+                    sock.close()
+            except OSError:
+                pass
+    raise last_err or socket.gaierror(getattr(socket, "EAI_AGAIN", -3), "all direct-IP attempts failed")
+
+
 class AnkHandler(BaseHTTPRequestHandler):
 
     def _find_free_port(self, start=2201):
@@ -2846,8 +2958,34 @@ small{color:#334155}
     @staticmethod
     def _fetch_update_manifest(url, timeout=10):
         req = urllib.request.Request(url, headers={"User-Agent": "ANK-Updater"})
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return json.loads(resp.read().decode("utf-8"))
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError:
+            raise
+        except (socket.gaierror, urllib.error.URLError) as e:
+            reason = getattr(e, "reason", e)
+            if not isinstance(reason, socket.gaierror):
+                raise
+            # Host has no /etc/resolv.conf: musl libc DNS fails with EAI_AGAIN.
+            # Retry with a direct UDP DNS lookup + connect-by-IP (SNI preserved).
+            log(f"[UPDATE] libc DNS failed ({reason}), retrying with direct DNS")
+            return _fetch_url_by_ip(url, timeout=timeout)
+
+    @staticmethod
+    def _manifest_hint(e):
+        reason = getattr(e, "reason", e)
+        if isinstance(reason, socket.gaierror) or isinstance(e, socket.gaierror):
+            return ("DNS lookup failed on this device: the host has no /etc/resolv.conf, "
+                    "so musl processes cannot resolve names, and the built-in direct DNS "
+                    "query also failed (UDP 53 blocked?). This is NOT a private-repo "
+                    "issue - check connectivity or update manually with ANK-Installer.")
+        if isinstance(e, urllib.error.HTTPError) and e.code in (401, 403, 404):
+            return ("If updateJson points to a private GitHub repo the manifest "
+                    "cannot be fetched (404). Make the repo public, use a token URL, "
+                    "or update manually with ANK-Installer.")
+        return ("Could not fetch the manifest - check connectivity, or update "
+                "manually with ANK-Installer.")
 
     @staticmethod
     def _update_state():
@@ -2906,9 +3044,7 @@ small{color:#334155}
             manifest = self._fetch_update_manifest(url)
         except Exception as e:
             out["error"] = f"manifest fetch failed: {e}"
-            out["hint"] = ("If updateJson points to a private GitHub repo the manifest "
-                           "cannot be fetched (404). Make the repo public, use a token URL, "
-                           "or update manually with ANK-Installer.")
+            out["hint"] = self._manifest_hint(e)
             self.send_json(out)
             return
         try:
@@ -2950,7 +3086,7 @@ small{color:#334155}
             try:
                 manifest = self._fetch_update_manifest(url)
             except Exception as e:
-                self.send_error(502, f"manifest fetch failed: {e}")
+                self.send_error(502, f"manifest fetch failed: {e} - {self._manifest_hint(e)}")
                 return
             zip_url = manifest.get("zipUrl")
             sha256 = manifest.get("sha256")

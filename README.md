@@ -663,9 +663,12 @@ adb shell su -c "mount -t proc proc /data/local/ank/ankfs/proc; \
 adb shell su -c "sh /data/local/ank/scripts/cleanup.sh"
 ```
 
-### Updates fail with "manifest fetch failed (404)"
+### Updates fail with "manifest fetch failed"
 
-The update manifest (`releases.json`) is read from GitHub. On a private repository that fetch returns 404 — make the repository public, use a token URL, or update manually with `ANK-Installer.exe`.
+The update manifest (`releases.json`) is read from GitHub. Two distinct causes:
+
+- **HTTP 404 / 401 / 403** - the repository is private. Make the repository public, use a token URL, or update manually with `ANK-Installer.exe`.
+- **DNS errors (`Errno -3`, "Try again")** - the panel server runs as a musl process directly on the host, and Android has no `/etc/resolv.conf`, so libc name resolution fails before any HTTP request is made. The server falls back to a built-in direct UDP DNS query (8.8.8.8 / 1.1.1.1) and connects by IP with the proper Host header and TLS SNI. The module also ships `system/etc/resolv.conf`, mounted by Magisk on the next reboot. If both paths fail, check connectivity or Private DNS settings.
 
 ---
 
