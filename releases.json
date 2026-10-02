@@ -1,7 +1,7 @@
 {
   "version": "Testing Build",
-  "versionCode": 17,
+  "versionCode": 18,
   "zipUrl": "https://github.com/andrebarretoit/ank/releases/download/ank-testing/ank-upgrade.zip",
-  "changelog": "Version reflection: footer/About/modal show live module version via /api/version. Nodes: child nodes show a single clickable Managed-by card (metrics + Restart/Revoke, no parent containers); child dashboard hides cluster card; cluster card sums all nodes with weighted CPU. Upgrade: scope selector (this device / node / all) with per-node apply. Heartbeat: parent re-logs-in and retries stats when a child rejects the token; last_seen only updated on successful polls. Ankfile: heredoc RUN (<<EOF) parsed correctly and quoted through chroot. ank-alpinebase now ships as tar.gz and is extracted as a private copy per container - bind-mount fallback removed, shared base can no longer be polluted. Container card node badge no longer overwritten by status badge.",
-  "sha256": "8ee58198f211ba24086df41ab0f7ff5acccd638945f6207f55722aebdc41ab44"
+  "changelog": "Unidirectional nodes: the child never polls the parent - the parent pushes its stats on every heartbeat, so the Managed-by card shows live online status and metrics, and its detail pane renders instantly from the local record. Cluster card: fixed physical CPU core total (from /sys possible) that no longer oscillates, plus sticky cluster snapshot on transient fetch errors. Container logs are per-instance: recreating a container with the same name starts a fresh log (the previous log is kept until then). Stacks and Backups pages re-enabled with their modals.",
+  "sha256": "e951031e382535f7017913f881bd9c718fe9de7dc6ac51dd7c700343f695618e"
 }
