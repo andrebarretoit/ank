@@ -1238,7 +1238,7 @@ tr:hover td { background: var(--bg-hover); }
 .detail-logs .card-header h4 i { color: var(--primary); }
 .log-output {
   background: #0d1117; border: 1px solid var(--border); border-radius: var(--radius-sm);
-  padding: 12px; min-height: 55vh; overflow: auto; font-size: 11px;
+  padding: 12px 12px 24px; min-height: 55vh; overflow: auto; font-size: 11px;
   white-space: pre-wrap; font-family: monospace; color: var(--text-secondary); margin: 0;
   flex: 1; max-height: none;
 }

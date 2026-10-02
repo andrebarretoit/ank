@@ -21,18 +21,31 @@ async function api(method, path, body = null) {
 
 /* ── Version display (module.prop via public GET /api/version) ── */
 let _ankVer = null;
+function ankVerPf(version, vc, ddmm) {
+  if (!version) return '-';
+  const pf = vc ? `vc${vc}${ddmm ? '-' + ddmm : ''}` : '-';
+  return `Channel: ${version} · PatchFix: ${pf}`;
+}
 function ankVerLabel() {
   if (!_ankVer || !_ankVer.supported) return null;
   const v = _ankVer.version || 'unknown';
-  return _ankVer.versionCode ? `${v} (vc ${_ankVer.versionCode})` : v;
+  return _ankVer.versionCode
+    ? `${v} (vc${_ankVer.versionCode}${_ankVer.build_date ? '-' + _ankVer.build_date : ''})`
+    : v;
+}
+function ankVerFull() {
+  if (!_ankVer || !_ankVer.supported) return null;
+  return ankVerPf(_ankVer.version || 'unknown', _ankVer.versionCode, _ankVer.build_date);
 }
 function applyAnkVersionLabels() {
-  const label = ankVerLabel();
-  if (!label) return;
-  ['footer-version', 'about-version', 'footer-modal-version'].forEach(id => {
+  const shortLabel = ankVerLabel();
+  const fullLabel = ankVerFull();
+  ['footer-version', 'footer-modal-version'].forEach(id => {
     const el = document.getElementById(id);
-    if (el) el.textContent = label;
+    if (el && shortLabel) el.textContent = shortLabel;
   });
+  const about = document.getElementById('about-version');
+  if (about && fullLabel) about.textContent = fullLabel;
 }
 async function loadAnkVersion() {
   try {
@@ -1080,6 +1093,8 @@ async function showContainerDetail(name, nodeId) {
     document.getElementById('detail-backup-attach-btn')?.addEventListener('click', () => attachContainerToBackupRoutine());
 
     // Poll container log while detail is open (log file is append-only, survives F5)
+    const initialLogEl = document.getElementById('detail-log-output');
+    if (initialLogEl) initialLogEl.scrollTop = initialLogEl.scrollHeight;
     detailLogTimer = setInterval(async () => {
       try {
         const outEl = document.getElementById('detail-log-output');
@@ -1092,7 +1107,13 @@ async function showContainerDetail(name, nodeId) {
         }
         const logText = typeof logs.logs === 'string' ? logs.logs : (Array.isArray(logs.logs) ? logs.logs.join('\n') : '');
         const next = logText || 'No logs available';
-        if (outEl.textContent !== next) outEl.textContent = next;
+        if (outEl.textContent !== next) {
+          // Stick to the newest line only when the view is already at the
+          // bottom; if the user scrolled up to read history, leave them there.
+          const wasBottom = outEl.scrollHeight - outEl.scrollTop - outEl.clientHeight < 48;
+          outEl.textContent = next;
+          if (wasBottom) outEl.scrollTop = outEl.scrollHeight;
+        }
       } catch (e) {}
     }, 2000);
 
@@ -1710,7 +1731,7 @@ async function loadNodes() {
         const mClick = mgrEntry ? `onclick="showNodeDetail('${esc(mgrEntry.id)}','${esc(m.alias||m.ip)}','${esc(m.status)}','manager')"` : '';
         const mMeta = m.status === 'online' ? `<span>CPU ${Math.round(m.cpu_percent||0)}%</span><span>RAM ${(m.mem_used_gb||0).toFixed(1)}GB</span>` : '';
         managerHtml = `<div class="split-list-card" data-id="${mgrEntry ? esc(mgrEntry.id) : 'manager'}" ${mClick} style="cursor:${mgrEntry ? 'pointer' : 'default'};margin-bottom:16px">
-          <div class="slc-top"><span class="slc-name"><i class="bi bi-person-check" style="color:var(--primary)"></i>Managed by: ${esc(m.alias||m.ip)}<span class="badge badge-info" style="font-size:10px;margin-left:6px">MANAGER</span></span>
+          <div class="slc-top"><span class="slc-name"><i class="bi bi-person-check" style="color:var(--primary)"></i>Managed by: ${esc(m.alias||m.ip)}${m.device_model ? ` (${esc(m.device_model)})` : ''}<span class="badge badge-info" style="font-size:10px;margin-left:6px">MANAGER</span></span>
           <span class="badge ${m.status==='online'?'badge-success':m.status==='pending'?'badge-warning':'badge-danger'}" style="font-size:10px">${mLabel}</span></div>
           <div class="slc-meta"><span>IP ${esc(m.ip)}</span>${mMeta}</div>
         </div>`;
@@ -2790,7 +2811,7 @@ function showSettingsSection(section) {
     const diskFree = sysInfo.device_free || '-';
     el.innerHTML = `<div class="card"><div class="card-header"><h3><i class="bi bi-info-circle"></i> About</h3></div><div class="card-body">
       <div class="info-grid">
-        <div class="info-item"><span class="info-label">Version</span><span id="about-version">${esc(ankVerLabel() || 'Testing Build')}</span></div>
+        <div class="info-item"><span class="info-label">Version</span><span id="about-version">${esc(ankVerFull() || 'Testing Build')}</span></div>
         <div class="info-item"><span class="info-label">Panel Port</span><span>${sysInfo.panel_port||8001}</span></div>
         <div class="info-item"><span class="info-label">Device</span><span>${esc(sysInfo.device||'unknown')}</span></div>
         <div class="info-item"><span class="info-label">Kernel</span><span>${esc(sysInfo.kernel||'unknown')}</span></div>
@@ -2850,9 +2871,11 @@ function showSettingsSection(section) {
       _updInfo = info;
       const cur = document.getElementById('upd-current');
       if (!cur) return;
-      cur.textContent = `${info.current_version || 'unknown'} (vc ${info.current_versionCode != null ? info.current_versionCode : '-'})`;
-      document.getElementById('upd-latest').textContent = info.latest_version
-        ? `${info.latest_version} (vc ${info.latest_versionCode})` : '-';
+      cur.textContent = info.current_version
+        ? ankVerPf(info.current_version, info.current_versionCode, info.current_build_date)
+        : 'unknown';
+      document.getElementById('upd-latest').textContent =
+        ankVerPf(info.latest_version, info.latest_versionCode, info.latest_build_date);
       const statusEl = document.getElementById('upd-status');
       if (info.update_available) {
         statusEl.innerHTML = '<span style="color:var(--success);font-weight:600">Update available</span>';

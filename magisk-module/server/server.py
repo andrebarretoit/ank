@@ -2585,6 +2585,7 @@ small{color:#334155}
             out = {"supported": prop is not None}
             if prop:
                 out["version"] = prop.get("version")
+                out["build_date"] = prop.get("buildDate") or ""
                 try:
                     out["versionCode"] = int(prop.get("versionCode", "0"))
                 except (TypeError, ValueError):
@@ -3239,9 +3240,11 @@ small{color:#334155}
             "supported": prop is not None,
             "current_version": cur_version,
             "current_versionCode": cur_vc,
+            "current_build_date": (prop or {}).get("buildDate") or None,
             "update_available": False,
             "latest_version": None,
             "latest_versionCode": None,
+            "latest_build_date": None,
             "zip_url": None,
             "sha256": None,
             "changelog": None,
@@ -3276,6 +3279,7 @@ small{color:#334155}
         out.update({
             "latest_version": manifest.get("version"),
             "latest_versionCode": latest_vc,
+            "latest_build_date": manifest.get("buildDate") or None,
             "zip_url": manifest.get("zipUrl"),
             "sha256": manifest.get("sha256"),
             "changelog": manifest.get("changelog"),
