@@ -92,6 +92,22 @@ class NodeManager:
         self._heartbeat_thread = None
         self._running = False
         self._lock = threading.Lock()
+        self._report_provider = None
+
+    def set_report_provider(self, fn):
+        """server.py registers a callable returning THIS device's stats; every
+        heartbeat pushes it to each child (children never call home)."""
+        self._report_provider = fn
+
+    def _refuse_manager(self, node_id):
+        """Unidirectional node model: the child never initiates calls toward the
+        parent. All outbound node calls funnel through _node_api_* — refuse them
+        here so no code path can break the rule."""
+        config = self._load_node_config(node_id)
+        if config and config.get("role") == "manager":
+            _log(f"Blocked outbound call to manager node {node_id} (child never polls parent)")
+            return True
+        return False
 
     # ============================================================
     # Heartbeat
@@ -149,7 +165,7 @@ class NodeManager:
         while self._running:
             try:
                 self._check_all_nodes()
-                self._sync_manager_info()
+                self._sweep_manager_status()
             except Exception as e:
                 _log(f"Heartbeat error: {e}")
             time.sleep(interval)
@@ -158,6 +174,10 @@ class NodeManager:
         for node_id in self._list_node_ids():
             config = self._load_node_config(node_id)
             if not config:
+                continue
+            if config.get("role") == "manager":
+                # Unidirectional node model: the child NEVER polls the parent.
+                # Its status/stats arrive via record_manager_report() pushes.
                 continue
             ip = config.get("ip", "")
             port = config.get("port", 8001)
@@ -196,6 +216,15 @@ class NodeManager:
                         self._fetch_and_store_node_stats(node_id, config)
                 except Exception as e:
                     _log(f"Stats refresh failed for {node_id}: {e}")
+                # Push OUR stats to the child (parent -> child only): this is
+                # how the child's "Managed by" card stays current without the
+                # child ever calling home.
+                if self._report_provider:
+                    try:
+                        payload = self._report_provider()
+                        self._node_api_post(node_id, "/api/nodes/manager/report", payload)
+                    except Exception as e:
+                        _log(f"manager report push to {node_id} failed: {e}")
             else:
                 if config.get("status") != "pending":
                     config["fail_count"] = config.get("fail_count", 0) + 1
@@ -244,7 +273,11 @@ class NodeManager:
                     config["mem_total_gb"] = round(total_kb / (1024 * 1024), 2)
                     config["mem_used_gb"] = round(used_kb / (1024 * 1024), 2)
                     config["mem_percent"] = round(used_kb / total_kb * 100, 1)
-                config["cpu_cores"] = info.get("cpu_cores", 0)
+                # Never clobber a known core count with 0 (transient partial
+                # responses made the cluster core total oscillate).
+                _cores = info.get("cpu_cores", 0)
+                if _cores:
+                    config["cpu_cores"] = _cores
                 if info.get("device_model"):
                     config["device_model"] = info.get("device_model")
                 if info.get("kernel"):
@@ -272,6 +305,10 @@ class NodeManager:
         config = self._load_node_config(node_id)
         if not config:
             return None
+        if config.get("role") == "manager":
+            # Unidirectional: never initiate calls toward the parent — just
+            # return whatever the last push recorded.
+            return self._sanitize_node(config)
         ip = config.get("ip", "")
         port = config.get("port", 8001)
         try:
@@ -303,25 +340,74 @@ class NodeManager:
         self._save_node_config(node_id, config)
         return self._sanitize_node(config)
 
-    def _sync_manager_info(self):
+    def _sweep_manager_status(self):
+        """Local-only: mark the manager offline when its pushes stop arriving.
+        No network involved — the child never polls the parent."""
+        now = datetime.now(timezone.utc)
         for node_id in self._list_node_ids():
             config = self._load_node_config(node_id)
             if not config or config.get("role") != "manager":
                 continue
-            ip = config.get("ip", "")
-            port = config.get("port", 8001)
-            token = self._outbound_token(config)
+            if config.get("status") != "online":
+                continue
             try:
-                headers = {"Authorization": f"Bearer {token}"}
-                code, info, _ = _http_request(f"http://{ip}:{port}/api/system/info", headers=headers, timeout=10)
-                if code == 200 and isinstance(info, dict):
-                    new_name = info.get("node_name", "")
-                    if new_name and new_name != config.get("alias"):
-                        config["alias"] = new_name
-                        config["managed_by"] = new_name
-                        self._save_node_config(node_id, config)
+                ts = datetime.strptime(config.get("last_seen", ""), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
             except Exception:
-                pass
+                continue
+            if (now - ts).total_seconds() > 90:
+                config["status"] = "offline"
+                self._save_node_config(node_id, config)
+                _log(f"Manager {config.get('alias') or node_id}: no report in 90s -> offline")
+
+    def record_manager_report(self, payload):
+        """Store a stats push from the parent (arrives on every parent
+        heartbeat). This replaces the old child->parent polling."""
+        if not isinstance(payload, dict):
+            return False
+        for node_id in self._list_node_ids():
+            config = self._load_node_config(node_id)
+            if not config or config.get("role") != "manager":
+                continue
+            name = payload.get("node_name") or ""
+            if name:
+                config["alias"] = name
+                config["managed_by"] = name
+            if payload.get("device_model"):
+                config["device_model"] = payload.get("device_model")
+            if payload.get("kernel"):
+                config["kernel"] = payload.get("kernel")
+            if payload.get("cpu_usage") is not None:
+                config["cpu_percent"] = payload.get("cpu_usage") or 0
+            if payload.get("cpu_cores"):
+                config["cpu_cores"] = payload.get("cpu_cores")
+            mem = payload.get("memory") or {}
+            total_kb = mem.get("total_kb", 0)
+            avail_kb = mem.get("available_kb", 0)
+            if total_kb:
+                used_kb = max(total_kb - avail_kb, 0)
+                config["mem_total_gb"] = round(total_kb / (1024 * 1024), 2)
+                config["mem_used_gb"] = round(used_kb / (1024 * 1024), 2)
+                config["mem_percent"] = round(used_kb / total_kb * 100, 1)
+            if payload.get("battery") is not None:
+                config["battery"] = payload.get("battery")
+            if payload.get("uptime") is not None:
+                config["uptime_seconds"] = int(payload.get("uptime") or 0)
+            if payload.get("containers_total") is not None:
+                config["containers_total"] = payload.get("containers_total") or 0
+            if payload.get("containers_running") is not None:
+                config["containers_running"] = payload.get("containers_running") or 0
+            disk = payload.get("disk") or {}
+            if disk.get("total"):
+                config["disk_used_gb"] = disk.get("used", 0)
+                config["disk_total_gb"] = disk.get("total", 0)
+            if payload.get("images_count") is not None:
+                config["images_count"] = payload.get("images_count") or 0
+            config["status"] = "online"
+            config["fail_count"] = 0
+            config["last_seen"] = _utcnow()
+            self._save_node_config(node_id, config)
+            return True
+        return False
 
     # ============================================================
     # Node CRUD
@@ -345,7 +431,7 @@ class NodeManager:
         """Unsanitized connection info (ip/port/token) for proxies that need to talk to
         the node directly, e.g. the remote-shell WebSocket relay."""
         config = self._load_node_config(node_id)
-        if not config:
+        if not config or config.get("role") == "manager":
             return None
         return {
             "ip": config.get("ip", ""),
@@ -365,7 +451,20 @@ class NodeManager:
                     "managed_by": config.get("managed_by", ""),
                     "status": config.get("status", ""),
                     "last_seen": config.get("last_seen", ""),
-                    "device_model": config.get("device_model", "")
+                    "device_model": config.get("device_model", ""),
+                    "kernel": config.get("kernel", ""),
+                    "cpu_percent": config.get("cpu_percent", 0),
+                    "cpu_cores": config.get("cpu_cores", 0),
+                    "mem_total_gb": config.get("mem_total_gb", 0),
+                    "mem_used_gb": config.get("mem_used_gb", 0),
+                    "mem_percent": config.get("mem_percent", 0),
+                    "battery": config.get("battery", -1),
+                    "uptime_seconds": config.get("uptime_seconds", 0),
+                    "containers_total": config.get("containers_total", 0),
+                    "containers_running": config.get("containers_running", 0),
+                    "images_count": config.get("images_count", 0),
+                    "disk_used_gb": config.get("disk_used_gb", 0),
+                    "disk_total_gb": config.get("disk_total_gb", 0),
                 }
         return None
 
@@ -844,6 +943,8 @@ class NodeManager:
         return {k: v for k, v in config.items() if k != "password" and k != "token"}
 
     def _node_api_get(self, node_id, path):
+        if self._refuse_manager(node_id):
+            return None
         config = self._load_node_config(node_id)
         if not config:
             return None
@@ -872,6 +973,8 @@ class NodeManager:
         return f"Remote node returned HTTP {code}"
 
     def _node_api_post(self, node_id, path, data):
+        if self._refuse_manager(node_id):
+            return {"error": "Manager nodes are managed passively (unidirectional model)", "status_code": 409}
         config = self._load_node_config(node_id)
         if not config:
             return {"error": "Node not found", "status_code": 404}
@@ -892,6 +995,8 @@ class NodeManager:
             return {"error": str(e), "status_code": 502}
 
     def _node_api_delete(self, node_id, path):
+        if self._refuse_manager(node_id):
+            return {"error": "Manager nodes are managed passively (unidirectional model)", "status_code": 409}
         config = self._load_node_config(node_id)
         if not config:
             return {"error": "Node not found", "status_code": 404}

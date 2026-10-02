@@ -334,6 +334,144 @@ def _get_disk_usage():
     except Exception:
         return {"total": 0, "used": 0, "free": 0}
 
+def _cpu_core_count():
+    """Physical (configured) CPU core count. /proc/cpuinfo and /proc/stat only
+    list ONLINE cores on Android (CPU hotplug), which made the core count
+    oscillate between refreshes; /sys/devices/system/cpu/possible lists every
+    core slot and never changes."""
+    for path in ("/sys/devices/system/cpu/possible", "/sys/devices/system/cpu/present"):
+        try:
+            with open(path, "r") as f:
+                spec = f.read().strip()
+            total = 0
+            for part in spec.split(","):
+                part = part.strip()
+                if not part:
+                    continue
+                if "-" in part:
+                    lo, hi = part.split("-", 1)
+                    total += int(hi) - int(lo) + 1
+                else:
+                    total += 1
+            if total > 0:
+                return total
+        except Exception:
+            continue
+    try:
+        with open("/proc/cpuinfo", "r") as f:
+            n = sum(1 for line in f if line.startswith("processor"))
+        if n:
+            return n
+    except Exception:
+        pass
+    try:
+        return os.cpu_count() or 1
+    except Exception:
+        return 1
+
+def _images_count():
+    """Membership count of api_list_images without the size walk."""
+    count = 0
+    try:
+        if not os.path.isdir(IMAGES_DIR):
+            return 0
+        names = os.listdir(IMAGES_DIR)
+        seen = set()
+        for name in names:
+            if name == "ankfs" or name.startswith("alpine-"):
+                continue
+            if os.path.isdir(os.path.join(IMAGES_DIR, name)):
+                count += 1
+                seen.add(name)
+        for name in names:
+            if name.endswith(".tar.gz"):
+                base = name[:-len(".tar.gz")]
+                if base and base not in seen:
+                    count += 1
+    except Exception:
+        pass
+    return count
+
+def _manager_report_payload():
+    """Stats THIS device pushes to each child on every heartbeat. Children never
+    poll the parent (unidirectional node model) — this push is the only way the
+    child's "Managed by" card gets status and metrics."""
+    global _device_cache
+    if _device_cache is None:
+        kernel = "unknown"
+        try:
+            kernel = os.popen("uname -r 2>/dev/null").read().strip() or "unknown"
+        except Exception:
+            pass
+        device = ""
+        try:
+            device = load_config().get("device_model", "")
+            if not device:
+                device = os.popen("getprop ro.product.model 2>/dev/null").read().strip() or "unknown"
+        except Exception:
+            device = "unknown"
+        _device_cache = {"kernel": kernel, "device": device}
+
+    mem_total = 0
+    mem_available = 0
+    try:
+        with open("/proc/meminfo", "r") as f:
+            for line in f:
+                parts = line.split()
+                if parts[0] == "MemTotal:":
+                    mem_total = int(parts[1])
+                elif parts[0] == "MemAvailable:":
+                    mem_available = int(parts[1])
+    except Exception:
+        pass
+
+    battery = -1
+    try:
+        with open("/sys/class/power_supply/battery/capacity", "r") as f:
+            battery = int(f.read().strip())
+    except Exception:
+        pass
+
+    uptime = 0
+    try:
+        with open("/proc/uptime", "r") as f:
+            uptime = float(f.read().split()[0])
+    except Exception:
+        pass
+
+    total = 0
+    running = 0
+    try:
+        for cname in os.listdir(CONTAINERS_DIR):
+            c = load_container_config(cname)
+            if c:
+                total += 1
+                if c.get("status") == "running":
+                    running += 1
+    except Exception:
+        pass
+
+    disk = _get_disk_usage()
+    try:
+        node_name = load_config().get("node_name", "")
+    except Exception:
+        node_name = ""
+
+    return {
+        "node_name": node_name,
+        "device_model": _device_cache.get("device", ""),
+        "kernel": _device_cache.get("kernel", ""),
+        "cpu_usage": _cpu_usage_cache,
+        "cpu_cores": _cpu_core_count(),
+        "memory": {"total_kb": mem_total, "available_kb": mem_available},
+        "battery": battery,
+        "uptime": uptime,
+        "containers_total": total,
+        "containers_running": running,
+        "disk": {"used": disk.get("used", 0), "total": disk.get("total", 0)},
+        "images_count": _images_count(),
+    }
+
 _cpu_thread = threading.Thread(target=_cpu_sampler_loop, daemon=True)
 _cpu_thread.start()
 
@@ -2723,6 +2861,8 @@ small{color:#334155}
             self.api_update_backup_routine(path.split("/")[3], data)
         elif path == "/api/nodes":
             self.api_add_node(data)
+        elif path == "/api/nodes/manager/report":
+            self.api_manager_report(data)
         elif path == "/api/nodes/pairing/send":
             self.api_send_pairing_request(data)
         elif path == "/api/nodes/pairing/request":
@@ -2905,7 +3045,7 @@ small{color:#334155}
                 from node_proxy import NodeProxy
                 proxy = NodeProxy(nm)
                 for n in nm.list_nodes():
-                    if n.get("status") != "online":
+                    if n.get("status") != "online" or n.get("role") == "manager":
                         continue
                     try:
                         for c in (proxy.get_containers(n["id"]) or []):
@@ -3401,7 +3541,7 @@ small{color:#334155}
                             template = t
                             break
                 pkgs = " ".join(template.get("packages", [])) if template else ""
-                with open(log_path, "a") as lf:
+                with open(log_path, "w") as lf:
                     lf.write(f"Creating container '{name}' (image: {mapped_image})...\n")
                     lf.flush()
                 output, code = run_script("container.sh", "create", name, mapped_image, root_password, str(ssh_port), pkgs)
@@ -4704,7 +4844,7 @@ small{color:#334155}
             _building = True
             log_path = os.path.join(ANK_DIR, "logs", f"{container_name}.log")
             try:
-                with open(log_path, "a") as lf:
+                with open(log_path, "w") as lf:
                     lf.write(f"Deploying template '{template['name']}' as '{container_name}'...\n")
                     lf.flush()
 
@@ -5036,7 +5176,7 @@ small{color:#334155}
             _building = True
             log_path = os.path.join(ANK_DIR, "logs", f"{container_name}.log")
             try:
-                with open(log_path, "a") as lf:
+                with open(log_path, "w") as lf:
                     lf.write(f"Building Ankfile ({base_image}) as '{container_name}'...\n")
                     lf.flush()
 
@@ -6802,15 +6942,7 @@ small{color:#334155}
 
         cpu_usage = _cpu_usage_cache
 
-        cpu_cores = 0
-        try:
-            with open("/proc/cpuinfo", "r") as f:
-                cpu_cores = sum(1 for line in f if line.startswith("processor"))
-        except Exception:
-            try:
-                cpu_cores = os.cpu_count() or 0
-            except Exception:
-                pass
+        cpu_cores = _cpu_core_count()
 
         disk_info = _get_disk_usage()
 
@@ -6942,7 +7074,7 @@ small{color:#334155}
         if nm:
             try:
                 for n in nm.list_nodes():
-                    if n.get("status") != "online":
+                    if n.get("status") != "online" or n.get("role") == "manager":
                         continue
                     try:
                         for img in (nm.get_node_images(n["id"]) or []):
@@ -7057,15 +7189,7 @@ small{color:#334155}
 
         cpu_usage = _cpu_usage_cache
 
-        cpu_cores = 0
-        try:
-            with open("/proc/cpuinfo", "r") as f:
-                cpu_cores = sum(1 for line in f if line.startswith("processor"))
-        except Exception:
-            try:
-                cpu_cores = os.cpu_count() or 0
-            except Exception:
-                pass
+        cpu_cores = _cpu_core_count()
 
         battery_level = -1
         try:
@@ -7197,7 +7321,7 @@ small{color:#334155}
                 from node_proxy import NodeProxy
                 proxy = NodeProxy(nm)
                 for n in nm.list_nodes():
-                    if n.get("status") != "online":
+                    if n.get("status") != "online" or n.get("role") == "manager":
                         continue
                     try:
                         for s in (proxy.get_stacks(n["id"]) or []):
@@ -7690,6 +7814,7 @@ small{color:#334155}
         try:
             from node_manager import NodeManager
             nm = NodeManager()
+            nm.set_report_provider(_manager_report_payload)
             AnkHandler._node_manager_instance = nm
             nm.start_heartbeat(30)
             log("[NODE] Heartbeat started")
@@ -7713,6 +7838,19 @@ small{color:#334155}
             return
         info = nm.get_manager_info()
         self.send_json({"manager": info})
+
+    def api_manager_report(self, data):
+        """Pushed by the parent on every heartbeat with ITS stats, stored on our
+        role=manager record — the child never calls home to fetch them."""
+        nm = self._get_node_manager()
+        if not nm:
+            self.send_json({"error": "node_manager not available"}, 500)
+            return
+        ok = nm.record_manager_report(data if isinstance(data, dict) else {})
+        if not ok:
+            self.send_json({"error": "No manager record"}, 404)
+            return
+        self.send_json({"ok": True})
 
     def api_revoke_manager(self):
         nm = self._get_node_manager()
@@ -8190,20 +8328,7 @@ small{color:#334155}
         local_cpu = _cpu_usage_cache
         local_ram_used = 0
         local_ram_total = 0
-        local_cores = 0
-        try:
-            with open("/proc/stat", "r") as f:
-                for line in f:
-                    if line.startswith("processor"):
-                        local_cores += 1
-        except Exception:
-            pass
-        if local_cores == 0:
-            try:
-                import multiprocessing
-                local_cores = multiprocessing.cpu_count() or 1
-            except Exception:
-                local_cores = os.cpu_count() or 1
+        local_cores = _cpu_core_count()
         try:
             with open("/proc/meminfo", "r") as f:
                 for line in f:

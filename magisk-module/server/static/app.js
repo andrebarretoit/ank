@@ -4,18 +4,8 @@ let isLoggedIn = !!ankToken;
 let ankLiteMode = false;
 let ankModeFeatures = {};
 
-const ANK_SOON_PAGES = ['stacks', 'backups'];
+const ANK_SOON_PAGES = [];
 function isSoonPage(page) { return ANK_SOON_PAGES.includes(page); }
-
-function applySoonOverlay() {
-  // Stacks/Backups pages open normally; loadStacks()/loadBackups() render the
-  // "Coming soon" overlay inside them. Only the Create buttons are hidden.
-  ['btn-create-stack', 'btn-create-backup'].forEach(id => {
-    const btn = document.getElementById(id);
-    if (btn) btn.style.display = 'none';
-  });
-}
-applySoonOverlay();
 
 async function api(method, path, body = null) {
   const headers = { 'Content-Type': 'application/json', 'X-ANK-Client': 'ank-panel' };
@@ -508,6 +498,10 @@ function renderSparkline(id, data) {
   el.setAttribute('points', points);
 }
 
+// Last successful cluster snapshot: a failed /system/dashboard fetch must not
+// drop the card back to local-only numbers (cores appeared to oscillate).
+let _lastCluster = null;
+
 async function loadDashboard() {
   try {
     const [status, info, cfg, dash] = await Promise.all([api('GET', '/status'), api('GET', '/system/info'), api('GET', '/config').catch(()=>({})), api('GET', '/system/dashboard').catch(()=>null)]);
@@ -526,7 +520,8 @@ async function loadDashboard() {
     document.getElementById('info-subnet').textContent = (info.network?.subnet || '-') + '/24';
 
     // CPU — use cluster total if manager, else local
-    const cluster = dash?.cluster;
+    const cluster = dash?.cluster || _lastCluster;
+    if (dash?.cluster) _lastCluster = dash.cluster;
     const totalCores = cluster ? cluster.cpu_cores : (info.cpu_cores || 0);
     const cpuPct = cluster ? Math.round(cluster.cpu_percent) : (info.cpu_usage != null ? Math.round(info.cpu_usage) : 0);
     document.getElementById('cpu-cores').textContent = totalCores > 0 ? totalCores + ' cores' : '';
@@ -647,7 +642,11 @@ async function renderDashboardNodes() {
         <span class="dcl-stats">${rowStats}</span>
       </div>`;
     }).join('');
-  } catch (e) { card.style.display = 'none'; }
+  } catch (e) {
+    // Keep the last rendered cluster card instead of flashing it away on a
+    // transient fetch error (the core total must look fixed).
+    if (!info.innerHTML.trim()) card.style.display = 'none';
+  }
 }
 
 /* ═══════ CONTAINERS ═══════ */
@@ -1709,10 +1708,11 @@ async function loadNodes() {
         const mColor = m.status === 'online' ? 'var(--success)' : m.status === 'pending' ? 'var(--warning)' : 'var(--danger)';
         const mLabel = m.status === 'online' ? 'Online' : m.status === 'pending' ? 'Pending' : 'Offline';
         const mClick = mgrEntry ? `onclick="showNodeDetail('${esc(mgrEntry.id)}','${esc(m.alias||m.ip)}','${esc(m.status)}','manager')"` : '';
+        const mMeta = m.status === 'online' ? `<span>CPU ${Math.round(m.cpu_percent||0)}%</span><span>RAM ${(m.mem_used_gb||0).toFixed(1)}GB</span>` : '';
         managerHtml = `<div class="split-list-card" data-id="${mgrEntry ? esc(mgrEntry.id) : 'manager'}" ${mClick} style="cursor:${mgrEntry ? 'pointer' : 'default'};margin-bottom:16px">
           <div class="slc-top"><span class="slc-name"><i class="bi bi-person-check" style="color:var(--primary)"></i>Managed by: ${esc(m.alias||m.ip)}<span class="badge badge-info" style="font-size:10px;margin-left:6px">MANAGER</span></span>
           <span class="badge ${m.status==='online'?'badge-success':m.status==='pending'?'badge-warning':'badge-danger'}" style="font-size:10px">${mLabel}</span></div>
-          <div class="slc-meta"><span>IP ${esc(m.ip)}</span></div>
+          <div class="slc-meta"><span>IP ${esc(m.ip)}</span>${mMeta}</div>
         </div>`;
       }
     } catch(e) {}
@@ -1748,6 +1748,40 @@ async function showNodeDetail(nodeId, name, status, role = null) {
   if (!el) return;
   el.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text-muted)"><i class="bi bi-arrow-repeat spin" style="font-size:24px"></i><p style="margin-top:8px">Loading...</p></div>';
   try {
+    if (isManager) {
+      // Unidirectional node model: the child NEVER calls the parent. The parent
+      // pushes its stats on every heartbeat (stored on the local manager
+      // record), so render from that record — instant and always populated.
+      const md = await api('GET', '/nodes/manager').catch(() => ({}));
+      const m = md.manager || {};
+      const st = m.status || status || 'offline';
+      const on = st === 'online';
+      const memT = m.mem_total_gb || 0;
+      const dev = m.device_model || '-';
+      const cpu = on ? Math.round(m.cpu_percent || 0) + '%' : '-';
+      const mem = on && memT > 0 ? `${(m.mem_used_gb || 0).toFixed(1)} GB / ${memT.toFixed(1)} GB` : '-';
+      const batteryText = on && m.battery != null && m.battery >= 0 ? m.battery + '%' : '-';
+      const uptime = on && m.uptime_seconds ? fmtUptime(m.uptime_seconds) : '-';
+      const imgCount = on ? (m.images_count || 0) : '-';
+      const kernel = m.kernel || '-';
+      el.innerHTML = `
+      <div class="sr-header">
+        <h2><i class="bi bi-person-check" style="color:var(--primary)"></i>${esc(name)} <span class="badge ${st==='online'?'badge-success':'badge-danger'}" style="font-size:11px">${esc(st)}</span></h2>
+        <div class="sr-actions">
+          <button class="btn btn-danger btn-sm" onclick="revokeManager()"><i class="bi bi-x-circle"></i> Revoke</button>
+        </div>
+      </div>
+      <div class="detail-stats">
+        <div class="detail-stat"><span class="detail-stat-label">Device</span><span class="detail-stat-value">${esc(dev)}</span></div>
+        <div class="detail-stat"><span class="detail-stat-label">CPU</span><span class="detail-stat-value">${esc(cpu)}</span></div>
+        <div class="detail-stat"><span class="detail-stat-label">Memory</span><span class="detail-stat-value">${esc(mem)}</span></div>
+        <div class="detail-stat"><span class="detail-stat-label">Battery</span><span class="detail-stat-value">${esc(batteryText)}</span></div>
+        <div class="detail-stat"><span class="detail-stat-label">Uptime</span><span class="detail-stat-value">${esc(uptime)}</span></div>
+        <div class="detail-stat"><span class="detail-stat-label">Images</span><span class="detail-stat-value">${esc(String(imgCount))}</span></div>
+      </div>
+      <div style="margin-bottom:12px"><h4 style="margin-bottom:8px;font-size:13px;color:var(--text-muted)"><i class="bi bi-terminal"></i> Kernel</h4><code style="font-size:12px;background:rgba(10,15,30,0.4);padding:6px 10px;border-radius:6px;display:block">${esc(kernel)}</code></div>`;
+      return;
+    }
     const [st, sysInfo, containers, images] = await Promise.all([
       api('GET', `/nodes/${encodeURIComponent(nodeId)}/status`).catch(()=>({})),
       api('GET', `/nodes/${encodeURIComponent(nodeId)}/system/info`).catch(()=>({})),
@@ -1882,7 +1916,9 @@ async function loadNodesForShellSelector() {
 }
 
 function updateNodeSelectors(nodes) {
-  const onlineNodes = (nodes || []).filter(n => n.status === 'online');
+  // role=manager (our parent) is never a target on the managed side: the
+  // child only ever acts locally or on its own children.
+  const onlineNodes = (nodes || []).filter(n => n.status === 'online' && n.role !== 'manager');
   const shellSel = document.getElementById('shell-container-select');
   if (shellSel) {
     const val = shellSel.value;
