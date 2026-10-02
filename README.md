@@ -736,7 +736,7 @@ ank/
 │       ├── step_migrate.py        # Migrate devices
 │       └── step_manager.py        # ANK Manager (start/stop/uninstall)
 ├── screenshots/                   # README screenshots
-├── tools/gen-update.py            # releases.json helper (bump/changelog/sha256)
+├── tools/gen-update.py            # releases.json helper (local, not committed)
 ├── LICENSE                        # AKSAL-1.0
 ├── README.md
 ├── releases.json                  # Update manifest (version, versionCode, sha256)
