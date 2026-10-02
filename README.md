@@ -122,6 +122,19 @@ All screenshots (including Networks, Nodes, Logs, Stacks and Backups) live in [`
 
 ## Installation
 
+> **Warning — reinstalling always wipes your data**
+>
+> Flashing `ank-magisk.zip` in Magisk, or installing through **ANK Installer**, always
+> performs a **fresh install**: it deletes the previous installation **completely** —
+> all containers, images, configs, backups, logs and cache under `/data/local/ank/`
+> (root) or `/data/local/tmp/ank` (Lite), plus `/sdcard/AndroidKonteiner/`.
+>
+> **Do not reinstall to "upgrade"** — you will lose every container and all panel data.
+> The only update path that preserves data is the in-panel updater:
+> **Settings → Update** in the web panel (root installs): it downloads the new zip,
+> verifies the SHA-256 and swaps the module in place, keeping your data intact.
+> Lite/no-root has no in-panel update — reinstalling it also wipes the Lite install.
+
 ### Option 1: ANK Installer (Recommended — Windows PC)
 
 The recommended way to install ANK, for both rooted and non-rooted devices.
