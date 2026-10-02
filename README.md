@@ -854,4 +854,4 @@ Contributions are welcome. To contribute:
 
 ---
 
-**ANK** — Containers on Android. No PC needed.
+**ANK, Android Konteiner** - Docker-like container platform for Android
