@@ -30,8 +30,8 @@ Docker-like container platform for Android — runs Linux containers via chroot 
 > | ANK engine (root — Magisk + chroot) | Functional for testing |
 > | Web panel · REST API · `ank` CLI | Functional for testing |
 > | **Lite / PRoot (no root)** | **Demo only** — the ANK engine for non-rooted devices is not 100% developed yet. It installs and runs so you can look around, and it will become fully functional in a future update |
-> | **Stacks** | Partially implemented, **disabled** — the Stacks page shows "Coming soon" |
-> | **Backups** | Partially implemented, **disabled** — the Backups page shows "Coming soon" |
+> | **Stacks** | Partially implemented — the Stacks page and its modals are **enabled** for testing (the "Coming soon" overlay was removed) |
+> | **Backups** | Partially implemented — the Backups page and its modals are **enabled** for testing (the "Coming soon" overlay was removed) |
 > | Multi-device nodes | Functional for testing |
 
 ---
@@ -79,13 +79,15 @@ Docker-like container platform for Android — runs Linux containers via chroot 
 - **Auto-start** — ANK server and services restore on boot (Magisk `service.d`)
 - **ankd service daemon** — Per-container services (start/stop/restart/enable/disable/logs)
 - **Security** — Token Bearer auth (24h), login rate limiting, security headers, optional self-signed HTTPS
-- **In-app updates** — Settings → Update checks the manifest, downloads the zip and verifies its SHA-256
+- **In-app updates** — Settings → Update checks the manifest, downloads the zip, verifies its SHA-256 and reports progress per state (`RUNNING (...)` → `DONE (PatchFix=vc19-0210)`); see [Updates & Versioning](#updates--versioning)
 - **Complete uninstall** — Uninstall via panel with full removal
-- **Multi-device nodes** — Manage multiple remote ANK devices via HTTP API with pairing
-- **Stacks** *(coming soon — disabled)* — Multi-container stacks with scaling and load balancing
-- **Load Balancer** *(coming soon — disabled)* — Python reverse proxy for stacks with health check
-- **Auto-scaling** *(coming soon — disabled)* — Automatic scaling based on CPU, memory, requests/sec
-- **Backups** *(coming soon — disabled)* — Backup routines with scheduling and retention
+- **Multi-device nodes** — Manage multiple remote ANK devices via HTTP API with pairing; **unidirectional**: the parent pushes its stats to each child on every heartbeat and the child never polls the parent
+- **Channel/PatchFix versioning** — every build carries its release channel and a `vc<code>-<DDMM>` patch stamp (channel name, version number and build date — see [Updates & Versioning](#updates--versioning))
+- **Per-instance container logs** — recreating a container starts a fresh log; the Overview log view auto-follows the newest line
+- **Stacks** *(page enabled, engine partial)* — Multi-container stacks with scaling and load balancing
+- **Load Balancer** *(coming soon)* — Python reverse proxy for stacks with health check
+- **Auto-scaling** *(coming soon)* — Automatic scaling based on CPU, memory, requests/sec
+- **Backups** *(page enabled, engine partial)* — Backup routines with scheduling and retention
 - **Shared volumes** *(coming soon)* — Bind mount from host into stack containers
 - **Ankfile in Stacks** *(coming soon)* — Deploy custom images via Ankfile within stacks
 
@@ -249,7 +251,7 @@ The CLI is available inside the web panel terminal (`Shell` tab).
 File commands: `ank npad <file>`, `ank ls`, `ank copy <src> <dst>`, `ank ren <old> <new>`, `ank erase <file>`.
 Diagnostics: `ank ping`, `ank traceroute`, `ank nslookup`, `ank ip`, `ank ifconfig`, `ank route`, `ank netstat`, `ank ss`.
 
-`ank stack ...`, `ank backup ...` and `ank node ...` subcommands exist in the shell profile; the Stacks and Backups features they drive are disabled in this build (see the status table), while `ank node` pairs with the **Nodes** page.
+`ank stack ...`, `ank backup ...` and `ank node ...` subcommands exist in the shell profile; the Stacks and Backups features they drive are partially implemented (their pages are enabled — see the status table), while `ank node` pairs with the **Nodes** page.
 
 ### `ank-core` — System Administration
 
@@ -343,7 +345,7 @@ ANK automatically detects the highest isolation tier supported by your device ke
 
 ## Stacks & Orchestration
 
-> **Partially implemented and disabled in this build.** The Stacks page opens and shows a "Coming soon" overlay — the engine behind it is not finished. It will be enabled in a future update.
+> **Partially implemented — the page is enabled for testing.** The Stacks page and its modals open normally (the "Coming soon" overlay was removed); the engine behind them is still being finished, so treat results as experimental.
 
 Planned capabilities:
 
@@ -360,7 +362,7 @@ Planned capabilities:
 
 ## Backups
 
-> **Partially implemented and disabled in this build.** The Backups page opens and shows a "Coming soon" overlay — the engine behind it is not finished. It will be enabled in a future update.
+> **Partially implemented — the page is enabled for testing.** The Backups page and its modals open normally (the "Coming soon" overlay was removed); the engine behind them is still being finished, so treat results as experimental.
 
 Planned capabilities:
 
@@ -381,9 +383,9 @@ Manage multiple ANK devices from a central panel.
 | Feature | Description |
 |---------|-------------|
 | Connection | Connect via HTTP API (URL + remote panel credentials), with pairing requests |
-| Heartbeat | Monitoring with online/offline status |
+| Heartbeat | Monitoring with online/offline status; stats are pushed **parent → child** on every heartbeat — the child never polls the parent (unidirectional) |
 | Reconnect | Fully automatic — after a node restarts, the token expires or the link drops, the parent re-authenticates on its own (stored credentials / persisted token); no revoke + re-pair needed |
-| Dashboard | Aggregated view of all nodes (CPU, RAM, disk, containers) |
+| Dashboard | Aggregated view of all nodes — CPU cores, RAM, disk, containers and stacks summed across the parent and every child |
 | Containers | Create, start, stop and delete containers on remote nodes |
 | Proxy | Transparent HTTP/WS communication between nodes |
 
@@ -491,7 +493,7 @@ All endpoints require `Authorization: Bearer <token>` except `POST /api/auth/log
 | `GET` | `/api/networks/info` | Detailed network info |
 | `POST` | `/api/networks` | Configure network |
 
-### Stacks *(disabled in this build)*
+### Stacks *(partially implemented — page enabled for testing)*
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
@@ -507,7 +509,7 @@ All endpoints require `Authorization: Bearer <token>` except `POST /api/auth/log
 | `POST` | `/api/stacks/:name/healing` | Self-healing |
 | `POST` | `/api/stacks/:name/delete` | Delete stack |
 
-### Backups *(disabled in this build)*
+### Backups *(partially implemented — page enabled for testing)*
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
@@ -686,7 +688,7 @@ Upgrades are done **only** from the panel: `Settings -> Update`. `ANK-Installer.
 ```
 ank/
 ├── magisk-module/                 # What gets flashed as the Magisk module
-│   ├── module.prop                # id, version=Testing Build, versionCode, updateJson
+│   ├── module.prop                # id, version=Testing Build (channel), versionCode, buildDate (DDMM), updateJson
 │   ├── post-fs-data.sh            # Boot hook (bridge ank0, iptables)
 │   ├── service.sh                 # Boot service (starts server, sshd, password fix)
 │   ├── action.sh                  # Magisk action button handler
@@ -716,12 +718,12 @@ ank/
 │       ├── server.py              # Python3 HTTP server (stdlib, no Flask)
 │       ├── container.sh           # Container helpers used by server.py
 │       ├── ank_lite.py            # Lite (PRoot) container engine
-│       ├── stack_manager.py       # Stack management (disabled in this build)
+│       ├── stack_manager.py       # Stack management (partially implemented)
 │       ├── ank_orchestrator.py    # Background auto-scaling loop
 │       ├── ank_lb.py              # Python load balancer (reverse proxy)
 │       ├── node_manager.py        # Multi-node management (heartbeat, HTTP API)
 │       ├── node_proxy.py          # HTTP/WS proxy for remote nodes
-│       ├── backup_manager.py      # Backup routines (disabled in this build)
+│       ├── backup_manager.py      # Backup routines (partially implemented)
 │       ├── backup_runner.py       # Backup executor (tar.gz + scp + retention)
 │       ├── installer_ui_app.py    # On-device installer helper UI
 │       ├── ankcoreshell.sh        # Shell used for root/admin logins
@@ -764,7 +766,7 @@ ank/
 ├── screenshots/                   # README screenshots
 ├── LICENSE                        # AKSAL-1.0
 ├── README.md
-└── releases.json                  # Update manifest (version, versionCode, sha256)
+└── releases.json                  # Update manifest (version, versionCode, buildDate, changelog, sha256)
 ```
 
 ### Prebuilt binaries — in the zip, not in git
@@ -822,8 +824,8 @@ forgets blobs), while adding nothing readable. Git here tracks **source only**;
 │   ├── upper/                     # Overlay upper layer
 │   └── work/                      # Overlay work layer
 ├── logs/                          # server.log, server.pid, <container>.log
-├── stacks/<name>/                 # Stack data (disabled in this build)
-├── backups/routines|history/      # Backup data (disabled in this build)
+├── stacks/<name>/                 # Stack data (partially implemented)
+├── backups/routines|history/      # Backup data (partially implemented)
 ├── nodes/node-*.json              # Remote node configs
 ├── cache/                         # alpine-minirootfs-<arch>.tar.gz
 ├── core/                          # Scripts + ankd installed by install.sh
@@ -851,6 +853,40 @@ forgets blobs), while adding nothing readable. Git here tracks **source only**;
 ```
 
 Inside the Lite guest the ANK directory is bound at `/ank`, and `ank-cli.py` resolves the install location by probing `/data/local/ank/mode` → `/ank/mode` → `/data/local/tmp/ank/mode`.
+
+---
+
+## Updates & Versioning
+
+Every ANK build is identified by a **channel** and a **patch stamp**. The Update
+page and About show the full form:
+
+```
+Channel: Testing Build · PatchFix: vc19-0210
+```
+
+The footers (login screen and footer modal) show the short form:
+
+```
+Testing Build (vc19-0210)
+```
+
+| Part | Meaning |
+|------|---------|
+| **Channel** (`Testing Build`) | The release channel — the `version` nickname in `module.prop`. It is free text and can change over time (e.g. a future `Beta`) without breaking anything. |
+| **PatchFix** | The patch (update) inside that channel. |
+| **`vc19`** | The `versionCode`: a monotonically increasing **integer** that identifies the build for the updater and for Magisk. Updates are detected as `new versionCode > current versionCode`, so it **never resets** — not even when the channel changes. |
+| **`-0210`** | The **build date** of that patch in `DDMM` (day + month), stamped once when the release is built. It stays with the release **forever**: a build from 02/10 keeps showing `-0210` even a year later, without updating. |
+
+**Multiple patches per day are normal** — especially during the Testing Build
+phase: several versionCodes can share the same date stamp, for example
+`vc20-0210`, `vc21-0210` and `vc22-0210` were all built on 02/10. The `vc`
+number is what tells them apart; the date only says *when* the patch was coded.
+
+The in-panel updater (`Settings → Update`) reads the manifest (`releases.json`),
+downloads `ank-upgrade.zip`, verifies its SHA-256, backs up the current code and
+extracts the new code over the installed module. The progress log reports each
+state and finishes with `DONE (PatchFix=vc19-0210)`.
 
 ---
 

@@ -12,7 +12,7 @@
 #           (ankfs/opt/ank) from the tarball. The backup is kept after a
 #           successful update until the next one starts.
 # Log:  /sdcard/AndroidKonteiner/ank-update.log
-# State: /sdcard/AndroidKonteiner/ank-update.state (RUNNING (...)/DONE (...)/FAILED: ...)
+# State: /sdcard/AndroidKonteiner/ank-update.state (RUNNING (...)/DONE (PatchFix=vc19-0210)/FAILED: ...)
 
 ZIP_URL="$1"
 EXPECT_SHA="$2"
@@ -39,7 +39,7 @@ log() {
 
 set_state() {
     echo "$1" > "$STATE" 2>/dev/null
-    log "STATE -> $1"
+    log "State: $1"
 }
 
 # Restore module code (everything except ankfs/) from the backup copy and,
@@ -97,7 +97,7 @@ sync_file() {
 }
 
 mkdir -p "$SDCARD" "$TMP_DIR" 2>/dev/null
-log "=== UPDATE START url=$ZIP_URL ==="
+log "=== UPDATE START ==="
 
 [ -n "$ZIP_URL" ] || fail "no zip url given"
 [ -d "$MODULE_DIR" ] || fail "module dir $MODULE_DIR not found (root mode only)"
@@ -121,12 +121,12 @@ dl() {
 }
 
 if dl; then
-    log "download ok (attempt 1, tool=$DL_TOOL)"
+    log "Download complete (attempt 1, $DL_TOOL)"
 else
-    log "download failed, retrying in 5s..."
+    log "Download failed, retrying in 5 seconds..."
     sleep 5
     if dl; then
-        log "download ok (attempt 2, tool=$DL_TOOL)"
+        log "Download complete (attempt 2, $DL_TOOL)"
     else
         fail "download failed after 2 attempts"
     fi
@@ -145,9 +145,9 @@ if [ -n "$EXPECT_SHA" ] && [ "$EXPECT_SHA" != "-" ]; then
     fi
     [ -n "$ACTUAL" ] || fail "sha256sum not available"
     [ "$ACTUAL" = "$EXPECT_SHA" ] || fail "sha256 mismatch (expected $EXPECT_SHA, got $ACTUAL)"
-    log "sha256 verified"
+    log "Checksum verified (sha256)"
 else
-    log "no sha256 provided, skipping verification"
+    log "No checksum provided, verification skipped"
 fi
 
 # ---- Backup: module code (without ankfs/) + runtime server tarball ----
@@ -165,7 +165,7 @@ done
 [ -f "$BACKUP/module/module.prop" ] || fail "module code backup failed"
 if [ -d "$ANKFS/opt/ank" ]; then
     if tar czf "$BACKUP/runtime-server.tgz" -C "$ANKFS" opt/ank 2>/dev/null; then
-        log "backup ok (module code + runtime server tarball)"
+        log "Backup created (module code + runtime server)"
     else
         log "WARN: runtime server tarball failed (resync rollback unavailable)"
     fi
@@ -198,9 +198,11 @@ set_state "RUNNING (validate)"
 [ -f "$MODULE_DIR/module.prop" ] || fail "module.prop missing after extract"
 NEW_VC=$(grep '^versionCode=' "$MODULE_DIR/module.prop" 2>/dev/null | head -1 | cut -d= -f2)
 [ -n "$NEW_VC" ] || fail "module.prop has no versionCode"
+NEW_BUILDDATE=$(grep '^buildDate=' "$MODULE_DIR/module.prop" 2>/dev/null | head -1 | cut -d= -f2)
+NEW_PF="vc${NEW_VC}${NEW_BUILDDATE:+-$NEW_BUILDDATE}"
 [ -f "$MODULE_DIR/server/server.py" ] || fail "server/server.py missing after extract"
 [ -f "$MODULE_DIR/scripts/ank-updater.sh" ] || fail "scripts/ank-updater.sh missing after extract"
-log "extracted over current module (versionCode=$NEW_VC)"
+log "Update extracted over current module ($NEW_PF)"
 
 # ---- Resync runtime copies (same layout as install.sh) ----
 set_state "RUNNING (resync)"
@@ -245,7 +247,7 @@ for f in "$NEW_SERVER"/*.py; do
     [ -f "$f" ] || continue
     sync_file "$f" "$ANKFS/opt/ank/$(basename "$f")" || log "WARN: module resync failed for $(basename "$f")"
 done
-log "runtime resync done"
+log "Runtime resync complete"
 
 # ---- Propagate ankd.sh to existing containers ----
 set_state "RUNNING (propagate)"
@@ -255,7 +257,7 @@ if [ -f "$NEW_SERVER/ankd/ankd.sh" ]; then
         [ -d "$cdir/merged/usr/ankd/core" ] || continue
         if sync_file "$NEW_SERVER/ankd/ankd.sh" "$cdir/merged/usr/ankd/core/ankd.sh"; then
             chmod 755 "$cdir/merged/usr/ankd/core/ankd.sh" 2>/dev/null
-            log "propagated ankd.sh -> $(basename "$cdir")"
+            log "Propagated ankd.sh to container $(basename "$cdir")"
         else
             log "WARN: propagate ankd.sh failed for $(basename "$cdir")"
         fi
@@ -264,11 +266,11 @@ fi
 
 # ---- Finish ----
 rm -f "$ZIP" 2>/dev/null
-set_state "DONE (versionCode=$NEW_VC)"
-log "=== UPDATE DONE === (previous-version backup kept at $BACKUP)"
+set_state "DONE ($NEW_PF)"
+log "=== UPDATE DONE === (previous version preserved at $BACKUP)"
 
 if [ -f "$ANK_DIR/core/restart-server.sh" ]; then
-    log "restarting server..."
+    log "Restarting ANK server..."
     nohup sh "$ANK_DIR/core/restart-server.sh" >/dev/null 2>&1 &
 fi
 exit 0
