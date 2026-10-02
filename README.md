@@ -667,7 +667,7 @@ ank/
 │   ├── install.sh                 # Installer (tarball or build-from-scratch paths)
 │   ├── META-INF/                  # update-binary + updater-script (flashable zip)
 │   ├── service.d/ank.sh           # Magisk service.d autostart
-│   ├── ankfs/                     # Pre-built rootfs tarball (Alpine + Python + openssh)
+│   ├── ankfs/                     # Prebuilt rootfs + proot binaries (~73 MB, ships in the zip — NOT in git, see below)
 │   ├── scripts/
 │   │   ├── container.sh           # Container lifecycle + _ensure_ankbase
 │   │   ├── network.sh             # Namespaces + iptables
@@ -711,8 +711,8 @@ ank/
 │           └── vendor/            # bootstrap-icons, xterm.js, Inter/JetBrains fonts
 ├── installer/                     # ANK Installer (Windows GUI)
 │   ├── main.py                    # Entry point
-│   ├── ANK-Installer.spec         # PyInstaller spec
-│   ├── build.bat                  # Build ANK-Installer.exe
+│   ├── ANK-Installer.spec         # PyInstaller spec (local, not committed)
+│   ├── build.bat                  # Build ANK-Installer.exe (local, not committed)
 │   ├── requirements.txt           # PySide6 + deps
 │   ├── assets/icon.ico
 │   ├── core/
@@ -743,6 +743,39 @@ ank/
 ├── build_zip.py                   # ank-magisk.zip builder (local, not committed)
 └── build_exe.py                   # ANK-Installer.exe builder (local, not committed)
 ```
+
+### Prebuilt binaries — in the zip, not in git
+
+The release zip (`ank-magisk.zip`) ships ~73 MB of **prebuilt binaries** that are
+**not stored in this repository**. They live in `magisk-module/ankfs/` on the
+maintainer's machine and are packed into the zip at build time:
+
+| File (inside the zip) | Size | What it is |
+|------------------------|------|------------|
+| `ankfs/ank-prebuild-aarch64.tar.gz` | 24.4 MB | Prebuilt ANK engine rootfs for arm64 devices (Alpine + Python 3 + openssh + ANK server files) |
+| `ankfs/ank-prebuild-armv7l.tar.gz` | 23.6 MB | Same, for 32-bit ARMv7 devices |
+| `ankfs/ank-prebuild-armv8l.tar.gz` | 22.7 MB | Same, for ARMv8 devices |
+| `ankfs/anklite-proot-aarch64`, `ankfs/anklite-proot-armv7` | 0.5–0.8 MB | Static PRoot binaries used by the no-root Lite engine |
+| `ankfs/anklite/proot-aarch64.0-aarch64-static` | 1.4 MB | Alternate static PRoot build (fallback) |
+
+**Why they are not in the repo:** they are generated artifacts — large tarballs and
+compiled ELF binaries that change per build and per architecture. Committing ~73 MB
+of binaries would permanently bloat every clone and the git history (git never
+forgets blobs), while adding nothing readable. Git here tracks **source only**;
+`.gitignore` excludes `*.tar.gz` and build outputs.
+
+**Where they end up:**
+- **Root (Magisk) install:** `install.sh` prefers the prebuild from the zip
+  (instant, works offline). If the prebuild is missing it automatically falls
+  back to downloading Alpine minirootfs and building the rootfs at install time
+  (slower, requires network) — so the module still works without them.
+- **ANK Installer (Windows):** extracts the zip and pushes the matching
+  prebuild/proot for the detected device architecture.
+- **Updates:** new prebuilts ship with each release zip; the in-panel updater
+  downloads the whole zip.
+
+To rebuild the zip with current binaries, run the local `build_zip.py`
+(maintainer machine only — not part of the repo).
 
 ### Device Paths
 
