@@ -2321,7 +2321,9 @@ small{color:#334155}
         if path.startswith("/api/"):
             # Readiness/health probes used by the restart modal — must work
             # without a token (tokens are in-memory and die with the process).
-            if path in ("/api/status", "/api/system/status", "/api/health"):
+            # /api/version is public so the login footer can show the build
+            # version before authentication.
+            if path in ("/api/status", "/api/system/status", "/api/health", "/api/version"):
                 try:
                     self.route_get(path, parsed)
                 except Exception as e:
@@ -2428,6 +2430,16 @@ small{color:#334155}
             self.api_get_mode()
         elif path == "/api/health":
             self.send_json({"status": "ok"})
+        elif path == "/api/version":
+            prop = self._read_module_prop()
+            out = {"supported": prop is not None}
+            if prop:
+                out["version"] = prop.get("version")
+                try:
+                    out["versionCode"] = int(prop.get("versionCode", "0"))
+                except (TypeError, ValueError):
+                    out["versionCode"] = 0
+            self.send_json(out)
         elif path == "/api/protocol":
             proto = "http"
             try:
@@ -2731,6 +2743,8 @@ small{color:#334155}
             self.api_node_image_transfer(parts[3], data)
         elif path.startswith("/api/nodes/") and path.endswith("/restart"):
             self.api_node_restart(path.split("/")[3])
+        elif path.startswith("/api/nodes/") and path.endswith("/update/apply"):
+            self.api_node_update_apply(path.split("/")[3])
         elif path.startswith("/api/nodes/") and path.endswith("/containers"):
             parts = path.split("/")
             self.api_node_container_create(parts[3], data)
@@ -7812,6 +7826,29 @@ small{color:#334155}
         except Exception as e:
             self.send_json({"error": str(e)}, 500)
 
+    def api_node_update_apply(self, node_id):
+        """Signal a paired node to run its OWN in-panel update (it resolves the
+        manifest/download/restart itself via its own module.prop updateJson)."""
+        nm = self._get_node_manager()
+        if not nm:
+            self.send_json({"error": "node_manager not available"}, 500)
+            return
+        node = nm.get_node(node_id)
+        if not node:
+            self.send_json({"error": "Node not found"}, 404)
+            return
+        if node.get("status") != "online":
+            self.send_json({"error": f"Node {node.get('alias') or node_id} is offline"}, 409)
+            return
+        try:
+            result = nm._node_api_post(node_id, "/api/update/apply", {})
+            if isinstance(result, dict) and result.get("error"):
+                self.send_json(result, int(result.get("status_code", 502)))
+            else:
+                self.send_json(result if isinstance(result, dict) else {"ok": True})
+        except Exception as e:
+            self.send_json({"error": str(e)}, 500)
+
     def api_node_logs(self, node_id):
         nm = self._get_node_manager()
         if not nm:
@@ -7993,17 +8030,20 @@ small{color:#334155}
         except Exception:
             pass
 
-        # Node data + aggregated cluster stats
+        # Node data + aggregated cluster stats.
+        # is_manager = this device manages at least one CHILD node (a
+        # manager-role record means WE are the managed side, not a manager).
+        # Totals are the fixed sum of ALL known nodes (offline nodes keep
+        # their last-known stats) so the cluster card doesn't oscillate;
+        # CPU busy only counts online nodes (offline = no usage).
         is_manager = False
-        cluster_cpu_sum = 0.0
-        cluster_cpu_count = 0
         cluster_cores = 0
-        cluster_ram_used = 0
-        cluster_ram_total = 0
-        cluster_ram_pct_sum = 0.0
-        cluster_disk_used = 0
-        cluster_disk_total = 0
-        cluster_disk_pct_sum = 0.0
+        cluster_ram_used = 0.0
+        cluster_ram_total = 0.0
+        cluster_disk_used = 0.0
+        cluster_disk_total = 0.0
+        cluster_cpu_busy = 0.0
+        online_nodes = 0
         cluster_containers = local_containers
         cluster_containers_running = local_running
         cluster_stacks = local_stacks
@@ -8011,45 +8051,47 @@ small{color:#334155}
 
         try:
             nodes = nm.list_nodes() if nm else []
-            is_manager = nm is not None
             for n in nodes:
-                is_online = n.get("status") == "online"
-                n_cores = n.get("cpu_cores", 0) if is_online else 0
-                n_cpu = n.get("cpu_percent", 0) if is_online else 0
-                n_ram_total = n.get("mem_total_gb", 0) if is_online else 0
-                n_ram_used = n.get("mem_used_gb", 0) if is_online else 0
-                n_disk_total = n.get("disk_total_gb", 0) if is_online else 0
-                n_disk_used = n.get("disk_used_gb", 0) if is_online else 0
+                n_status = n.get("status", "unknown")
+                is_online = n_status == "online"
+                if n.get("role", "managed") != "manager":
+                    is_manager = True
+                n_cores = n.get("cpu_cores", 0) or 0
+                n_cpu = n.get("cpu_percent", 0) or 0
+                n_ram_total = n.get("mem_total_gb", 0) or 0
+                n_ram_used = n.get("mem_used_gb", 0) or 0
+                n_disk_total = n.get("disk_total_gb", 0) or 0
+                n_disk_used = n.get("disk_used_gb", 0) or 0
+                n_containers = n.get("containers_total", 0) or 0
+                n_containers_running = n.get("containers_running", 0) or 0
                 nodes_list.append({
                     "id": n.get("id", ""),
                     "hostname": n.get("hostname", ""),
                     "alias": n.get("alias", ""),
-                    "status": n.get("status", "unknown"),
-                    "containers": n.get("containers", 0),
-                    "containers_running": n.get("containers_running", 0),
+                    "role": n.get("role", "managed"),
+                    "status": n_status,
+                    "containers": n_containers,
+                    "containers_total": n_containers,
+                    "containers_running": n_containers_running,
                     "cpu_cores": n_cores,
                     "cpu_percent": n_cpu,
                     "mem_used_gb": n_ram_used,
                     "mem_total_gb": n_ram_total,
                     "disk_used_gb": n_disk_used,
                     "disk_total_gb": n_disk_total,
-                    "stacks_count": n.get("stacks_count", 0) if is_online else 0,
+                    "stacks_count": n.get("stacks_count", 0) or 0,
                 })
+                cluster_cores += n_cores
+                cluster_ram_used += n_ram_used
+                cluster_ram_total += n_ram_total
+                cluster_disk_used += n_disk_used
+                cluster_disk_total += n_disk_total
+                cluster_containers += n_containers
+                cluster_containers_running += n_containers_running
+                cluster_stacks += n.get("stacks_count", 0) or 0
                 if is_online:
-                    cluster_cores += n_cores
-                    cluster_cpu_sum += n_cpu
-                    cluster_cpu_count += 1
-                    cluster_ram_used += n_ram_used
-                    cluster_ram_total += n_ram_total
-                    if n_ram_total > 0:
-                        cluster_ram_pct_sum += (n_ram_used / n_ram_total) * 100
-                    cluster_disk_used += n_disk_used
-                    cluster_disk_total += n_disk_total
-                    if n_disk_total > 0:
-                        cluster_disk_pct_sum += (n_disk_used / n_disk_total) * 100
-                    cluster_containers += n.get("containers", 0) or 0
-                    cluster_containers_running += n.get("containers_running", 0) or 0
-                    cluster_stacks += n.get("stacks_count", 0) or 0
+                    online_nodes += 1
+                    cluster_cpu_busy += n_cores * n_cpu / 100.0
         except Exception:
             pass
 
@@ -8083,7 +8125,7 @@ small{color:#334155}
             pass
         disk_info = _get_disk_usage()
 
-        # Cluster averages
+        # Cluster totals (fixed base = sum of everything; usage = weighted)
         cluster_cores += local_cores
         local_ram_used_gb = local_ram_used / 1024.0
         local_ram_total_gb = local_ram_total / 1024.0
@@ -8091,17 +8133,12 @@ small{color:#334155}
         cluster_ram_total += local_ram_total_gb
         cluster_disk_used += disk_info.get("used", 0)
         cluster_disk_total += disk_info.get("total", 0)
-        if local_ram_total > 0:
-            cluster_ram_pct_sum += (local_ram_used / local_ram_total) * 100
-        cluster_cpu_count += 1
-        cluster_cpu_sum += local_cpu
-        if disk_info.get("total", 0) > 0:
-            cluster_disk_pct_sum += (disk_info.get("used", 0) / disk_info.get("total", 1)) * 100
+        cluster_cpu_busy += local_cores * local_cpu / 100.0
+        online_nodes += 1
 
-        node_count = max(cluster_cpu_count, 1)
-        cluster_avg_cpu = round(cluster_cpu_sum / node_count, 1)
-        cluster_avg_ram_pct = round(cluster_ram_pct_sum / node_count, 1) if cluster_cpu_count > 0 else 0
-        cluster_avg_disk_pct = round(cluster_disk_pct_sum / node_count, 1) if cluster_cpu_count > 0 else 0
+        cluster_cpu_percent = round(cluster_cpu_busy / cluster_cores * 100, 1) if cluster_cores else 0
+        cluster_ram_percent = round(cluster_ram_used / cluster_ram_total * 100, 1) if cluster_ram_total else 0
+        cluster_disk_percent = round(cluster_disk_used / cluster_disk_total * 100, 1) if cluster_disk_total else 0
 
         dashboard = {
             "is_manager": is_manager,
@@ -8122,14 +8159,14 @@ small{color:#334155}
                 "containers_running": cluster_containers_running,
                 "stacks": cluster_stacks,
                 "cpu_cores": cluster_cores,
-                "cpu_percent": cluster_avg_cpu,
+                "cpu_percent": cluster_cpu_percent,
                 "ram_used_gb": round(cluster_ram_used, 2),
                 "ram_total_gb": round(cluster_ram_total, 2),
-                "ram_percent": cluster_avg_ram_pct,
+                "ram_percent": cluster_ram_percent,
                 "disk_used_gb": round(cluster_disk_used, 2),
                 "disk_total_gb": round(cluster_disk_total, 2),
-                "disk_percent": cluster_avg_disk_pct,
-                "nodes_count": node_count,
+                "disk_percent": cluster_disk_percent,
+                "nodes_count": online_nodes,
             } if is_manager else None,
             "nodes": nodes_list,
         }

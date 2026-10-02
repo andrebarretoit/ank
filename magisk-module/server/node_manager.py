@@ -185,29 +185,38 @@ class NodeManager:
             if online:
                 config["status"] = "online"
                 config["fail_count"] = 0
+                config["last_seen"] = _utcnow()
+                try:
+                    auth_ok = self._fetch_and_store_node_stats(node_id, config)
+                    # /api/status is public, so a dead token (peer restart, 24h
+                    # expiry, reinstall) never shows up there — the authed stats
+                    # calls are the real signal. Relogin and retry immediately.
+                    if not auth_ok and self._relogin(config):
+                        _log(f"Token rejected by {ip}:{port} - relogged in, retrying stats")
+                        self._fetch_and_store_node_stats(node_id, config)
+                except Exception as e:
+                    _log(f"Stats refresh failed for {node_id}: {e}")
             else:
                 if config.get("status") != "pending":
                     config["fail_count"] = config.get("fail_count", 0) + 1
                     if config["fail_count"] >= 3:
                         config["status"] = "offline"
-            config["last_seen"] = _utcnow()
-
-            if online:
-                try:
-                    self._fetch_and_store_node_stats(node_id, config)
-                except Exception as e:
-                    _log(f"Stats refresh failed for {node_id}: {e}")
 
             self._save_node_config(node_id, config)
 
     def _fetch_and_store_node_stats(self, node_id, config):
         """Poll a node's live /api/status + /api/system/info (and container/image/stack
         counts) and cache the result onto its config so list_nodes()/the dashboard reflect
-        real, current numbers instead of placeholder dashes."""
+        real, current numbers instead of placeholder dashes.
+
+        Returns False when an AUTHENTICATED call was rejected (401/403) — the caller
+        should relogin and retry. /api/status is public (whitelist), so auth failures
+        NEVER show up there; this is the only place they surface."""
         ip = config.get("ip", "")
         port = config.get("port", 8001)
         token = self._outbound_token(config)
         headers = {"Authorization": f"Bearer {token}"}
+        auth_ok = True
 
         try:
             code, status, _ = _http_request(f"http://{ip}:{port}/api/status", headers=headers, timeout=8)
@@ -224,6 +233,8 @@ class NodeManager:
 
         try:
             code, info, _ = _http_request(f"http://{ip}:{port}/api/system/info", headers=headers, timeout=8)
+            if code in (401, 403):
+                auth_ok = False
             if code == 200 and isinstance(info, dict):
                 mem = info.get("memory", {}) or {}
                 total_kb = mem.get("total_kb", 0)
@@ -253,7 +264,7 @@ class NodeManager:
         except Exception:
             pass
 
-        return config
+        return auth_ok
 
     def refresh_node(self, node_id):
         """Actively poll a node right now (used by the manual Refresh button), instead of
@@ -272,7 +283,14 @@ class NodeManager:
             if code == 200:
                 config["status"] = "online"
                 config["fail_count"] = 0
-                self._fetch_and_store_node_stats(node_id, config)
+                config["last_seen"] = _utcnow()
+                try:
+                    auth_ok = self._fetch_and_store_node_stats(node_id, config)
+                    if not auth_ok and self._relogin(config):
+                        _log(f"Token rejected by {ip}:{port} - relogged in, retrying stats")
+                        self._fetch_and_store_node_stats(node_id, config)
+                except Exception as e:
+                    _log(f"stats retry failed for {node_id}: {e}")
             else:
                 config["fail_count"] = config.get("fail_count", 0) + 1
                 if config["fail_count"] >= 3:
@@ -282,7 +300,6 @@ class NodeManager:
             config["fail_count"] = config.get("fail_count", 0) + 1
             if config["fail_count"] >= 3:
                 config["status"] = "offline"
-        config["last_seen"] = _utcnow()
         self._save_node_config(node_id, config)
         return self._sanitize_node(config)
 

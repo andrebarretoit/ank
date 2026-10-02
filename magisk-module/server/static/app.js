@@ -29,6 +29,28 @@ async function api(method, path, body = null) {
   return data;
 }
 
+/* ── Version display (module.prop via public GET /api/version) ── */
+let _ankVer = null;
+function ankVerLabel() {
+  if (!_ankVer || !_ankVer.supported) return null;
+  const v = _ankVer.version || 'unknown';
+  return _ankVer.versionCode ? `${v} (vc ${_ankVer.versionCode})` : v;
+}
+function applyAnkVersionLabels() {
+  const label = ankVerLabel();
+  if (!label) return;
+  ['footer-version', 'about-version', 'footer-modal-version'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.textContent = label;
+  });
+}
+async function loadAnkVersion() {
+  try {
+    const d = await api('GET', '/version');
+    if (d && d.supported) { _ankVer = d; applyAnkVersionLabels(); }
+  } catch (e) { /* keep static fallback */ }
+}
+
 async function btnLoading(btn, fn) {
   if (!btn) return fn();
   const orig = btn.innerHTML;
@@ -583,46 +605,18 @@ async function renderDashboardNodes() {
   if (!card || !info) return;
   try {
     const dashboard = await api('GET', '/system/dashboard');
-    if (!dashboard.is_manager || !dashboard.nodes || !dashboard.nodes.length) { card.style.display = 'none'; return; }
+    const cluster = dashboard.cluster;
+    if (!dashboard.is_manager || !cluster || !dashboard.nodes || !dashboard.nodes.length) { card.style.display = 'none'; return; }
     card.style.display = '';
     const nodes = dashboard.nodes;
-    let totalCpu = 0, totalCores = 0, totalMemUsed = 0, totalMemTotal = 0, totalDiskUsed = 0, totalDiskTotal = 0, totalContainers = 0, onlineCount = 0;
-    nodes.forEach(n => {
-      if (n.status === 'online') {
-        onlineCount++;
-        totalCpu += n.cpu_percent || 0;
-        totalCores += n.cpu_cores || 0;
-        totalMemUsed += n.mem_used_gb || 0;
-        totalMemTotal += n.mem_total_gb || 0;
-        totalDiskUsed += n.disk_used || 0;
-        totalDiskTotal += n.disk_total || 0;
-        totalContainers += n.containers_total || 0;
-      }
-    });
-    // Add local node stats
-    try {
-      const localStatus = await api('GET', '/status');
-      const localInfo = await api('GET', '/system/info');
-      totalCpu += localStatus.cpu_usage || 0;
-      totalCores += localStatus.cpu_cores || 0;
-      const localMemTotal = (localInfo.memory?.total_kb || 0) / 1048576;
-      const localMemAvail = (localInfo.memory?.available_kb || 0) / 1048576;
-      totalMemUsed += localMemTotal - localMemAvail;
-      totalMemTotal += localMemTotal;
-      totalDiskUsed += (localStatus.disk?.used || 0);
-      totalDiskTotal += (localStatus.disk?.total || 0);
-      totalContainers += (localStatus.containers_total || 0);
-      onlineCount++;
-    } catch(e) {}
-    const avgCpu = onlineCount > 0 ? Math.round(totalCpu / onlineCount) : 0;
-    const memPct = totalMemTotal > 0 ? Math.round(totalMemUsed / totalMemTotal * 100) : 0;
-    const diskPct = totalDiskTotal > 0 ? Math.round(totalDiskUsed / totalDiskTotal * 100) : 0;
+    // +1 = this device (always online — it's serving this panel)
+    const onlineCount = nodes.filter(n => n.status === 'online').length + 1;
 
     const clusterStatsHtml = `<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px">
-      <div class="dash-cluster-stat"><div class="dcs-label">CPU</div><div class="dcs-value">${totalCores} cores</div><div class="dcs-sub">${avgCpu}% avg</div></div>
-      <div class="dash-cluster-stat"><div class="dcs-label">Memory</div><div class="dcs-value">${totalMemUsed.toFixed(1)} GB</div><div class="dcs-sub">${memPct}% of ${totalMemTotal.toFixed(1)} GB</div></div>
-      <div class="dash-cluster-stat"><div class="dcs-label">Disk</div><div class="dcs-value">${totalDiskUsed.toFixed(0)} GB</div><div class="dcs-sub">${diskPct}% of ${totalDiskTotal.toFixed(0)} GB</div></div>
-      <div class="dash-cluster-stat"><div class="dcs-label">Containers</div><div class="dcs-value">${totalContainers}</div><div class="dcs-sub">${onlineCount} nodes online</div></div>
+      <div class="dash-cluster-stat"><div class="dcs-label">CPU</div><div class="dcs-value">${cluster.cpu_cores || 0} cores</div><div class="dcs-sub">${Math.round(cluster.cpu_percent || 0)}% used</div></div>
+      <div class="dash-cluster-stat"><div class="dcs-label">Memory</div><div class="dcs-value">${(cluster.ram_used_gb || 0).toFixed(1)} GB</div><div class="dcs-sub">${Math.round(cluster.ram_percent || 0)}% of ${(cluster.ram_total_gb || 0).toFixed(1)} GB</div></div>
+      <div class="dash-cluster-stat"><div class="dcs-label">Disk</div><div class="dcs-value">${(cluster.disk_used_gb || 0).toFixed(0)} GB</div><div class="dcs-sub">${Math.round(cluster.disk_percent || 0)}% of ${(cluster.disk_total_gb || 0).toFixed(0)} GB</div></div>
+      <div class="dash-cluster-stat"><div class="dcs-label">Containers</div><div class="dcs-value">${cluster.containers_total || 0}</div><div class="dcs-sub">${onlineCount} nodes online</div></div>
     </div>`;
 
     const modeBadge = document.getElementById('mode-badge');
@@ -644,10 +638,13 @@ async function renderDashboardNodes() {
 
     info.innerHTML = clusterStatsHtml + nodes.map(n => {
       const color = n.status === 'online' ? 'var(--success)' : 'var(--danger)';
+      const rowStats = n.status === 'online'
+        ? `CPU ${Math.round(n.cpu_percent||0)}% · RAM ${(n.mem_used_gb||0).toFixed(1)}/${(n.mem_total_gb||0).toFixed(1)}GB · ${(n.containers_total||0)} ctrs`
+        : 'Offline';
       return `<div class="dash-cluster-row">
         <span class="dcl-dot" style="background:${color}"></span>
         <span class="dcl-name">${esc(n.alias||n.ip)}</span>
-        <span class="dcl-stats">CPU ${Math.round(n.cpu_percent||0)}% · RAM ${(n.mem_used_gb||0).toFixed(1)}/${(n.mem_total_gb||0).toFixed(1)}GB · ${(n.containers_total||0)} ctrs</span>
+        <span class="dcl-stats">${rowStats}</span>
       </div>`;
     }).join('');
   } catch (e) { card.style.display = 'none'; }
@@ -1697,31 +1694,38 @@ async function loadNodes() {
   try {
     const data = await api('GET', '/nodes');
     const nodes = data.nodes || [];
-    // Manager card
+    // The manager record and the role=manager node entry are the SAME entity
+    // (one per device) — render it once as a clickable card; the detail pane
+    // carries Revoke/Restart/metrics (no containers: the managed side never
+    // lists the parent's containers).
+    const mgrEntry = nodes.find(n => n.role === 'manager');
     let managerHtml = '';
     try {
       const mgr = await api('GET', '/nodes/manager');
       if (mgr.manager) {
         const m = mgr.manager;
         const mColor = m.status === 'online' ? 'var(--success)' : m.status === 'pending' ? 'var(--warning)' : 'var(--danger)';
-        managerHtml = `<div style="background:var(--glass-bg);border:1px solid var(--border);border-radius:var(--radius);padding:16px;margin-bottom:16px">
-          <div style="display:flex;justify-content:space-between;align-items:center">
-            <div><div style="display:flex;align-items:center;gap:8px;margin-bottom:4px"><span style="width:8px;height:8px;border-radius:50%;background:${mColor};flex-shrink:0"></span><strong>Managed by: ${esc(m.alias||m.ip)}</strong><span class="badge badge-info" style="font-size:10px">MANAGER</span></div><div style="color:var(--text-muted);font-size:12px">IP: ${esc(m.ip)}</div></div>
-            <button class="btn btn-danger btn-sm" onclick="revokeManager()"><i class="bi bi-x-circle"></i> Revoke</button>
-          </div></div>`;
+        const mLabel = m.status === 'online' ? 'Online' : m.status === 'pending' ? 'Pending' : 'Offline';
+        const mClick = mgrEntry ? `onclick="showNodeDetail('${esc(mgrEntry.id)}','${esc(m.alias||m.ip)}','${esc(m.status)}','manager')"` : '';
+        managerHtml = `<div class="split-list-card" data-id="${mgrEntry ? esc(mgrEntry.id) : 'manager'}" ${mClick} style="cursor:${mgrEntry ? 'pointer' : 'default'};margin-bottom:16px">
+          <div class="slc-top"><span class="slc-name"><i class="bi bi-person-check" style="color:var(--primary)"></i>Managed by: ${esc(m.alias||m.ip)}<span class="badge badge-info" style="font-size:10px;margin-left:6px">MANAGER</span></span>
+          <span class="badge ${m.status==='online'?'badge-success':m.status==='pending'?'badge-warning':'badge-danger'}" style="font-size:10px">${mLabel}</span></div>
+          <div class="slc-meta"><span>IP ${esc(m.ip)}</span></div>
+        </div>`;
       }
     } catch(e) {}
-    if (!nodes.length && !managerHtml) { el.innerHTML = '<div class="empty-state"><i class="bi bi-hdd-network"></i><h3>No nodes</h3><p>Add a remote ANK device</p></div>'; return; }
-    if (!nodes.length && managerHtml) { el.innerHTML = managerHtml; return; }
-    el.innerHTML = managerHtml + nodes.map(n => {
+    const otherNodes = nodes.filter(n => n.role !== 'manager');
+    if (!otherNodes.length && !managerHtml) { el.innerHTML = '<div class="empty-state"><i class="bi bi-hdd-network"></i><h3>No nodes</h3><p>Add a remote ANK device</p></div>'; return; }
+    if (!otherNodes.length && managerHtml) { el.innerHTML = managerHtml; updateNodeSelectors(nodes); return; }
+    el.innerHTML = managerHtml + otherNodes.map(n => {
       const color = n.status === 'online' ? 'var(--success)' : n.status === 'pending' ? 'var(--warning)' : 'var(--danger)';
       const label = n.status === 'online' ? 'Online' : n.status === 'pending' ? 'Pending' : 'Offline';
       const isOnline = n.status === 'online';
       const roleTag = n.role === 'manager' ? '<span class="badge badge-info" style="font-size:10px">MANAGER</span>' : '';
-      const diskInfo = isOnline && n.disk_total ? `<span>Disk ${n.disk_used||0}/${n.disk_total}GB</span>` : '';
+      const diskInfo = isOnline && n.disk_total_gb ? `<span>Disk ${n.disk_used_gb||0}/${n.disk_total_gb}GB</span>` : '';
       const uptimeInfo = isOnline && n.uptime_seconds ? `<span>Up ${fmtUptime(n.uptime_seconds)}</span>` : '';
       const managedBy = n.managed_by ? `<span style="color:var(--text-muted)">by ${esc(n.managed_by)}</span>` : '';
-      return `<div class="split-list-card" data-id="${esc(n.id)}" onclick="showNodeDetail('${esc(n.id)}','${esc(n.alias||n.ip)}','${esc(n.status)}')">
+      return `<div class="split-list-card" data-id="${esc(n.id)}" onclick="showNodeDetail('${esc(n.id)}','${esc(n.alias||n.ip)}','${esc(n.status)}','${esc(n.role||'managed')}')">
         <div class="slc-top"><span class="slc-name"><i class="bi bi-hdd-network" style="color:var(--primary)"></i>${esc(n.alias||n.ip)}${roleTag}</span><div style="display:flex;align-items:center;gap:6px"><span class="badge ${n.status==='online'?'badge-success':n.status==='pending'?'badge-warning':'badge-danger'}" style="font-size:10px">${label}</span>${isOnline?`<button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();refreshNode('${esc(n.id)}')" title="Refresh"><i class="bi bi-arrow-clockwise"></i></button>`:''}</div></div>
         <div class="slc-meta"><span>CPU ${isOnline?Math.round(n.cpu_percent||0)+'%':'-'}</span><span>RAM ${isOnline?(n.mem_used_gb||0).toFixed(1)+'GB':'-'}</span>${diskInfo}${uptimeInfo}<span>${isOnline?(n.containers_total||0):'-'} containers</span>${managedBy}</div>
       </div>`;
@@ -1730,8 +1734,13 @@ async function loadNodes() {
   } catch (e) { el.innerHTML = '<div class="empty-state"><p>Failed to load nodes</p></div>'; }
 }
 
-async function showNodeDetail(nodeId, name, status) {
+let currentNodeDetailName = '';
+let currentNodeDetailRole = null;
+async function showNodeDetail(nodeId, name, status, role = null) {
   currentNodeDetailId = nodeId;
+  currentNodeDetailName = name || '';
+  currentNodeDetailRole = role || null;
+  const isManager = role === 'manager';
   document.querySelectorAll('#nodes-list .split-list-card').forEach(c => c.classList.toggle('selected', c.dataset.id === nodeId));
   const el = document.getElementById('node-detail');
   if (!el) return;
@@ -1740,7 +1749,9 @@ async function showNodeDetail(nodeId, name, status) {
     const [st, sysInfo, containers, images] = await Promise.all([
       api('GET', `/nodes/${encodeURIComponent(nodeId)}/status`).catch(()=>({})),
       api('GET', `/nodes/${encodeURIComponent(nodeId)}/system/info`).catch(()=>({})),
-      api('GET', `/nodes/${encodeURIComponent(nodeId)}/containers`).catch(()=>[]),
+      // Managed side never lists the parent's containers (parent pushes the
+      // pairing, containers are parent-admin territory).
+      isManager ? Promise.resolve([]) : api('GET', `/nodes/${encodeURIComponent(nodeId)}/containers`).catch(()=>[]),
       api('GET', `/nodes/${encodeURIComponent(nodeId)}/images`).catch(()=>[])
     ]);
     const info = { ...sysInfo, ...st };
@@ -1760,7 +1771,9 @@ async function showNodeDetail(nodeId, name, status) {
         <h2><i class="bi bi-hdd-network" style="color:var(--primary)"></i>${esc(name)} <span class="badge ${status==='online'?'badge-success':'badge-danger'}" style="font-size:11px">${status}</span></h2>
         <div class="sr-actions">
           ${status==='online'?`<button class="btn btn-secondary btn-sm" onclick="restartRemoteNode()"><i class="bi bi-arrow-clockwise"></i> Restart</button>`:''}
-          <button class="btn btn-danger btn-sm" onclick="deleteNode('${esc(nodeId)}')"><i class="bi bi-trash3"></i> Remove</button>
+          ${isManager
+            ? `<button class="btn btn-danger btn-sm" onclick="revokeManager()"><i class="bi bi-x-circle"></i> Revoke</button>`
+            : `<button class="btn btn-danger btn-sm" onclick="deleteNode('${esc(nodeId)}')"><i class="bi bi-trash3"></i> Remove</button>`}
         </div>
       </div>
       <div class="detail-stats">
@@ -1772,7 +1785,7 @@ async function showNodeDetail(nodeId, name, status) {
         <div class="detail-stat"><span class="detail-stat-label">Images</span><span class="detail-stat-value">${imgArr.length}</span></div>
       </div>
       <div style="margin-bottom:12px"><h4 style="margin-bottom:8px;font-size:13px;color:var(--text-muted)"><i class="bi bi-terminal"></i> Kernel</h4><code style="font-size:12px;background:rgba(10,15,30,0.4);padding:6px 10px;border-radius:6px;display:block">${esc(kernel)}</code></div>
-      <div style="font-size:12px;font-weight:600;color:var(--text-secondary);margin-bottom:10px">Containers (${contArr.length})</div>
+      ${isManager ? '' : `<div style="font-size:12px;font-weight:600;color:var(--text-secondary);margin-bottom:10px">Containers (${contArr.length})</div>
       ${contArr.length ? contArr.map(c => {
         const sc = getStatusBadgeClass(c.status);
         const dis = containerActionDisabled(c.status);
@@ -1782,7 +1795,7 @@ async function showNodeDetail(nodeId, name, status) {
             ${c.status==='running'||c.status==='starting'?`<button class="btn btn-icon btn-ghost sm" onclick="remoteContainerAction('${nodeId}','${esc(c.name)}','stop')" ${dis.stop?'disabled':''}><i class="bi bi-stop-fill"></i></button>`:`<button class="btn btn-icon btn-ghost sm" onclick="remoteContainerAction('${nodeId}','${esc(c.name)}','start')" ${dis.start?'disabled':''}><i class="bi bi-play-fill"></i></button>`}
             <button class="btn btn-icon btn-ghost sm" onclick="remoteDeleteContainer('${nodeId}','${esc(c.name)}')" ${dis.delete?'disabled':''}><i class="bi bi-trash3"></i></button>
           </div></div>`;
-      }).join('') : '<div style="text-align:center;padding:16px;color:var(--text-muted);font-size:12px">No containers</div>'}`;
+      }).join('') : '<div style="text-align:center;padding:16px;color:var(--text-muted);font-size:12px">No containers</div>'}`}`;
   } catch (e) { el.innerHTML = `<div style="color:var(--danger);padding:20px;text-align:center"><i class="bi bi-exclamation-triangle"></i> ${esc(e.message)}</div>`; }
 }
 
@@ -1809,7 +1822,7 @@ async function restartRemoteNode() {
   if (!currentNodeDetailId) return;
   const ok = await confirmAction('Restart Device', 'Reboot remote device?');
   if (!ok) return;
-  try { await api('POST', `/nodes/${encodeURIComponent(currentNodeDetailId)}/restart`); await showNodeDetail(currentNodeDetailId, '', 'online'); toast('Restart sent', 'success'); } catch(e) { toast(`Failed: ${e.message}`, 'error'); }
+  try { await api('POST', `/nodes/${encodeURIComponent(currentNodeDetailId)}/restart`); await showNodeDetail(currentNodeDetailId, currentNodeDetailName, 'online', currentNodeDetailRole); toast('Restart sent', 'success'); } catch(e) { toast(`Failed: ${e.message}`, 'error'); }
 }
 
 async function deleteNode(id) {
@@ -1821,7 +1834,13 @@ async function deleteNode(id) {
 async function revokeManager() {
   const ok = await confirmAction('Revoke Manager', 'Revoke manager access? This node will no longer be managed.');
   if (!ok) return;
-  try { await api('DELETE', '/nodes/manager'); await loadNodes(); toast('Manager access revoked', 'success'); } catch(e) { toast(`Failed: ${e.message}`, 'error'); }
+  try {
+    await api('DELETE', '/nodes/manager');
+    const det = document.getElementById('node-detail');
+    if (det) det.innerHTML = '<div class="split-right-empty"><div><i class="bi bi-hdd-network"></i><p>Select a node</p></div></div>';
+    await loadNodes();
+    toast('Manager access revoked', 'success');
+  } catch(e) { toast(`Failed: ${e.message}`, 'error'); }
 }
 
 async function refreshNode(id) {
@@ -2733,7 +2752,7 @@ function showSettingsSection(section) {
     const diskFree = sysInfo.device_free || '-';
     el.innerHTML = `<div class="card"><div class="card-header"><h3><i class="bi bi-info-circle"></i> About</h3></div><div class="card-body">
       <div class="info-grid">
-        <div class="info-item"><span class="info-label">Version</span><span>Testing Build</span></div>
+        <div class="info-item"><span class="info-label">Version</span><span id="about-version">${esc(ankVerLabel() || 'Testing Build')}</span></div>
         <div class="info-item"><span class="info-label">Panel Port</span><span>${sysInfo.panel_port||8001}</span></div>
         <div class="info-item"><span class="info-label">Device</span><span>${esc(sysInfo.device||'unknown')}</span></div>
         <div class="info-item"><span class="info-label">Kernel</span><span>${esc(sysInfo.kernel||'unknown')}</span></div>
@@ -2766,6 +2785,18 @@ function showSettingsSection(section) {
       </div>
       <div id="upd-changelog" style="display:none;margin-top:12px;padding:12px;background:var(--bg-base);border:1px solid var(--border);border-radius:8px;font-size:12px;color:var(--text-secondary);white-space:pre-wrap"></div>
       <div id="upd-error" style="display:none;margin-top:12px;padding:10px;background:rgba(220,53,69,.08);border:1px solid rgba(220,53,69,.3);border-radius:8px;font-size:12px;color:var(--danger)"></div>
+      <div id="upd-scope" style="display:none;margin-top:14px;padding-top:12px;border-top:1px solid var(--border)">
+        <div class="form-label" style="margin-bottom:6px">Apply to</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+          <select id="upd-scope-select" class="form-select" style="width:auto">
+            <option value="local">This device only</option>
+            <option value="node">Selected node</option>
+            <option value="all">All (this device + children)</option>
+          </select>
+          <select id="upd-scope-node" class="form-select" style="width:auto;display:none"></select>
+        </div>
+        <div style="font-size:11px;color:var(--text-muted);margin-top:6px">Each target downloads and applies its own update and restarts its own server.</div>
+      </div>
       <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:16px">
         <button class="btn btn-ghost btn-sm" id="upd-check"><i class="bi bi-arrow-clockwise"></i> Check for Updates</button>
         <button class="btn btn-primary btn-sm" id="upd-apply" disabled><i class="bi bi-cloud-arrow-down"></i> Apply Update</button>
@@ -2859,14 +2890,50 @@ function showSettingsSection(section) {
     }
     document.getElementById('upd-check')?.addEventListener('click', () => updCheck(false));
     document.getElementById('upd-apply')?.addEventListener('click', async () => {
-      const ok = await confirmAction('Apply Update', 'Download and apply the update? The server will restart when it finishes.');
+      const scopeSel = document.getElementById('upd-scope-select');
+      const scope = scopeSel ? scopeSel.value : 'local';
+      let targets = [];
+      if (scope === 'local') {
+        targets = [{ local: true, name: 'this device' }];
+      } else if (scope === 'node') {
+        const nodeSel = document.getElementById('upd-scope-node');
+        const child = _updChildren.find(c => c.id === nodeSel?.value);
+        if (!child) { toast('Select a node', 'error'); return; }
+        targets = [{ id: child.id, name: child.alias || child.ip }];
+      } else {
+        targets = [{ local: true, name: 'this device' }, ..._updChildren.map(c => ({ id: c.id, name: c.alias || c.ip }))];
+      }
+      const ok = await confirmAction('Apply Update', `Download and apply the update on: ${targets.map(t => t.name).join(', ')}? Each target runs its own updater and restarts its own server.`);
       if (!ok) return;
-      try {
-        await api('POST', '/update/apply', {});
-        toast('Update started', 'info');
-        updCheck(true, true);
-        updStartPoll();
-      } catch (e) { toast(`Failed: ${e.message}`, 'error'); }
+      let sent = 0;
+      const failed = [];
+      for (const t of targets) {
+        try {
+          if (t.local) await api('POST', '/update/apply', {});
+          else await api('POST', `/nodes/${encodeURIComponent(t.id)}/update/apply`);
+          sent++;
+        } catch (e) { failed.push(`${t.name}: ${e.message}`); }
+      }
+      if (sent) toast(`Update signal sent to ${sent} target${sent > 1 ? 's' : ''}`, 'success');
+      failed.forEach(f => toast(f, 'error'));
+      if (targets.some(t => t.local)) { updCheck(true, true); updStartPoll(); }
+    });
+    // Manager-only scope selector: shows up when this device manages children
+    let _updChildren = [];
+    api('GET', '/nodes').then(d => {
+      _updChildren = (d.nodes || []).filter(n => n.role !== 'manager' && n.status === 'online');
+      if (!_updChildren.length) return;
+      const scopeEl = document.getElementById('upd-scope');
+      if (!scopeEl) return;
+      scopeEl.style.display = 'block';
+      const allOpt = scopeEl.querySelector('option[value="all"]');
+      if (allOpt) allOpt.textContent = `All (this device + ${_updChildren.length} node${_updChildren.length > 1 ? 's' : ''})`;
+      const nodeSel = document.getElementById('upd-scope-node');
+      if (nodeSel) nodeSel.innerHTML = _updChildren.map(n => `<option value="${esc(n.id)}">${esc(n.alias || n.ip)}</option>`).join('');
+    }).catch(() => {});
+    document.getElementById('upd-scope-select')?.addEventListener('change', e => {
+      const nodeSel = document.getElementById('upd-scope-node');
+      if (nodeSel) nodeSel.style.display = e.target.value === 'node' ? '' : 'none';
     });
     updCheck(true, true);
   } else if (section === 'ank-manager') {
@@ -3677,7 +3744,7 @@ async function loadNotchPreview(page) {
       if (!nodes.length) { html += '<div class="np-empty">No nodes</div>'; }
       else { html += nodes.map(n => {
         const color = n.status === 'online' ? 'var(--success)' : 'var(--danger)';
-        return `<div class="np-row" onclick="notchPreviewHide();navigateTo('nodes');setTimeout(()=>showNodeDetail('${esc(n.id)}','','${n.status}'),100)" style="cursor:pointer"><span class="dot" style="background:${color}"></span><span class="np-name">${esc(n.alias||n.ip)}</span><span class="text-muted text-sm">${n.status} · CPU ${Math.round(n.cpu_percent||0)}% · RAM ${(n.mem_used_gb||0).toFixed(1)}GB · ${(n.containers_total||0)} containers</span></div>`;
+        return `<div class="np-row" onclick="notchPreviewHide();navigateTo('nodes');setTimeout(()=>showNodeDetail('${esc(n.id)}','','${n.status}','${esc(n.role||'managed')}'),100)" style="cursor:pointer"><span class="dot" style="background:${color}"></span><span class="np-name">${esc(n.alias||n.ip)}</span><span class="text-muted text-sm">${n.status} · CPU ${Math.round(n.cpu_percent||0)}% · RAM ${(n.mem_used_gb||0).toFixed(1)}GB${n.role==='manager' ? '' : ` · ${(n.containers_total||0)} containers`}</span></div>`;
       }).join(''); }
     } else if (page === 'stacks') {
       const d = await api('GET', '/stacks/all').catch(()=>({stacks:[]}));
@@ -3782,7 +3849,7 @@ function openFooterModal() {
         <i class="bi bi-globe2"></i><div class="fc-title">Portfolio</div><div class="fc-desc">View projects & work</div>
       </a>
     </div>
-    <div style="text-align:center;margin-top:20px"><span class="text-sm text-muted">ANK · Android Konteiner · Testing Build</span></div>
+    <div style="text-align:center;margin-top:20px"><span class="text-sm text-muted" id="footer-modal-version">ANK · Android Konteiner · ${ankVerLabel() || 'Testing Build'}</span></div>
   `);
 }
 
@@ -4059,3 +4126,4 @@ if (isLoggedIn) {
 document.getElementById('theme-toggle-login')?.addEventListener('click', toggleTheme);
 document.getElementById('theme-toggle-mobile')?.addEventListener('click', toggleTheme);
 document.getElementById('theme-toggle-desktop')?.addEventListener('click', toggleTheme);
+loadAnkVersion();
