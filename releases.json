@@ -3,5 +3,5 @@
   "versionCode": 9,
   "zipUrl": "https://github.com/andrebarretoit/ank/releases/download/ank-testing/ank-magisk.zip",
   "changelog": "Ankfile build queue (one build at a time, pending status, auto-dispatch). Stacks/Backups tabs now open their pages with a Coming soon overlay instead of a toast. SSH hint updates live when a container starts/stops (no refresh). ANK Installer: device detection never times out and the ANK Manager button only shows on the home screen. README rewritten to match the real project state (testing phase, Lite demo, disabled features).",
-  "sha256": "9353bfbffd5bf168f2e3866699cdb8e5b28d2bb72bce3247b2462a57cf00e792"
+  "sha256": "8905c4c40f26c541218b127e8e7bbab4f05e448105d48c9d5e489bd8501f4ce8"
 }

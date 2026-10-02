@@ -4,4 +4,4 @@ version=Testing Build
 versionCode=9
 author=andrebarretoit
 description=Ultra-light container engine for Android. Zero compilation, shell+Python.
-updateJson=https://raw.githubusercontent.com/andrebarretoit/ank/ank/releases.json
+updateJson=https://raw.githubusercontent.com/andrebarretoit/ank/main/releases.json
