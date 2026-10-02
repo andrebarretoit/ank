@@ -736,12 +736,9 @@ ank/
 │       ├── step_migrate.py        # Migrate devices
 │       └── step_manager.py        # ANK Manager (start/stop/uninstall)
 ├── screenshots/                   # README screenshots
-├── tools/gen-update.py            # releases.json helper (local, not committed)
 ├── LICENSE                        # AKSAL-1.0
 ├── README.md
-├── releases.json                  # Update manifest (version, versionCode, sha256)
-├── build_zip.py                   # ank-magisk.zip builder (local, not committed)
-└── build_exe.py                   # ANK-Installer.exe builder (local, not committed)
+└── releases.json                  # Update manifest (version, versionCode, sha256)
 ```
 
 ### Prebuilt binaries — in the zip, not in git
@@ -773,9 +770,6 @@ forgets blobs), while adding nothing readable. Git here tracks **source only**;
   prebuild/proot for the detected device architecture.
 - **Updates:** new prebuilts ship with each release zip; the in-panel updater
   downloads the whole zip.
-
-To rebuild the zip with current binaries, run the local `build_zip.py`
-(maintainer machine only — not part of the repo).
 
 ### Device Paths
 
