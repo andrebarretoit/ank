@@ -1,7 +1,7 @@
 {
   "version": "Testing Build",
-  "versionCode": 10,
+  "versionCode": 11,
   "zipUrl": "https://github.com/andrebarretoit/ank/releases/download/ank-testing/ank-magisk.zip",
-  "changelog": "Nodes reconnect automatically: persisted pairing tokens survive node restarts and token expiry, and the parent re-logins with stored credentials when auth fails - no revoke + re-pair needed. README: reinstalling via Magisk zip or ANK Installer wipes all data; only Settings -> Update preserves it. Prebuilts attached to the release as standalone assets.",
-  "sha256": "6ebb9541b4290736b9226f92d9c89d49260bcaef0d706e15cdd92d1c6b085e41"
+  "changelog": "Update checks now work without /etc/resolv.conf: built-in direct DNS fallback + bundled resolv.conf (after reboot), accurate error hints. Node pairing auto-reconnect.",
+  "sha256": "cfd47752620526ee20e71a3fb2a4d5b1dcb37f9b450dd6f9cc85a46ff0e496bf"
 }
