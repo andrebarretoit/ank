@@ -775,6 +775,9 @@ forgets blobs), while adding nothing readable. Git here tracks **source only**;
 `.gitignore` excludes `*.tar.gz` and build outputs.
 
 **Where they end up:**
+- **Release page:** the same files are attached to the release as standalone
+  assets (`ank-prebuild-*.tar.gz`, `anklite-proot-*`, `proot-aarch64.0-aarch64-static`)
+  for manual download — no need to grab the full zip or the installer.
 - **Root (Magisk) install:** `install.sh` prefers the prebuild from the zip
   (instant, works offline). If the prebuild is missing it automatically falls
   back to downloading Alpine minirootfs and building the rootfs at install time
