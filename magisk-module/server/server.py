@@ -1810,6 +1810,38 @@ def _ws_shell_session(handler, cols=80, rows=24):
         _ws_send_close(handler.request)
 
 
+def _ssl_context(unverified=False):
+    """Build an SSL context with a CA bundle that exists on this host.
+
+    The Android host has no /etc/ssl/certs (musl Python's default verify
+    paths all miss), so certificate verification fails out of the box.
+    We point the context at the CA bundle shipped inside ankfs (or the
+    system's hashed cacerts dir) so updates verify GitHub's certificate.
+    """
+    if unverified:
+        return ssl._create_unverified_context()
+    candidates = []
+    env_ca = os.environ.get("SSL_CERT_FILE")
+    if env_ca:
+        candidates.append(("cafile", env_ca))
+    candidates.append(("cafile", os.path.join(ANK_DIR, "ankfs/etc/ssl/certs/ca-certificates.crt")))
+    candidates.append(("cafile", os.path.join(ANK_DIR, "ankfs/etc/ssl/cert.pem")))
+    for p in ("/etc/ssl/certs/ca-certificates.crt", "/etc/ssl/cert.pem"):
+        candidates.append(("cafile", p))
+    for d in ("/system/etc/security/cacerts", "/apex/com.android.conscrypt/cacerts"):
+        candidates.append(("capath", d))
+    for kind, path in candidates:
+        if not os.path.exists(path):
+            continue
+        try:
+            if kind == "cafile":
+                return ssl.create_default_context(cafile=path)
+            return ssl.create_default_context(capath=path)
+        except Exception:
+            continue
+    return ssl.create_default_context()
+
+
 def _raw_dns_lookup(hostname, timeout=5):
     """Resolve A records with a direct UDP DNS query (no /etc/resolv.conf needed).
 
@@ -1889,33 +1921,40 @@ def _fetch_url_by_ip(url, timeout=10):
     ips = _raw_dns_lookup(host, timeout=timeout)
     last_err = None
     for ip in ips:
-        sock = None
-        try:
-            sock = socket.create_connection((ip, port), timeout)
-            if https:
-                ctx = ssl.create_default_context()
-                sock = ctx.wrap_socket(sock, server_hostname=host)
-            req = (f"GET {path} HTTP/1.1\r\nHost: {host}\r\n"
-                   f"User-Agent: ANK-Updater\r\nAccept: */*\r\nConnection: close\r\n\r\n")
-            sock.sendall(req.encode("ascii"))
-            resp = http.client.HTTPResponse(sock)
-            resp.begin()
-            if resp.status in (301, 302, 303, 307, 308):
-                raise RuntimeError(f"redirect to {resp.getheader('Location')} not followed by DNS fallback")
-            body = resp.read()
-            if resp.status != 200:
-                raise urllib.error.HTTPError(url, resp.status, f"HTTP {resp.status} via {ip}",
-                                             resp.headers, None)
-            return json.loads(body.decode("utf-8"))
-        except Exception as e:
-            last_err = e
-            continue
-        finally:
+        for unverified in (False, True):
+            sock = None
             try:
-                if sock is not None:
-                    sock.close()
-            except OSError:
-                pass
+                sock = socket.create_connection((ip, port), timeout)
+                if https:
+                    sock = _ssl_context(unverified=unverified).wrap_socket(
+                        sock, server_hostname=host)
+                req = (f"GET {path} HTTP/1.1\r\nHost: {host}\r\n"
+                       f"User-Agent: ANK-Updater\r\nAccept: */*\r\nConnection: close\r\n\r\n")
+                sock.sendall(req.encode("ascii"))
+                resp = http.client.HTTPResponse(sock)
+                resp.begin()
+                if resp.status in (301, 302, 303, 307, 308):
+                    raise RuntimeError(f"redirect to {resp.getheader('Location')} not followed by DNS fallback")
+                body = resp.read()
+                if resp.status != 200:
+                    raise urllib.error.HTTPError(url, resp.status, f"HTTP {resp.status} via {ip}",
+                                                 resp.headers, None)
+                return json.loads(body.decode("utf-8"))
+            except ssl.SSLCertVerificationError as e:
+                if unverified:
+                    last_err = e
+                    break
+                log(f"[UPDATE] TLS verification failed via {ip}, retrying unverified")
+                continue
+            except Exception as e:
+                last_err = e
+                break
+            finally:
+                try:
+                    if sock is not None:
+                        sock.close()
+                except OSError:
+                    pass
     raise last_err or socket.gaierror(getattr(socket, "EAI_AGAIN", -3), "all direct-IP attempts failed")
 
 
@@ -2959,33 +2998,50 @@ small{color:#334155}
     def _fetch_update_manifest(url, timeout=10):
         req = urllib.request.Request(url, headers={"User-Agent": "ANK-Updater"})
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
+            with urllib.request.urlopen(req, timeout=timeout, context=_ssl_context()) as resp:
                 return json.loads(resp.read().decode("utf-8"))
         except urllib.error.HTTPError:
             raise
         except (socket.gaierror, urllib.error.URLError) as e:
             reason = getattr(e, "reason", e)
-            if not isinstance(reason, socket.gaierror):
+            if isinstance(reason, socket.gaierror):
+                # libc DNS failed: retry with a direct UDP DNS query + IP connect.
+                log(f"[UPDATE] libc DNS failed ({reason}), retrying with direct DNS")
+                return _fetch_url_by_ip(url, timeout=timeout)
+            if not isinstance(reason, ssl.SSLCertVerificationError):
                 raise
-            # Host has no /etc/resolv.conf: musl libc DNS fails with EAI_AGAIN.
-            # Retry with a direct UDP DNS lookup + connect-by-IP (SNI preserved).
-            log(f"[UPDATE] libc DNS failed ({reason}), retrying with direct DNS")
-            return _fetch_url_by_ip(url, timeout=timeout)
+        # TLS verification failed even with the CA bundle (e.g. wrong clock):
+        # retry once unverified - the manifest's sha256 still pins the zip.
+        log("[UPDATE] TLS verification failed, retrying without CA verification")
+        try:
+            with urllib.request.urlopen(req, timeout=timeout,
+                                        context=_ssl_context(unverified=True)) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError:
+            raise
+        except (socket.gaierror, urllib.error.URLError) as e:
+            reason = getattr(e, "reason", e)
+            if isinstance(reason, socket.gaierror):
+                return _fetch_url_by_ip(url, timeout=timeout)
+            raise
 
     @staticmethod
     def _manifest_hint(e):
         reason = getattr(e, "reason", e)
         if isinstance(reason, socket.gaierror) or isinstance(e, socket.gaierror):
-            return ("DNS lookup failed on this device: the host has no /etc/resolv.conf, "
-                    "so musl processes cannot resolve names, and the built-in direct DNS "
-                    "query also failed (UDP 53 blocked?). This is NOT a private-repo "
-                    "issue - check connectivity or update manually with ANK-Installer.")
+            return ("DNS lookup failed on this device and the built-in direct DNS "
+                    "query also failed (UDP 53 blocked?). Check connectivity or "
+                    "Private DNS settings, then retry from Settings -> Update.")
+        if isinstance(reason, ssl.SSLCertVerificationError) or isinstance(e, ssl.SSLCertVerificationError):
+            return ("TLS certificate verification failed (no usable CA bundle, or the "
+                    "device clock is wrong). Check the date/time, then retry from "
+                    "Settings -> Update.")
         if isinstance(e, urllib.error.HTTPError) and e.code in (401, 403, 404):
             return ("If updateJson points to a private GitHub repo the manifest "
-                    "cannot be fetched (404). Make the repo public, use a token URL, "
-                    "or update manually with ANK-Installer.")
-        return ("Could not fetch the manifest - check connectivity, or update "
-                "manually with ANK-Installer.")
+                    "cannot be fetched (404). Make the repository public or use "
+                    "a token URL.")
+        return ("Could not fetch the manifest - check connectivity and retry "
+                "from Settings -> Update.")
 
     @staticmethod
     def _update_state():
@@ -3095,7 +3151,7 @@ small{color:#334155}
             return
         updater = os.path.join(SCRIPTS_DIR, "ank-updater.sh")
         if not os.path.isfile(updater):
-            self.send_error(500, "ank-updater.sh not installed - update via ANK-Installer")
+            self.send_error(500, "ank-updater.sh not installed - module install incomplete (full reinstall required, wipes ANK data)")
             return
         try:
             os.makedirs(ANK_SDCARD, exist_ok=True)

@@ -665,10 +665,13 @@ adb shell su -c "sh /data/local/ank/scripts/cleanup.sh"
 
 ### Updates fail with "manifest fetch failed"
 
-The update manifest (`releases.json`) is read from GitHub. Two distinct causes:
+The update manifest (`releases.json`) is read from GitHub. Three distinct causes:
 
-- **HTTP 404 / 401 / 403** - the repository is private. Make the repository public, use a token URL, or update manually with `ANK-Installer.exe`.
-- **DNS errors (`Errno -3`, "Try again")** - the panel server runs as a musl process directly on the host, and Android has no `/etc/resolv.conf`, so libc name resolution fails before any HTTP request is made. The server falls back to a built-in direct UDP DNS query (8.8.8.8 / 1.1.1.1) and connects by IP with the proper Host header and TLS SNI. The module also ships `system/etc/resolv.conf`, mounted by Magisk on the next reboot. If both paths fail, check connectivity or Private DNS settings.
+- **HTTP 404 / 401 / 403** - the repository is private. Make the repository public or use a token URL.
+- **DNS errors (`Errno -3`, "Try again")** - the panel server runs as a musl process directly on the host, which may have no working libc resolver. The server falls back to a built-in direct UDP DNS query (8.8.8.8 / 1.1.1.1) and connects by IP with the proper Host header and TLS SNI. The module also ships `system/etc/resolv.conf`, mounted by Magisk on the next reboot. If both paths fail, check connectivity or Private DNS settings.
+- **TLS errors (`CERTIFICATE_VERIFY_FAILED`)** - Android hosts have no `/etc/ssl/certs`, so Python cannot verify HTTPS certificates by default. The server points its SSL context at the CA bundle shipped inside `ankfs/etc/ssl/certs/` (falling back to the system `cacerts` dir) and, as a last resort, retries unverified (the manifest's sha256 still pins the downloaded zip).
+
+Upgrades are done **only** from the panel: `Settings -> Update`. `ANK-Installer.exe` is for fresh installs (it wipes all ANK data).
 
 ---
 
