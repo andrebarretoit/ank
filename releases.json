@@ -1,7 +1,7 @@
 {
   "version": "Testing Build",
-  "versionCode": 16,
+  "versionCode": 17,
   "zipUrl": "https://github.com/andrebarretoit/ank/releases/download/ank-testing/ank-upgrade.zip",
-  "changelog": "Merge-based updates: ank-upgrade.zip is now extracted OVER the installed module (ankfs payloads and runtime rootfs never moved); module code + runtime server are backed up first and restored automatically on failure. Fixed server restart paths (restart-server.sh fallback passed a nonexistent /opt/ank/server.py; RESTART_SERVER endpoint start path). TLS CA + DNS fallback fixes for update checks preserved.",
-  "sha256": "bee12e19ce3099441bba4b3333a33ae2efa7831aa87429593f25d8b6a5dc9328"
+  "changelog": "Version reflection: footer/About/modal show live module version via /api/version. Nodes: child nodes show a single clickable Managed-by card (metrics + Restart/Revoke, no parent containers); child dashboard hides cluster card; cluster card sums all nodes with weighted CPU. Upgrade: scope selector (this device / node / all) with per-node apply. Heartbeat: parent re-logs-in and retries stats when a child rejects the token; last_seen only updated on successful polls. Ankfile: heredoc RUN (<<EOF) parsed correctly and quoted through chroot. ank-alpinebase now ships as tar.gz and is extracted as a private copy per container - bind-mount fallback removed, shared base can no longer be polluted. Container card node badge no longer overwritten by status badge.",
+  "sha256": "8ee58198f211ba24086df41ab0f7ff5acccd638945f6207f55722aebdc41ab44"
 }
