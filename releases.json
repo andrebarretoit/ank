@@ -1,7 +1,7 @@
 {
   "version": "Testing Build",
-  "versionCode": 14,
+  "versionCode": 16,
   "zipUrl": "https://github.com/andrebarretoit/ank/releases/download/ank-testing/ank-upgrade.zip",
-  "changelog": "Slim update payload: panel updater now downloads ank-upgrade.zip (~3 MB, code only, no ankfs prebuilts) instead of the full ~76 MB zip; updater carries ankfs/ forward automatically. TLS CA + DNS fallback fixes for update checks preserved.",
-  "sha256": "c204880c45110590d026ed7e5c719ae5cb4af4e794febea7107d019f1eadfa2a"
+  "changelog": "Merge-based updates: ank-upgrade.zip is now extracted OVER the installed module (ankfs payloads and runtime rootfs never moved); module code + runtime server are backed up first and restored automatically on failure. Fixed server restart paths (restart-server.sh fallback passed a nonexistent /opt/ank/server.py; RESTART_SERVER endpoint start path). TLS CA + DNS fallback fixes for update checks preserved.",
+  "sha256": "bee12e19ce3099441bba4b3333a33ae2efa7831aa87429593f25d8b6a5dc9328"
 }
