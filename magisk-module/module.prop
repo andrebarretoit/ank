@@ -1,7 +1,8 @@
 id=ank
 name=ANK - Android Konteiner
 version=Testing Build
-versionCode=18
+versionCode=19
 author=andrebarretoit
 description=Ultra-light container engine for Android. Zero compilation, shell+Python.
 updateJson=https://raw.githubusercontent.com/andrebarretoit/ank/main/releases.json
+buildDate=0210
