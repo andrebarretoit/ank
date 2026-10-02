@@ -131,8 +131,9 @@ All screenshots (including Networks, Nodes, Logs, Stacks and Backups) live in [`
 >
 > **Do not reinstall to "upgrade"** — you will lose every container and all panel data.
 > The only update path that preserves data is the in-panel updater:
-> **Settings → Update** in the web panel (root installs): it downloads the new zip,
-> verifies the SHA-256 and swaps the module in place, keeping your data intact.
+> **Settings → Update** in the web panel (root installs): it downloads `ank-upgrade.zip`
+> (~3 MB — code only, no prebuilt rootfs payloads), verifies the SHA-256 and swaps the
+> module in place, carrying the existing `ankfs/` payloads forward — your data stays intact.
 > Lite/no-root has no in-panel update — reinstalling it also wipes the Lite install.
 
 ### Option 1: ANK Installer (Recommended — Windows PC)
@@ -148,13 +149,13 @@ The recommended way to install ANK, for both rooted and non-rooted devices.
 
 ### Option 2: Magisk Module (Rooted Devices)
 
-1. Download `ank-magisk.zip` from [Releases](https://github.com/andrebarretoit/ank/releases)
+1. Download `ank-magisk.zip` (full — includes the ~73 MB prebuilt payloads) from [Releases](https://github.com/andrebarretoit/ank/releases)
 2. Open Magisk Manager → Modules → Install from storage → select the zip
 3. Reboot your device
 4. Open `http://localhost:8001`
 5. Login with `admin` / `admin123`
 
-The zip is a standard flashable Magisk module — no PC or ADB is required beyond downloading the file.
+The zip is a standard flashable Magisk module — no PC or ADB is required beyond downloading the file. Later upgrades are done from the panel (**Settings → Update**), which downloads the slim `ank-upgrade.zip` instead; do not flash `ank-upgrade.zip` — it is not installable on purpose.
 
 ### Option 3: No Root
 
@@ -665,7 +666,9 @@ adb shell su -c "sh /data/local/ank/scripts/cleanup.sh"
 
 ### Updates fail with "manifest fetch failed"
 
-The update manifest (`releases.json`) is read from GitHub. Three distinct causes:
+The update manifest (`releases.json`) is read from GitHub; a successful check then
+downloads `ank-upgrade.zip` (the slim update payload) and verifies its SHA-256
+before swapping the module. Three distinct causes for a failed fetch:
 
 - **HTTP 404 / 401 / 403** - the repository is private. Make the repository public or use a token URL.
 - **DNS errors (`Errno -3`, "Try again")** - the panel server runs as a musl process directly on the host, which may have no working libc resolver. The server falls back to a built-in direct UDP DNS query (8.8.8.8 / 1.1.1.1) and connects by IP with the proper Host header and TLS SNI. The module also ships `system/etc/resolv.conf`, mounted by Magisk on the next reboot. If both paths fail, check connectivity or Private DNS settings.
@@ -785,6 +788,10 @@ forgets blobs), while adding nothing readable. Git here tracks **source only**;
 - **Release page:** the same files are attached to the release as standalone
   assets (`ank-prebuild-*.tar.gz`, `anklite-proot-*`, `proot-aarch64.0-aarch64-static`)
   for manual download — no need to grab the full zip or the installer.
+- **Panel updates (`ank-upgrade.zip`):** this slim zip is **code only** — it
+  deliberately excludes `ankfs/` (plus `META-INF/`/`install.sh`, so flashing it
+  fails cleanly). The updater carries the installed module's existing `ankfs/`
+  forward into the swapped module automatically.
 - **Root (Magisk) install:** `install.sh` prefers the prebuild from the zip
   (instant, works offline). If the prebuild is missing it automatically falls
   back to downloading Alpine minirootfs and building the rootfs at install time
@@ -846,7 +853,7 @@ Inside the Lite guest the ANK directory is bound at `/ank`, and `ank-cli.py` res
 
 | Version | Status | Download |
 |---------|--------|----------|
-| Testing Build | **Testing** | [ank-magisk.zip](https://github.com/andrebarretoit/ank/releases/download/ank-testing/ank-magisk.zip) + [ANK-Installer.exe](https://github.com/andrebarretoit/ank/releases/download/ank-testing/ANK-Installer.exe) |
+| Testing Build | **Testing** | [ank-magisk.zip](https://github.com/andrebarretoit/ank/releases/download/ank-testing/ank-magisk.zip) (fresh install, full) + [ank-upgrade.zip](https://github.com/andrebarretoit/ank/releases/download/ank-testing/ank-upgrade.zip) (panel updater, slim) + [ANK-Installer.exe](https://github.com/andrebarretoit/ank/releases/download/ank-testing/ANK-Installer.exe) |
 
 ---
 

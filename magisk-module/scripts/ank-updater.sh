@@ -139,6 +139,18 @@ fi
 mv "$STAGING" "$MODULE_DIR" || fail "cannot move new module into place"
 [ -f "$MODULE_DIR/module.prop" ] || fail "swapped module is invalid"
 
+# Slim upgrade zips ship without ankfs/ (prebuilt rootfs payloads, ~73 MB).
+# The live rootfs at $ANKFS is untouched, but keep the module dir complete
+# so future re-flashes still have the payloads: carry it forward (instant
+# same-fs rename). A failure here is not fatal - the engine keeps running.
+if [ -d "$BACKUP/ankfs" ] && [ ! -d "$MODULE_DIR/ankfs" ]; then
+    if mv "$BACKUP/ankfs" "$MODULE_DIR/ankfs" 2>/dev/null; then
+        log "carried ankfs/ forward (slim upgrade zip)"
+    else
+        log "WARN: could not carry ankfs/ into the new module"
+    fi
+fi
+
 # ---- Resync runtime copies (same layout as install.sh) ----
 set_state "RUNNING (resync)"
 NEW_SCRIPTS="$MODULE_DIR/scripts"
