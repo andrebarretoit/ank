@@ -416,14 +416,19 @@ def create_container(name, image="alpine-3.20", root_password="ank123",
         return _fail(f"PRoot not found at {PROOT_BIN}")
 
     base = None
+    base_tar = None
     image_dir = os.path.join(IMAGES_DIR, image)
     if os.path.lexists(os.path.join(image_dir, "bin", "sh")):
         base = image_dir
+    elif os.path.isfile(image_dir + ".tar.gz"):
+        base_tar = image_dir + ".tar.gz"
     else:
         fallback_dir = os.path.join(IMAGES_DIR, "ank-alpinebase-3.20")
         if os.path.lexists(os.path.join(fallback_dir, "bin", "sh")):
             base = fallback_dir
-    if not base:
+        elif os.path.isfile(fallback_dir + ".tar.gz"):
+            base_tar = fallback_dir + ".tar.gz"
+    if not base and not base_tar:
         try:
             listing = os.listdir(IMAGES_DIR) if os.path.isdir(IMAGES_DIR) else []
         except Exception:
@@ -437,9 +442,21 @@ def create_container(name, image="alpine-3.20", root_password="ank123",
     merged = os.path.join(existing, "merged")
     os.makedirs(merged, exist_ok=True)
 
-    _log(f"Creating '{name}' from {base}...")
+    _log(f"Creating '{name}' from {base or base_tar}...")
     try:
-        shutil.copytree(base, merged, dirs_exist_ok=True, symlinks=True)
+        if base:
+            shutil.copytree(base, merged, dirs_exist_ok=True, symlinks=True)
+        else:
+            import tarfile
+            with tarfile.open(base_tar, "r:gz") as tf:
+                members = [
+                    m for m in tf.getmembers()
+                    if not (m.ischr() or m.isblk() or m.isfifo())
+                ]
+                try:
+                    tf.extractall(merged, members=members, filter="fully_trusted")
+                except TypeError:
+                    tf.extractall(merged, members=members)
     except Exception as e:
         return _fail(f"Failed to copy rootfs: {e}")
 

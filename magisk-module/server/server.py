@@ -20,6 +20,7 @@ import http.client
 import threading
 import select
 import re
+import shlex
 import glob
 import urllib.request
 import urllib.error
@@ -2003,12 +2004,23 @@ class AnkHandler(BaseHTTPRequestHandler):
     def _find_base_image(self):
         """Find best available ank-alpinebase image. Prefers 3.20 > highest version."""
         preferred = "ank-alpinebase-3.20"
-        if os.path.isdir(os.path.join(IMAGES_DIR, preferred)) and os.path.lexists(os.path.join(IMAGES_DIR, preferred, "bin/sh")):
+
+        def _base_ok(name):
+            d = os.path.join(IMAGES_DIR, name)
+            if os.path.isdir(d) and os.path.lexists(os.path.join(d, "bin/sh")):
+                return True
+            return os.path.isfile(os.path.join(IMAGES_DIR, name + ".tar.gz"))
+
+        if _base_ok(preferred):
             return preferred
         candidates = []
         if os.path.exists(IMAGES_DIR):
             for name in os.listdir(IMAGES_DIR):
-                if name.startswith("ank-alpinebase-") and os.path.lexists(os.path.join(IMAGES_DIR, name, "bin/sh")):
+                if not name.startswith("ank-alpinebase-"):
+                    continue
+                if name.endswith(".tar.gz"):
+                    name = name[:-len(".tar.gz")]
+                if _base_ok(name):
                     try:
                         ver = name.split("ank-alpinebase-")[1]
                         candidates.append((ver, name))
@@ -4615,7 +4627,11 @@ small{color:#334155}
     def api_image_templates(self):
         templates = []
         base_image = self._find_base_image()
-        alpine_ready = os.path.isdir(os.path.join(IMAGES_DIR, base_image)) and os.path.lexists(os.path.join(IMAGES_DIR, base_image, "bin/sh"))
+        alpine_ready = (
+            (os.path.isdir(os.path.join(IMAGES_DIR, base_image))
+             and os.path.lexists(os.path.join(IMAGES_DIR, base_image, "bin/sh")))
+            or os.path.isfile(os.path.join(IMAGES_DIR, base_image + ".tar.gz"))
+        )
         for t in self.IMAGE_TEMPLATES:
             tpl = dict(t)
             if t["category"] == "base":
@@ -4648,7 +4664,7 @@ small{color:#334155}
 
         base_image = self._find_base_image()
         base_img = os.path.join(IMAGES_DIR, base_image)
-        if not os.path.isdir(base_img):
+        if not os.path.isdir(base_img) and not os.path.isfile(base_img + ".tar.gz"):
             self.send_error(400, f"Base {base_image} image not found. Reinstall the module.")
             return
 
@@ -4739,7 +4755,7 @@ small{color:#334155}
 
                     def _chroot(cmd, timeout=30):
                         wrapped = "export PATH=/bin:/sbin:/usr/bin:/usr/sbin; " + cmd
-                        full = f"chroot {merged} /bin/sh -c '{wrapped}'"
+                        full = f"chroot {merged} /bin/sh -c {shlex.quote(wrapped)}"
                         try:
                             return subprocess.run(
                                 [HOST_SH, "-c", full],
@@ -4764,7 +4780,7 @@ small{color:#334155}
                     def _chroot_bg(cmd):
                         """Run command in chroot without waiting (for daemons)."""
                         wrapped = "export PATH=/bin:/sbin:/usr/bin:/usr/sbin; " + cmd
-                        full = f"chroot {merged} /bin/sh -c '{wrapped}'"
+                        full = f"chroot {merged} /bin/sh -c {shlex.quote(wrapped)}"
                         try:
                             p = subprocess.Popen(
                                 [HOST_SH, "-c", full],
@@ -4928,8 +4944,12 @@ small{color:#334155}
         root_password = ""
         cmd_line = ""
 
-        for line in lines:
-            line = line.strip()
+        heredoc_re = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1\s*$")
+        idx = 0
+        while idx < len(lines):
+            raw = lines[idx]
+            idx += 1
+            line = raw.strip()
             if not line or line.startswith('#'):
                 continue
             if line.startswith('FROM '):
@@ -4941,7 +4961,24 @@ small{color:#334155}
             elif line.startswith('PASSWD '):
                 root_password = line[7:].strip()
             elif line.startswith('RUN '):
-                commands.append(line[4:].strip())
+                cmd = line[4:].strip()
+                hm = heredoc_re.search(cmd)
+                if hm:
+                    term = hm.group(2)
+                    body = []
+                    closed = False
+                    while idx < len(lines):
+                        braw = lines[idx]
+                        idx += 1
+                        if braw.strip() == term:
+                            closed = True
+                            break
+                        body.append(braw)
+                    if not closed:
+                        self.send_error(400, f"Unterminated heredoc in RUN (missing terminator {term})")
+                        return
+                    cmd = cmd + "\n" + "\n".join(body) + "\n" + term
+                commands.append(cmd)
             elif line.startswith('CMD '):
                 cmd_line = line[4:].strip().strip('"').strip("'")
             elif line.startswith('EXPOSE '):
@@ -5065,7 +5102,7 @@ small{color:#334155}
 
                 def _chroot(cmd, timeout=600, lf=None):
                     wrapped = "export PATH=/bin:/sbin:/usr/bin:/usr/sbin; " + cmd
-                    full = f"chroot {merged} /bin/sh -c '{wrapped}'"
+                    full = f"chroot {merged} /bin/sh -c {shlex.quote(wrapped)}"
 
                     class _Result:
                         pass
@@ -6818,6 +6855,28 @@ small{color:#334155}
                         "size": size,
                         "size_human": self._fmt_size(size)
                     })
+            # v17: base images ship as {name}.tar.gz (directory may be absent)
+            seen = {img["name"] for img in images}
+            for name in os.listdir(IMAGES_DIR):
+                if not name.endswith(".tar.gz"):
+                    continue
+                base = name[:-len(".tar.gz")]
+                if not base or base in seen:
+                    continue
+                tp = os.path.join(IMAGES_DIR, name)
+                if not os.path.isfile(tp):
+                    continue
+                try:
+                    size = os.path.getsize(tp)
+                except OSError:
+                    size = 0
+                images.append({
+                    "name": base,
+                    "complete": False,
+                    "has_python": False,
+                    "size": size,
+                    "size_human": self._fmt_size(size)
+                })
         self.send_json(images)
 
     def api_all_images(self):
@@ -6852,6 +6911,28 @@ small{color:#334155}
                         "size": size,
                         "size_human": self._fmt_size(size)
                     })
+            # v17: base images ship as {name}.tar.gz (directory may be absent)
+            seen = {img["name"] for img in images}
+            for name in os.listdir(IMAGES_DIR):
+                if not name.endswith(".tar.gz"):
+                    continue
+                base = name[:-len(".tar.gz")]
+                if not base or base in seen:
+                    continue
+                tp = os.path.join(IMAGES_DIR, name)
+                if not os.path.isfile(tp):
+                    continue
+                try:
+                    size = os.path.getsize(tp)
+                except OSError:
+                    size = 0
+                images.append({
+                    "name": base,
+                    "complete": False,
+                    "has_python": False,
+                    "size": size,
+                    "size_human": self._fmt_size(size)
+                })
         for img in images:
             img = dict(img)
             img["node"] = "local"
@@ -6879,12 +6960,22 @@ small{color:#334155}
         if not name or name.startswith("/"):
             self.send_error(400, "Invalid image name")
             return
-        image_dir = os.path.join(IMAGES_DIR, name)
-        if not os.path.isdir(image_dir):
-            self.send_error(404, f"Image '{name}' not found")
+        images_real = os.path.realpath(IMAGES_DIR)
+        image_dir = os.path.realpath(os.path.join(IMAGES_DIR, name))
+        if not image_dir.startswith(images_real + os.sep):
+            self.send_error(400, "Invalid image name")
             return
         import shutil
-        shutil.rmtree(image_dir)
+        deleted = False
+        if os.path.isdir(image_dir):
+            shutil.rmtree(image_dir)
+            deleted = True
+        if os.path.isfile(image_dir + ".tar.gz"):
+            os.remove(image_dir + ".tar.gz")
+            deleted = True
+        if not deleted:
+            self.send_error(404, f"Image '{name}' not found")
+            return
         self.send_json({"message": f"Image '{name}' deleted"})
 
     def api_receive_image_upload(self):

@@ -195,15 +195,62 @@ _start_phase() {
 }
 
 # ============================================================
+# Detach transient mounts (dev tmpfs/binds, proc) inside a dir
+# ============================================================
+_detach_rootfs_mounts() {
+    local R="$1"
+    for _dn in null zero random urandom tty ptmx console; do
+        umount "$R/dev/$_dn" 2>/dev/null
+    done
+    umount "$R/dev/pts" 2>/dev/null
+    umount "$R/dev/shm" 2>/dev/null
+    umount "$R/dev" 2>/dev/null
+    umount "$R/proc" 2>/dev/null
+    umount -l "$R/dev" 2>/dev/null
+    umount -l "$R/proc" 2>/dev/null
+}
+
+# ============================================================
+# Pack a base image dir into <dir>.tar.gz (clean source of truth)
+# ============================================================
+_pack_ankbase() {
+    local SRC="$1"
+    local DST="$2"
+    [ -d "$SRC" ] || return 1
+    [ -e "$SRC/bin/sh" ] || [ -L "$SRC/bin/sh" ] || return 1
+    _detach_rootfs_mounts "$SRC"
+    rm -f "$DST.tmp"
+    (cd "$SRC" && tar czf "$DST.tmp" --exclude='./dev/*' --exclude='./dev/*/*' .) 2>/dev/null || \
+        (cd "$SRC" && tar czf "$DST.tmp" .) 2>/dev/null
+    if [ -s "$DST.tmp" ]; then
+        mv "$DST.tmp" "$DST" && return 0
+    fi
+    rm -f "$DST.tmp"
+    return 1
+}
+
+# ============================================================
 # Lazy build ank-alpinebase-{version} if missing (streams output to stdout)
 # ============================================================
 _ensure_ankbase() {
     local VERSION="${1:-3.20}"
     local ANKBASE="$IMAGES_DIR/ank-alpinebase-${VERSION}"
+    local ANKBASE_TAR="$IMAGES_DIR/ank-alpinebase-${VERSION}.tar.gz"
     local ALPINE="$IMAGES_DIR/alpine-${VERSION}"
+
+    # v17+: base ships as tar.gz - if present, it IS the base (dir optional)
+    if [ -s "$ANKBASE_TAR" ]; then
+        return 0
+    fi
 
     # Already exists? Check for /bin/sh or /bin/busybox
     if [ -e "$ANKBASE/bin/sh" ] || [ -L "$ANKBASE/bin/sh" ] || [ -e "$ANKBASE/bin/busybox" ]; then
+        # Legacy dir base: migrate to tar.gz (container create extracts from it)
+        if _pack_ankbase "$ANKBASE" "$ANKBASE_TAR"; then
+            echo "Packed ank-alpinebase-${VERSION}.tar.gz"
+        else
+            echo "WARN: could not pack tar.gz, keeping legacy dir"
+        fi
         return 0
     fi
 
@@ -214,6 +261,7 @@ _ensure_ankbase() {
             echo "Migrating ank-alpinebase -> ank-alpinebase-${VERSION}..."
             mv "$OLD_BASE" "$ANKBASE" 2>/dev/null || cp -a "$OLD_BASE" "$ANKBASE" 2>/dev/null
             if [ -e "$ANKBASE/bin/sh" ] || [ -L "$ANKBASE/bin/sh" ]; then
+                _pack_ankbase "$ANKBASE" "$ANKBASE_TAR" && echo "Packed ank-alpinebase-${VERSION}.tar.gz"
                 return 0
             fi
         fi
@@ -366,6 +414,11 @@ MOTDEOF
     # Verify
     if [ -e "$ANKBASE/usr/sbin/sshd" ] && [ -e "$ANKBASE/bin/bash" ]; then
         echo "ank-alpinebase-${VERSION} built successfully (openssh, bash, busybox, shadow)"
+        if _pack_ankbase "$ANKBASE" "$ANKBASE_TAR"; then
+            echo "Packed ank-alpinebase-${VERSION}.tar.gz"
+        else
+            echo "WARN: could not pack tar.gz, keeping legacy dir"
+        fi
         return 0
     else
         echo "ERROR: ank-alpinebase-${VERSION} build incomplete"
@@ -685,18 +738,30 @@ cmd_create() {
             exit 1
         fi
         echo "Retrying creation of '$NAME'..."
+        # Unmount first: a leftover bind/overlay on merged would let
+        # rm -rf descend into the shared base image and wipe it
+        _unmount_container "$NAME" 2>/dev/null
         rm -rf "$CONTAINER_DIR"
     fi
 
     local BASE_DIR="$IMAGES_DIR/$IMAGE"
+    local BASE_TAR="$IMAGES_DIR/$IMAGE.tar.gz"
+    [ -f "$BASE_TAR" ] || BASE_TAR=""
 
     # If image doesn't exist but has packages, build it from its ank-alpinebase
-    if [ ! -d "$BASE_DIR" ] && [ -n "$PKGS" ]; then
+    if [ ! -d "$BASE_DIR" ] && [ -z "$BASE_TAR" ] && [ -n "$PKGS" ]; then
         local ANKBASE="$IMAGES_DIR/ank-alpinebase-3.20"
-        if [ -d "$ANKBASE" ]; then
+        local ANKBASE_TAR="$IMAGES_DIR/ank-alpinebase-3.20.tar.gz"
+        if [ -d "$ANKBASE" ] || [ -f "$ANKBASE_TAR" ]; then
             echo "Building image '$IMAGE' from ank-alpinebase (packages: $PKGS)..."
-            cp -a "$ANKBASE" "$BASE_DIR" 2>/dev/null
-            if [ $? -eq 0 ]; then
+            mkdir -p "$BASE_DIR" 2>/dev/null
+            local src_rc=1
+            if [ -d "$ANKBASE" ]; then
+                cp -a "$ANKBASE"/. "$BASE_DIR"/ 2>/dev/null && src_rc=0
+            elif [ -f "$ANKBASE_TAR" ]; then
+                tar xzf "$ANKBASE_TAR" -C "$BASE_DIR" 2>/dev/null && src_rc=0
+            fi
+            if [ $src_rc -eq 0 ]; then
                 mkdir -p "$BASE_DIR/etc" 2>/dev/null
                 echo "nameserver 8.8.8.8" > "$BASE_DIR/etc/resolv.conf" 2>/dev/null
                 echo "nameserver 8.8.4.4" >> "$BASE_DIR/etc/resolv.conf" 2>/dev/null
@@ -737,14 +802,16 @@ cmd_create() {
                 fi
             else
                 echo "WARN: Failed to copy ank-alpinebase for '$IMAGE', using base"
+                rm -rf "$BASE_DIR" 2>/dev/null
                 BASE_DIR="$ANKBASE"
+                [ -f "$ANKBASE_TAR" ] && BASE_TAR="$ANKBASE_TAR"
             fi
         else
             echo "WARN: ank-alpinebase not found, cannot build '$IMAGE'"
         fi
     fi
 
-    if [ ! -d "$BASE_DIR" ]; then
+    if [ ! -d "$BASE_DIR" ] && [ -z "$BASE_TAR" ]; then
         echo "ERROR: Image '$IMAGE' not found."
         exit 1
     fi
@@ -785,28 +852,46 @@ cmd_create() {
 
     mkdir -p "$CONTAINER_DIR"/{upper,work,merged}
 
-    # Filesystem
-    if [ "$MODE" = "lite" ]; then
-        mkdir -p "$CONTAINER_DIR/merged"
-        for item in "$BASE_DIR"/*; do
-            [ -e "$item" ] || continue
-            local basename=$(basename "$item")
-            [ -e "$CONTAINER_DIR/merged/$basename" ] || ln -s "$item" "$CONTAINER_DIR/merged/$basename" 2>/dev/null
-        done
-    elif [ "$MODE" = "isolated" ] || [ "$MODE" = "shared_network" ]; then
-        mount -t overlay overlay \
-            -o lowerdir="$BASE_DIR",upperdir="$CONTAINER_DIR/upper",workdir="$CONTAINER_DIR/work" \
-            "$CONTAINER_DIR/merged" 2>/dev/null
-        if [ $? -ne 0 ]; then
-            echo "WARN: overlayfs failed, falling back to bind mount"
-            mount --bind "$BASE_DIR" "$CONTAINER_DIR/merged"
+    # Filesystem: extract the base tarball into a PRIVATE copy.
+    # Never mount/bind the shared base itself - writes through it polluted
+    # ank-alpinebase, and rm -rf on a bind could wipe it entirely.
+    local FS_OK=0
+    if [ -n "$BASE_TAR" ]; then
+        echo "Extracting $(basename "$BASE_TAR") to container rootfs..."
+        tar xzf "$BASE_TAR" -C "$CONTAINER_DIR/merged" 2>/dev/null
+        if [ -e "$CONTAINER_DIR/merged/bin/sh" ] || [ -L "$CONTAINER_DIR/merged/bin/sh" ]; then
+            FS_OK=1
+        else
+            echo "WARN: tar.gz extraction failed, trying legacy dir"
+            rm -rf "$CONTAINER_DIR/merged" 2>/dev/null
+            mkdir -p "$CONTAINER_DIR/merged"
         fi
-    else
-        cp -a "$BASE_DIR"/. "$CONTAINER_DIR/merged/" 2>/dev/null
-        if [ $? -ne 0 ]; then
-            echo "WARN: copy failed, falling back to bind mount"
-            mount --bind "$BASE_DIR" "$CONTAINER_DIR/merged"
+    fi
+    if [ $FS_OK -eq 0 ] && [ -d "$BASE_DIR" ]; then
+        if [ "$MODE" = "lite" ]; then
+            for item in "$BASE_DIR"/*; do
+                [ -e "$item" ] || continue
+                local basename=$(basename "$item")
+                [ -e "$CONTAINER_DIR/merged/$basename" ] || ln -s "$item" "$CONTAINER_DIR/merged/$basename" 2>/dev/null
+            done
+            FS_OK=1
+        elif [ "$MODE" = "isolated" ] || [ "$MODE" = "shared_network" ]; then
+            mount -t overlay overlay \
+                -o lowerdir="$BASE_DIR",upperdir="$CONTAINER_DIR/upper",workdir="$CONTAINER_DIR/work" \
+                "$CONTAINER_DIR/merged" 2>/dev/null
+            if [ $? -eq 0 ]; then
+                FS_OK=1
+            else
+                echo "WARN: overlayfs failed, copying base (no bind fallback)"
+                cp -a "$BASE_DIR"/. "$CONTAINER_DIR/merged/" 2>/dev/null && FS_OK=1
+            fi
+        else
+            cp -a "$BASE_DIR"/. "$CONTAINER_DIR/merged/" 2>/dev/null && FS_OK=1
         fi
+    fi
+    if [ $FS_OK -eq 0 ]; then
+        echo "ERROR: could not provision rootfs for '$IMAGE' (no tar.gz, no usable dir)"
+        exit 1
     fi
 
     # Networking

@@ -887,7 +887,9 @@ ank_templates() {
     printf "%-12s %-20s %s\n" "ID" "NAME" "STATUS"
     printf "%s\n" "---------------------------------------------------"
     local alpine_ready="need base"
-    [ -d "$IMAGES_DIR/ank-alpinebase-3.20" ] && [ -e "$IMAGES_DIR/ank-alpinebase-3.20/bin/sh" ] && alpine_ready="ready"
+    if { [ -d "$IMAGES_DIR/ank-alpinebase-3.20" ] && [ -e "$IMAGES_DIR/ank-alpinebase-3.20/bin/sh" ]; } || [ -f "$IMAGES_DIR/ank-alpinebase-3.20.tar.gz" ]; then
+        alpine_ready="ready"
+    fi
     printf "%-12s %-20s %s\n" "alpine" "Alpine 3.20" "$alpine_ready"
     local tpl_status="need base"
     [ -d "$IMAGES_DIR/alpine-3.20" ] && tpl_status="ready"

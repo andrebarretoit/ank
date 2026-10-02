@@ -540,6 +540,26 @@ rm -rf "$ANKBASE/opt/ank" 2>/dev/null
 
 log OK "ANK-ALPINEBASE built"
 
+# --- Pack ANK-ALPINEBASE as tar.gz (source of truth; create extracts a private copy) ---
+# Detach transient mounts first (dev binds + proc) so the archive is clean.
+for _dn in null urandom random tty ptmx; do
+    umount "$ANKBASE/dev/$_dn" 2>/dev/null
+done
+umount "$ANKBASE/dev" 2>/dev/null
+umount "$ANKBASE/proc" 2>/dev/null
+ANKBASE_TAR="$ANK_DIR/images/ank-alpinebase-3.20.tar.gz"
+rm -f "$ANKBASE_TAR.tmp"
+(cd "$ANKBASE" && tar czf "$ANKBASE_TAR.tmp" --exclude='./dev/*' --exclude='./dev/*/*' . 2>>"$LOG_FILE") || \
+    (cd "$ANKBASE" && tar czf "$ANKBASE_TAR.tmp" . 2>>"$LOG_FILE")
+if [ -s "$ANKBASE_TAR.tmp" ]; then
+    mv "$ANKBASE_TAR.tmp" "$ANKBASE_TAR"
+    rm -rf "$ANKBASE"
+    log OK "ANK-ALPINEBASE packed ($(stat -c%s "$ANKBASE_TAR" 2>/dev/null || echo 0) bytes)"
+else
+    rm -f "$ANKBASE_TAR.tmp"
+    log WARN "Failed to pack ANK-ALPINEBASE tar.gz, keeping directory"
+fi
+
 # Remove buildroot cache
 rm -rf "$ANK_DIR/cache/buildroot" 2>/dev/null
 

@@ -702,10 +702,12 @@ function updateContainersInPlace(containers) {
   }
   containers.forEach(c => {
     const name = c.name || '';
-    const badge = el.querySelector(`.split-list-card[data-name="${CSS.escape(name)}"] .badge`);
+    const badge = el.querySelector(`.split-list-card[data-name="${CSS.escape(name)}"] .slc-status`);
     if (badge) {
       const newClass = getStatusBadgeClass(c.status);
-      if (badge.className !== `badge ${newClass}`) badge.className = `badge ${newClass} status-badge-animated`;
+      const want = `badge ${newClass} slc-status`;
+      const cur = badge.className;
+      if (cur !== want && cur !== `${want} status-badge-animated`) badge.className = `${want} status-badge-animated`;
       const label = badge.textContent;
       const newLabel = getStatusLabel(c.status);
       if (label !== newLabel) badge.textContent = newLabel;
@@ -730,7 +732,7 @@ function renderContainers(containers, nodeId) {
     const restartDisabled = dis.restart;
     const deleteDisabled = dis.delete;
     return `<div class="split-list-card" data-name="${esc(name)}" onclick="showContainerDetail('${esc(name)}','${node}')">
-      <div class="slc-top"><span class="slc-name"><i class="bi bi-box-seam" style="color:var(--accent)"></i>${esc(name)}${nodeTag}</span><span class="badge ${bc}" style="font-size:10px">${getStatusLabel(s)}</span></div>
+      <div class="slc-top"><span class="slc-name"><i class="bi bi-box-seam" style="color:var(--accent)"></i>${esc(name)}${nodeTag}</span><span class="badge ${bc} slc-status" style="font-size:10px">${getStatusLabel(s)}</span></div>
       <div class="slc-meta"><span><i class="bi bi-image"></i> ${esc(c.template_name||c.image||'-')}</span><span><i class="bi bi-globe2"></i> ${esc(c.ip_address||'N/A')}</span>${mem?`<span>${mem}</span>`:''}</div>
     </div>`;
   }).join('');
@@ -1151,7 +1153,7 @@ function setContainerLoading(name, action) {
   containerBusy[name] = action;
   const label = { start: 'Starting...', stop: 'Stopping...', restart: 'Restarting...', delete: 'Deleting...' }[action] || 'Loading...';
   document.querySelectorAll(`#containers-list .split-list-card[data-name="${CSS.escape(name)}"] button`).forEach(b => b.disabled = true);
-  document.querySelectorAll(`#containers-list .split-list-card[data-name="${CSS.escape(name)}"] .badge`).forEach(b => { b.className = 'badge badge-warning'; b.textContent = label; });
+  document.querySelectorAll(`#containers-list .split-list-card[data-name="${CSS.escape(name)}"] .slc-status`).forEach(b => { b.className = 'badge badge-warning slc-status'; b.textContent = label; });
   if (currentContainer && currentContainer.name === name) {
     ['detail-start','detail-stop','detail-restart','detail-delete'].forEach(id => { const b = document.getElementById(id); if (b) b.disabled = true; });
     const detailBadge = document.querySelector('#container-detail .sr-header .badge');
@@ -1196,8 +1198,8 @@ function getStatusLabel(status) {
 }
 
 function updateContainerBadge(name, status) {
-  document.querySelectorAll(`#containers-list .split-list-card[data-name="${CSS.escape(name)}"] .badge`).forEach(b => {
-    b.className = `badge ${getStatusBadgeClass(status)}`;
+  document.querySelectorAll(`#containers-list .split-list-card[data-name="${CSS.escape(name)}"] .slc-status`).forEach(b => {
+    b.className = `badge ${getStatusBadgeClass(status)} slc-status`;
     b.textContent = getStatusLabel(status);
   });
   document.querySelectorAll(`#dashboard-containers .cbox`).forEach(box => {
