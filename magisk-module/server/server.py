@@ -2970,6 +2970,11 @@ small{color:#334155}
                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                                  start_new_session=True)
         except Exception as e:
+            try:
+                with open(UPDATE_STATE_FILE, "w") as f:
+                    f.write(f"FAILED: spawn failed: {e}")
+            except OSError:
+                pass
             self.send_error(500, f"failed to spawn updater: {e}")
             return
         log(f"[UPDATE] started: {zip_url}")
