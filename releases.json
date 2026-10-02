@@ -1,7 +1,7 @@
 {
   "version": "Testing Build",
-  "versionCode": 11,
+  "versionCode": 12,
   "zipUrl": "https://github.com/andrebarretoit/ank/releases/download/ank-testing/ank-magisk.zip",
-  "changelog": "Update checks now work without /etc/resolv.conf: built-in direct DNS fallback + bundled resolv.conf (after reboot), accurate error hints. Node pairing auto-reconnect.",
-  "sha256": "cfd47752620526ee20e71a3fb2a4d5b1dcb37f9b450dd6f9cc85a46ff0e496bf"
+  "changelog": "Updater test build (v12): DNS fallback for update checks, bundled resolv.conf, node pairing auto-reconnect - exercises the Settings -> Update in-panel flow.",
+  "sha256": "4a129a38f6dc6e0460da151a5416b91416006073901d4ea04491dade40e2613f"
 }
