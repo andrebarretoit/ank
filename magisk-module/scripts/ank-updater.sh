@@ -1,13 +1,20 @@
 #!/system/bin/sh
 # ANK Updater - download, verify and apply a module update zip.
-# Usage: ank-updater.sh <zip_url> [sha256]
+# Usage: ank-updater.sh <zip_url|/path/to/local.zip> [sha256]
+#        ank-updater.sh --rollback
 #
-# Flow: download (retry once after 5s) -> sha256 -> backup (module code copy
-#       + runtime server tarball) -> extract OVER the current module (merge;
-#       the module's ankfs/ payloads and the runtime rootfs are never touched)
-#       -> validate -> resync runtime copies -> propagate ankd.sh to containers
-#       -> DONE -> restart server.
-# Rollback: any failure after extraction restores the module code from the
+# Flow: download (retry once after 5s; skipped for a pre-downloaded local
+#       file) -> sha256 -> backup (module code copy + runtime server tarball)
+#       -> extract OVER the current module (merge; the module's ankfs/
+#       payloads and the runtime rootfs are never touched) -> validate ->
+#       resync runtime copies -> propagate ankd.sh to containers -> DONE ->
+#       restart server.
+# Rollback (--rollback): restores the previous version from the backup copy
+#       (module code + runtime server tarball), resyncs the runtime copies,
+#       propagates ankd.sh, starts containers flagged autostart=true one by
+#       one, DONE -> restart server. Used by the panel's Rollback button;
+#       the panel stops running containers first when critical files differ.
+# Failure: any failure after extraction restores the module code from the
 #           backup copy and, if the resync already started, the runtime server
 #           (ankfs/opt/ank) from the tarball. The backup is kept after a
 #           successful update until the next one starts.
@@ -42,26 +49,33 @@ set_state() {
     log "State: $1"
 }
 
-# Restore module code (everything except ankfs/) from the backup copy and,
-# when the resync had already touched it, the runtime server from the tarball.
+# Restore module code (everything except ankfs/) from the backup copy.
+# Returns 0 when every file landed. The running updater keeps executing
+# from its unlinked inode: scripts/ is removed before the copy.
+restore_module_code() {
+    [ -f "$BACKUP/module/module.prop" ] || return 1
+    mkdir -p "$MODULE_DIR" 2>/dev/null
+    for e in "$MODULE_DIR"/*; do
+        [ -e "$e" ] || continue
+        [ "$(basename "$e")" = "ankfs" ] && continue
+        rm -rf "$e" 2>/dev/null
+    done
+    R_OK=1
+    for e in "$BACKUP/module"/*; do
+        [ -e "$e" ] || continue
+        cp -R "$e" "$MODULE_DIR/" 2>/dev/null || R_OK=0
+    done
+    [ "$R_OK" = "1" ] || return 1
+    return 0
+}
+
+# Restore module code and, when the resync had already touched it, the
+# runtime server from the tarball (update-failure path).
 restore_backups() {
-    if [ -f "$BACKUP/module/module.prop" ]; then
-        mkdir -p "$MODULE_DIR" 2>/dev/null
-        for e in "$MODULE_DIR"/*; do
-            [ -e "$e" ] || continue
-            [ "$(basename "$e")" = "ankfs" ] && continue
-            rm -rf "$e" 2>/dev/null
-        done
-        R_OK=1
-        for e in "$BACKUP/module"/*; do
-            [ -e "$e" ] || continue
-            cp -R "$e" "$MODULE_DIR/" 2>/dev/null || R_OK=0
-        done
-        if [ "$R_OK" = 1 ]; then
-            log "ROLLBACK: module code restored from backup"
-        else
-            log "ROLLBACK FAILED: module code restore incomplete"
-        fi
+    if restore_module_code; then
+        log "ROLLBACK: module code restored from backup"
+    else
+        log "ROLLBACK FAILED: module code restore incomplete"
     fi
     if [ "$RESYNC_STARTED" = 1 ] && [ -f "$BACKUP/runtime-server.tgz" ] && [ -d "$ANKFS" ]; then
         if tar xzf "$BACKUP/runtime-server.tgz" -C "$ANKFS" 2>/dev/null; then
@@ -96,39 +110,211 @@ sync_file() {
     return 1
 }
 
+# ---- Runtime resync: same layout as install.sh (module -> live copies) ----
+resync_runtime() {
+    set_state "RUNNING (resync)"
+    RESYNC_STARTED=1
+    NEW_SCRIPTS="$MODULE_DIR/scripts"
+    NEW_SERVER="$MODULE_DIR/server"
+    mkdir -p "$ANK_DIR/core/ankd" "$ANK_DIR/core/static" "$ANKFS/opt/ank/scripts" "$ANKFS/opt/ank/static"
+
+    for f in "$NEW_SCRIPTS"/*.sh; do
+        [ -f "$f" ] || continue
+        sync_file "$f" "$ANK_DIR/core/$(basename "$f")" || log "WARN: core resync failed for $(basename "$f")"
+        chmod 755 "$ANK_DIR/core/$(basename "$f")" 2>/dev/null
+        cp "$f" "$ANKFS/opt/ank/scripts/$(basename "$f")" 2>/dev/null
+    done
+
+    if [ -d "$NEW_SERVER/ankd" ]; then
+        for f in "$NEW_SERVER/ankd/"*.sh; do
+            [ -f "$f" ] || continue
+            sync_file "$f" "$ANK_DIR/core/ankd/$(basename "$f")" || log "WARN: ankd resync failed for $(basename "$f")"
+            chmod 755 "$ANK_DIR/core/ankd/$(basename "$f")" 2>/dev/null
+        done
+    fi
+
+    if [ -d "$NEW_SERVER/static" ]; then
+        rm -rf "$ANK_DIR/core/static.new" 2>/dev/null
+        if cp -r "$NEW_SERVER/static" "$ANK_DIR/core/static.new" 2>/dev/null; then
+            rm -rf "$ANK_DIR/core/static" 2>/dev/null
+            mv "$ANK_DIR/core/static.new" "$ANK_DIR/core/static" 2>/dev/null
+        fi
+        rm -rf "$ANKFS/opt/ank/static.new" 2>/dev/null
+        if cp -r "$NEW_SERVER/static" "$ANKFS/opt/ank/static.new" 2>/dev/null; then
+            rm -rf "$ANKFS/opt/ank/static" 2>/dev/null
+            mv "$ANKFS/opt/ank/static.new" "$ANKFS/opt/ank/static" 2>/dev/null
+        fi
+    fi
+
+    if [ -f "$NEW_SERVER/server.py" ]; then
+        sync_file "$NEW_SERVER/server.py" "$ANKFS/opt/ank/server.py" || log "WARN: server.py resync failed"
+        chmod 755 "$ANKFS/opt/ank/server.py" 2>/dev/null
+    fi
+    for f in "$NEW_SERVER"/*.py; do
+        [ -f "$f" ] || continue
+        sync_file "$f" "$ANKFS/opt/ank/$(basename "$f")" || log "WARN: module resync failed for $(basename "$f")"
+    done
+    log "Runtime resync complete"
+}
+
+# ---- Propagate ankd.sh to existing containers ----
+propagate_ankd() {
+    set_state "RUNNING (propagate)"
+    NEW_SERVER="$MODULE_DIR/server"
+    if [ -f "$NEW_SERVER/ankd/ankd.sh" ]; then
+        for cdir in "$ANK_DIR/containers"/*/; do
+            [ -d "$cdir" ] || continue
+            [ -d "$cdir/merged/usr/ankd/core" ] || continue
+            if sync_file "$NEW_SERVER/ankd/ankd.sh" "$cdir/merged/usr/ankd/core/ankd.sh"; then
+                chmod 755 "$cdir/merged/usr/ankd/core/ankd.sh" 2>/dev/null
+                log "Propagated ankd.sh to container $(basename "$cdir")"
+            else
+                log "WARN: propagate ankd.sh failed for $(basename "$cdir")"
+            fi
+        done
+    fi
+}
+
+# ---- Start containers flagged autostart=true, one by one ----
+# Used by --rollback: the version being restored may predate the server-side
+# autostart worker, so this script brings the containers back itself. For
+# updates the freshly restarted server's autostart worker does it instead.
+start_autostart_containers() {
+    set_state "RUNNING (starting containers)"
+    [ -d "$ANK_DIR/containers" ] || return 0
+    for cdir in "$ANK_DIR/containers"/*/; do
+        [ -d "$cdir" ] || continue
+        cfg="$cdir/config.json"
+        [ -f "$cfg" ] || continue
+        as=$(grep -o '"autostart": *[a-z]*' "$cfg" 2>/dev/null | head -1 | grep -o '[a-z]*$')
+        [ "$as" = "true" ] || continue
+        cname=$(basename "$cdir")
+        st=$(grep -o '"status": *"[^"]*"' "$cfg" 2>/dev/null | head -1 | cut -d'"' -f4)
+        case "$st" in starting|stopping|deleting) continue ;; esac
+        pid=$(grep -o '"pid": [^,]*' "$cfg" 2>/dev/null | head -1 | cut -d' ' -f2)
+        if [ "$st" = "running" ] && [ -n "$pid" ] && [ "$pid" != "null" ] && kill -0 "$pid" 2>/dev/null; then
+            log "Autostart: container $cname already running"
+            continue
+        fi
+        log "Autostart: starting container $cname"
+        sh "$ANK_DIR/core/container.sh" start "$cname" >> "$LOG" 2>&1
+        rc=$?
+        if [ $rc -ne 0 ]; then
+            log "WARN: autostart start $cname failed (rc=$rc)"
+        fi
+        sleep 2
+    done
+}
+
+restart_panel_server() {
+    if [ -f "$ANK_DIR/core/restart-server.sh" ]; then
+        log "Restarting ANK server..."
+        nohup sh "$ANK_DIR/core/restart-server.sh" >/dev/null 2>&1 &
+    fi
+}
+
+# ---- Rollback: restore the previous version from the backup copy ----
+do_rollback() {
+    BK_PROP="$BACKUP/module/module.prop"
+    if [ ! -f "$BK_PROP" ]; then
+        set_state "FAILED: no backup to restore"
+        exit 1
+    fi
+    if [ ! -f "$BACKUP/runtime-server.tgz" ]; then
+        set_state "FAILED: backup has no runtime server tarball"
+        exit 1
+    fi
+    OLD_VC=$(grep '^versionCode=' "$BK_PROP" 2>/dev/null | head -1 | cut -d= -f2)
+    OLD_BUILDDATE=$(grep '^buildDate=' "$BK_PROP" 2>/dev/null | head -1 | cut -d= -f2)
+    if [ -z "$OLD_VC" ]; then
+        set_state "FAILED: backup module.prop has no versionCode"
+        exit 1
+    fi
+    OLD_PF="vc${OLD_VC}${OLD_BUILDDATE:+-$OLD_BUILDDATE}"
+    log "Rolling back to $OLD_PF from $BACKUP"
+
+    set_state "RUNNING (restore)"
+    if ! restore_module_code; then
+        set_state "FAILED: module code restore incomplete"
+        exit 1
+    fi
+    RESTORED_VC=$(grep '^versionCode=' "$MODULE_DIR/module.prop" 2>/dev/null | head -1 | cut -d= -f2)
+    if [ "$RESTORED_VC" != "$OLD_VC" ]; then
+        set_state "FAILED: restore verification failed (module.prop vc=${RESTORED_VC:-missing}, expected $OLD_VC)"
+        exit 1
+    fi
+    if ! tar xzf "$BACKUP/runtime-server.tgz" -C "$ANKFS" 2>/dev/null; then
+        set_state "FAILED: runtime server restore failed"
+        exit 1
+    fi
+    log "Module code + runtime server restored ($OLD_PF)"
+
+    resync_runtime
+    [ -f "$ANKFS/opt/ank/server.py" ] || { set_state "FAILED: server.py missing after resync"; exit 1; }
+    propagate_ankd
+    start_autostart_containers
+
+    set_state "DONE ($OLD_PF)"
+    log "=== ROLLBACK DONE === (backup retained at $BACKUP)"
+    restart_panel_server
+    exit 0
+}
+
 mkdir -p "$SDCARD" "$TMP_DIR" 2>/dev/null
+
+# ---- Rollback mode: restore the previous version, no download ----
+if [ "$ZIP_URL" = "--rollback" ]; then
+    log "=== ROLLBACK START ==="
+    [ -d "$MODULE_DIR" ] || { set_state "FAILED: module dir $MODULE_DIR not found (root mode only)"; exit 1; }
+    do_rollback
+fi
+
 log "=== UPDATE START ==="
 
 [ -n "$ZIP_URL" ] || fail "no zip url given"
 [ -d "$MODULE_DIR" ] || fail "module dir $MODULE_DIR not found (root mode only)"
 
-# ---- Download (curl first; on failure retry once after 5s) ----
-set_state "RUNNING (download)"
-DL_TOOL=""
-if command -v curl >/dev/null 2>&1; then
-    DL_TOOL="curl"
-elif command -v wget >/dev/null 2>&1; then
-    DL_TOOL="wget"
+# A pre-downloaded zip (the panel fetched it to run the critical-file diff):
+# use it as-is - the sha256 below still verifies it.
+LOCAL_ZIP=0
+if [ -f "$ZIP_URL" ]; then
+    LOCAL_ZIP=1
+    ZIP="$ZIP_URL"
+    log "Using pre-downloaded zip"
 fi
-[ -n "$DL_TOOL" ] || fail "neither curl nor wget available"
 
-dl() {
-    if [ "$DL_TOOL" = "curl" ]; then
-        curl -fL --connect-timeout 15 --max-time 900 -o "$ZIP" "$ZIP_URL" 2>/dev/null
-    else
-        wget -q -T 30 -t 3 -O "$ZIP" "$ZIP_URL" 2>/dev/null
-    fi
-}
-
-if dl; then
-    log "Download complete (attempt 1, $DL_TOOL)"
+# ---- Download (curl first; on failure retry once after 5s) ----
+if [ "$LOCAL_ZIP" = "1" ]; then
+    # The panel already downloaded and logged it - keep its last state.
+    log "Download skipped (pre-downloaded zip)"
 else
-    log "Download failed, retrying in 5 seconds..."
-    sleep 5
+    set_state "RUNNING (download)"
+    DL_TOOL=""
+    if command -v curl >/dev/null 2>&1; then
+        DL_TOOL="curl"
+    elif command -v wget >/dev/null 2>&1; then
+        DL_TOOL="wget"
+    fi
+    [ -n "$DL_TOOL" ] || fail "neither curl nor wget available"
+
+    dl() {
+        if [ "$DL_TOOL" = "curl" ]; then
+            curl -fL --connect-timeout 15 --max-time 900 -o "$ZIP" "$ZIP_URL" 2>/dev/null
+        else
+            wget -q -T 30 -t 3 -O "$ZIP" "$ZIP_URL" 2>/dev/null
+        fi
+    }
+
     if dl; then
-        log "Download complete (attempt 2, $DL_TOOL)"
+        log "Download complete (attempt 1, $DL_TOOL)"
     else
-        fail "download failed after 2 attempts"
+        log "Download failed, retrying in 5 seconds..."
+        sleep 5
+        if dl; then
+            log "Download complete (attempt 2, $DL_TOOL)"
+        else
+            fail "download failed after 2 attempts"
+        fi
     fi
 fi
 [ -s "$ZIP" ] || fail "downloaded file is empty"
@@ -204,73 +390,14 @@ NEW_PF="vc${NEW_VC}${NEW_BUILDDATE:+-$NEW_BUILDDATE}"
 [ -f "$MODULE_DIR/scripts/ank-updater.sh" ] || fail "scripts/ank-updater.sh missing after extract"
 log "Update extracted over current module ($NEW_PF)"
 
-# ---- Resync runtime copies (same layout as install.sh) ----
-set_state "RUNNING (resync)"
-RESYNC_STARTED=1
-NEW_SCRIPTS="$MODULE_DIR/scripts"
-NEW_SERVER="$MODULE_DIR/server"
-mkdir -p "$ANK_DIR/core/ankd" "$ANK_DIR/core/static" "$ANKFS/opt/ank/scripts" "$ANKFS/opt/ank/static"
-
-for f in "$NEW_SCRIPTS"/*.sh; do
-    [ -f "$f" ] || continue
-    sync_file "$f" "$ANK_DIR/core/$(basename "$f")" || log "WARN: core resync failed for $(basename "$f")"
-    chmod 755 "$ANK_DIR/core/$(basename "$f")" 2>/dev/null
-    cp "$f" "$ANKFS/opt/ank/scripts/$(basename "$f")" 2>/dev/null
-done
-
-if [ -d "$NEW_SERVER/ankd" ]; then
-    for f in "$NEW_SERVER/ankd/"*.sh; do
-        [ -f "$f" ] || continue
-        sync_file "$f" "$ANK_DIR/core/ankd/$(basename "$f")" || log "WARN: ankd resync failed for $(basename "$f")"
-        chmod 755 "$ANK_DIR/core/ankd/$(basename "$f")" 2>/dev/null
-    done
-fi
-
-if [ -d "$NEW_SERVER/static" ]; then
-    rm -rf "$ANK_DIR/core/static.new" 2>/dev/null
-    if cp -r "$NEW_SERVER/static" "$ANK_DIR/core/static.new" 2>/dev/null; then
-        rm -rf "$ANK_DIR/core/static" 2>/dev/null
-        mv "$ANK_DIR/core/static.new" "$ANK_DIR/core/static" 2>/dev/null
-    fi
-    rm -rf "$ANKFS/opt/ank/static.new" 2>/dev/null
-    if cp -r "$NEW_SERVER/static" "$ANKFS/opt/ank/static.new" 2>/dev/null; then
-        rm -rf "$ANKFS/opt/ank/static" 2>/dev/null
-        mv "$ANKFS/opt/ank/static.new" "$ANKFS/opt/ank/static" 2>/dev/null
-    fi
-fi
-
-if [ -f "$NEW_SERVER/server.py" ]; then
-    sync_file "$NEW_SERVER/server.py" "$ANKFS/opt/ank/server.py" || log "WARN: server.py resync failed"
-    chmod 755 "$ANKFS/opt/ank/server.py" 2>/dev/null
-fi
-for f in "$NEW_SERVER"/*.py; do
-    [ -f "$f" ] || continue
-    sync_file "$f" "$ANKFS/opt/ank/$(basename "$f")" || log "WARN: module resync failed for $(basename "$f")"
-done
-log "Runtime resync complete"
-
-# ---- Propagate ankd.sh to existing containers ----
-set_state "RUNNING (propagate)"
-if [ -f "$NEW_SERVER/ankd/ankd.sh" ]; then
-    for cdir in "$ANK_DIR/containers"/*/; do
-        [ -d "$cdir" ] || continue
-        [ -d "$cdir/merged/usr/ankd/core" ] || continue
-        if sync_file "$NEW_SERVER/ankd/ankd.sh" "$cdir/merged/usr/ankd/core/ankd.sh"; then
-            chmod 755 "$cdir/merged/usr/ankd/core/ankd.sh" 2>/dev/null
-            log "Propagated ankd.sh to container $(basename "$cdir")"
-        else
-            log "WARN: propagate ankd.sh failed for $(basename "$cdir")"
-        fi
-    done
-fi
+# ---- Resync runtime copies + propagate ankd.sh ----
+resync_runtime
+propagate_ankd
 
 # ---- Finish ----
 rm -f "$ZIP" 2>/dev/null
 set_state "DONE ($NEW_PF)"
 log "=== UPDATE DONE === (previous version preserved at $BACKUP)"
 
-if [ -f "$ANK_DIR/core/restart-server.sh" ]; then
-    log "Restarting ANK server..."
-    nohup sh "$ANK_DIR/core/restart-server.sh" >/dev/null 2>&1 &
-fi
+restart_panel_server
 exit 0

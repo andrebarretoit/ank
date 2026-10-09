@@ -278,6 +278,19 @@ def _queue_worker():
 UPDATE_MODULE_PROP = "/data/adb/modules/ank/module.prop"
 UPDATE_STATE_FILE = os.path.join(ANK_SDCARD, "ank-update.state")
 UPDATE_LOG_FILE = os.path.join(ANK_SDCARD, "ank-update.log")
+MODULE_DIR = os.path.dirname(UPDATE_MODULE_PROP)
+# Previous version kept by ank-updater.sh until the next update starts
+UPDATE_BACKUP_DIR = "/data/adb/modules/.ank-update-old"
+UPDATE_BACKUP_PROP = os.path.join(UPDATE_BACKUP_DIR, "module", "module.prop")
+# Where the panel stages the zip before handing it to ank-updater.sh
+# (must match the updater's $TMP_DIR/ank-update.zip so it skips the download)
+UPDATE_ZIP_TMP = os.path.join(ANK_DIR, "tmp", "ank-update.zip")
+# Files whose change affects RUNNING containers: they must be stopped for the
+# new code to take effect. Map = zip path -> live copy the updater resyncs.
+CRITICAL_REL_LIVE = {
+    "scripts/container.sh": os.path.join(SCRIPTS_DIR, "container.sh"),
+    "server/ankd/ankd.sh": os.path.join(SCRIPTS_DIR, "ankd", "ankd.sh"),
+}
 
 def _load_port_from_config():
     """Read panel_port from config.json if present (migrate/remap writes it)."""
@@ -1044,6 +1057,424 @@ def _restart_container_flow(name):
             cfg["pid"] = None
             save_container_config(name, cfg)
             note_container_stopped(name)
+
+# ============================================================
+# Container autostart + update/rollback helpers
+# ============================================================
+
+def _container_live_pids(rootfs):
+    """PIDs of live (non-zombie) processes rooted inside rootfs. Same
+    rootfs guard as _force_kill_survivors, but it never signals anything."""
+    merged_real = os.path.realpath(rootfs)
+    try:
+        entries = [e for e in os.listdir("/proc") if e.isdigit()]
+    except OSError:
+        return []
+    alive = []
+    for e in entries:
+        pid = int(e)
+        if pid <= 1 or pid == os.getpid():
+            continue
+        try:
+            proc_root = os.path.realpath(f"/proc/{e}/root")
+        except OSError:
+            continue
+        if proc_root != merged_real and not proc_root.startswith(merged_real + os.sep):
+            continue
+        try:
+            with open(f"/proc/{e}/stat") as f:
+                state = f.read().rsplit(")", 1)[1].split()[0]
+            if state == "Z":
+                continue
+        except (OSError, IndexError):
+            continue
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            continue
+        alive.append(pid)
+    return alive
+
+def _clear_stale_pgid_files(rootfs):
+    """Drop .pgid registry files whose group is dead or no longer lives in
+    this rootfs (recycled pgid after a reboot). Never signals."""
+    merged_real = os.path.realpath(rootfs)
+    pids_dir = os.path.join(rootfs, "etc", "ankd", "pids")
+    try:
+        entries = os.listdir(pids_dir)
+    except OSError:
+        return
+    for fn in entries:
+        if not fn.endswith(".pgid"):
+            continue
+        fp = os.path.join(pids_dir, fn)
+        try:
+            with open(fp) as f:
+                pgid = int(f.read().strip())
+        except (OSError, ValueError):
+            stale = True
+        else:
+            stale = True
+            try:
+                proc_root = os.path.realpath(f"/proc/{pgid}/root")
+                if (proc_root == merged_real or
+                        proc_root.startswith(merged_real + os.sep)):
+                    stale = False
+            except OSError:
+                stale = True
+        if stale:
+            try:
+                os.remove(fp)
+            except OSError:
+                pass
+
+def _real_running_containers():
+    """Container names with a verifiably live process tree, regardless of
+    what config.json claims."""
+    out = []
+    if not os.path.isdir(CONTAINERS_DIR):
+        return out
+    for name in sorted(os.listdir(CONTAINERS_DIR)):
+        if not os.path.isdir(os.path.join(CONTAINERS_DIR, name)):
+            continue
+        if not load_container_config(name):
+            continue
+        rootfs = os.path.join(CONTAINERS_DIR, name, "merged")
+        if _container_live_pids(rootfs):
+            out.append(name)
+    return out
+
+def _start_container_flow(name):
+    """Root-mode start flow (shared by the Start button and the autostart
+    worker): run container.sh start, then mark running/stopped from its rc."""
+    try:
+        output, code = run_script("container.sh", "start", name)
+        cfg = load_container_config(name)
+        if cfg:
+            if code != 0:
+                log(f"ERROR: start {name}: {output}")
+                cfg["status"] = "stopped"
+                cfg["pid"] = None
+                save_container_config(name, cfg)
+                note_container_stopped(name)
+            else:
+                log(f"Container {name} started")
+                # Re-read config — container.sh updated PID and status
+                cfg2 = load_container_config(name)
+                if cfg2:
+                    cfg2["status"] = "running"
+                    save_container_config(name, cfg2)
+                else:
+                    cfg["status"] = "running"
+                    save_container_config(name, cfg)
+                note_container_started(name)
+    except Exception as e:
+        log(f"ERROR: start thread {name}: {e}")
+        cfg = load_container_config(name)
+        if cfg:
+            cfg["status"] = "stopped"
+            cfg["pid"] = None
+            save_container_config(name, cfg)
+            note_container_stopped(name)
+
+def _lite_start_flow(name):
+    """Lite-mode start flow (shared by the Start button and autostart)."""
+    try:
+        ok, result = ank_lite.start_container(name)
+        cfg = load_container_config(name)
+        if cfg:
+            if not ok:
+                log(f"ERROR: lite start {name}: {result}")
+                cfg["status"] = "failed"
+                cfg["pid"] = None
+                save_container_config(name, cfg)
+                note_container_stopped(name)
+            else:
+                log(f"Container {name} started (lite)")
+                cfg2 = load_container_config(name)
+                if cfg2:
+                    cfg2["status"] = "running"
+                    save_container_config(name, cfg2)
+                note_container_started(name)
+    except Exception as e:
+        log(f"ERROR: lite start thread {name}: {e}")
+        cfg = load_container_config(name)
+        if cfg:
+            cfg["status"] = "failed"
+            cfg["pid"] = None
+            save_container_config(name, cfg)
+            note_container_stopped(name)
+
+def _autostart_worker():
+    """Start containers flagged autostart=true once the server is up.
+    Covers the initial boot and the server restarts that follow an update
+    or a rollback (containers stopped for critical files come back here,
+    one at a time). Defers while an update/rollback is in flight."""
+    try:
+        time.sleep(3)
+        state, _ = AnkHandler._update_state()
+        if state.startswith("RUNNING"):
+            log(f"[AUTOSTART] update state '{state}' in progress - skipping")
+            return
+        if not os.path.isdir(CONTAINERS_DIR):
+            return
+        lite = is_lite()
+        for name in sorted(os.listdir(CONTAINERS_DIR)):
+            if not os.path.isdir(os.path.join(CONTAINERS_DIR, name)):
+                continue
+            mode = None
+            lock = _get_container_lock(name)
+            with lock:
+                cfg = load_container_config(name)
+                if not cfg or not cfg.get("autostart"):
+                    continue
+                if cfg.get("status") in ("starting", "stopping", "deleting"):
+                    continue
+                if lite:
+                    if cfg.get("status") == "running":
+                        continue
+                    cfg["status"] = "starting"
+                    save_container_config(name, cfg)
+                    mode = "lite"
+                else:
+                    rootfs = os.path.join(CONTAINERS_DIR, name, "merged")
+                    if _container_live_pids(rootfs):
+                        if cfg.get("status") != "running":
+                            cfg["status"] = "running"
+                            save_container_config(name, cfg)
+                        continue
+                    # dead (typical after a reboot): drop the stale status/pid
+                    # so container.sh cannot mistake a recycled pid for life
+                    cfg["status"] = "starting"
+                    cfg["pid"] = None
+                    save_container_config(name, cfg)
+                    _clear_stale_pgid_files(rootfs)
+                    mode = "root"
+            log(f"[AUTOSTART] starting {name}")
+            if mode == "lite":
+                _lite_start_flow(name)
+            else:
+                _start_container_flow(name)
+            time.sleep(2)
+    except Exception as e:
+        log(f"[AUTOSTART] error: {e}")
+
+def read_prop_file(path):
+    """Parse a module.prop-style file into a dict, or None if unreadable."""
+    try:
+        with open(path, "r") as f:
+            info = {}
+            for line in f:
+                line = line.strip()
+                if "=" in line and not line.startswith("#"):
+                    k, v = line.split("=", 1)
+                    info[k] = v
+            return info
+    except OSError:
+        return None
+
+def _set_update_state(state):
+    """Write the update/rollback state file the panel polls."""
+    try:
+        with open(UPDATE_STATE_FILE, "w") as f:
+            f.write(state)
+    except OSError:
+        pass
+
+def _update_log(msg):
+    """Append to the updater log so the panel progress pane shows the
+    panel-side phases (download, verify, stopping containers) too."""
+    try:
+        os.makedirs(ANK_SDCARD, exist_ok=True)
+        from datetime import datetime
+        with open(UPDATE_LOG_FILE, "a") as f:
+            f.write(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}\n")
+    except OSError:
+        pass
+    log(f"[UPDATE] {msg}")
+
+def _read_bytes(path):
+    try:
+        with open(path, "rb") as f:
+            return f.read()
+    except OSError:
+        return None
+
+def _sha256_file(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+def _download_update_zip(url, dest, timeout=120):
+    """Fetch the update zip to dest; returns True on success. Same TLS
+    fallback as the manifest fetch (the sha256 still pins the artifact)."""
+    req = urllib.request.Request(url, headers={"User-Agent": "ANK-Updater"})
+
+    def _grab(ctx):
+        with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp, \
+                open(dest, "wb") as out:
+            while True:
+                chunk = resp.read(256 * 1024)
+                if not chunk:
+                    break
+                out.write(chunk)
+
+    try:
+        _grab(_ssl_context())
+        return True
+    except Exception as e:
+        reason = getattr(e, "reason", e)
+        if not (isinstance(reason, ssl.SSLCertVerificationError) or
+                isinstance(e, ssl.SSLCertVerificationError)):
+            log(f"[UPDATE] zip download failed: {e}")
+            return False
+    log("[UPDATE] TLS verification failed, retrying zip download unverified")
+    try:
+        _grab(_ssl_context(unverified=True))
+        return True
+    except Exception as e:
+        log(f"[UPDATE] zip download failed (unverified retry): {e}")
+        return False
+
+def _zip_critical_changed(zip_path):
+    """True when the zip's critical container files differ from the live
+    copies (missing on either side counts as a change)."""
+    import zipfile
+    with zipfile.ZipFile(zip_path) as zf:
+        names = set(zf.namelist())
+        for rel, live in CRITICAL_REL_LIVE.items():
+            in_zip = rel in names
+            has_live = os.path.isfile(live)
+            if in_zip != has_live:
+                return True
+            if not in_zip:
+                continue
+            if zf.read(rel) != _read_bytes(live):
+                return True
+    return False
+
+def _backup_critical_changed():
+    """True when the current module's critical files differ from the
+    backup's (i.e. a rollback would change what containers run on)."""
+    for rel in CRITICAL_REL_LIVE:
+        cur = _read_bytes(os.path.join(MODULE_DIR, rel))
+        old = _read_bytes(os.path.join(UPDATE_BACKUP_DIR, "module", rel))
+        if cur is None or old is None:
+            if (cur is None) != (old is None):
+                return True
+            continue
+        if cur != old:
+            return True
+    return False
+
+def _spawn_detached(args):
+    """Spawn a helper script detached (via su when not root). (ok, err)."""
+    try:
+        if os.geteuid() != 0:
+            cmd_str = " ".join(f"'{a}'" for a in args)
+            subprocess.Popen(["su", "-c", cmd_str],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                             start_new_session=True)
+        else:
+            subprocess.Popen(args,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                             start_new_session=True)
+        return True, None
+    except Exception as e:
+        return False, str(e)
+
+def _mark_stopping(name):
+    """Same bookkeeping the Stop button does before stopping: status ->
+    stopping so a concurrent Stop/API request gets a 409 instead of
+    stopping twice."""
+    try:
+        cfg = load_container_config(name)
+        if cfg and cfg.get("status") not in ("starting", "stopping", "deleting"):
+            cfg["status"] = "stopping"
+            save_container_config(name, cfg)
+            note_container_stopped(name)
+    except Exception as e:
+        log(f"ERROR: mark stopping {name}: {e}")
+
+def _update_apply_worker(zip_url, sha256, updater):
+    """Panel-side pre-phase of an update: download the zip, verify it, stop
+    running containers one by one when critical files change, then hand the
+    LOCAL file to ank-updater.sh (it skips its own download). On download
+    failure falls back to the original flow: the updater fetches the URL and
+    containers stay untouched."""
+    spawn_target = zip_url
+    try:
+        downloaded = False
+        _update_log("Downloading update zip ...")
+        if _download_update_zip(zip_url, UPDATE_ZIP_TMP, timeout=600):
+            downloaded = True
+            if sha256 and sha256 != "-":
+                actual = _sha256_file(UPDATE_ZIP_TMP)
+                if actual != sha256.lower():
+                    _update_log(f"sha256 mismatch (expected {sha256}, got {actual})")
+                    _set_update_state(f"FAILED: sha256 mismatch (expected {sha256}, got {actual})")
+                    try:
+                        os.remove(UPDATE_ZIP_TMP)
+                    except OSError:
+                        pass
+                    return
+                _update_log("Checksum verified (sha256)")
+            spawn_target = UPDATE_ZIP_TMP
+        else:
+            _update_log("Panel download failed - the updater will download instead")
+
+        changed = False
+        if downloaded:
+            try:
+                changed = _zip_critical_changed(UPDATE_ZIP_TMP)
+            except Exception as e:
+                log(f"[UPDATE] critical diff check failed: {e}")
+        if changed:
+            _update_log("Critical container files changed - stopping running containers")
+            for name in _real_running_containers():
+                _set_update_state("RUNNING (stopping containers)")
+                _update_log(f"Stopping {name} ...")
+                _mark_stopping(name)
+                _stop_container_flow(name)
+        else:
+            _update_log("No critical container files changed - containers untouched")
+
+        _set_update_state("RUNNING (spawned)")
+        ok, err = _spawn_detached([HOST_SH, updater, spawn_target, sha256 or "-"])
+        if not ok:
+            _set_update_state(f"FAILED: spawn failed: {err}")
+            return
+        _update_log("Updater spawned")
+        log(f"[UPDATE] started: {zip_url}")
+    except Exception as e:
+        _set_update_state(f"FAILED: {e}")
+        log(f"[UPDATE] apply worker error: {e}")
+
+def _update_rollback_worker(updater):
+    """Panel-side pre-phase of a rollback: stop running containers when the
+    critical files differ from the backup, then spawn ank-updater.sh
+    --rollback (the script restores, resyncs, restarts autostart containers
+    and restarts the panel server)."""
+    try:
+        if _backup_critical_changed():
+            _update_log("Critical container files changed - stopping running containers")
+            for name in _real_running_containers():
+                _set_update_state("RUNNING (stopping containers)")
+                _update_log(f"Stopping {name} ...")
+                _mark_stopping(name)
+                _stop_container_flow(name)
+        else:
+            _update_log("No critical container files changed - containers untouched")
+        ok, err = _spawn_detached([HOST_SH, updater, "--rollback"])
+        if not ok:
+            _set_update_state(f"FAILED: spawn failed: {err}")
+            return
+        _update_log("Rollback updater spawned")
+    except Exception as e:
+        _set_update_state(f"FAILED: {e}")
+        log(f"[UPDATE] rollback worker error: {e}")
 
 def get_container_stats(name):
     cgroup = f"/sys/fs/cgroup/ank/{name}"
@@ -2820,6 +3251,8 @@ small{color:#334155}
             self.api_update_config(data)
         elif path == "/api/update/apply":
             self.api_update_apply(data)
+        elif path == "/api/update/rollback":
+            self.api_update_rollback(data)
         elif path == "/api/system/uninstall":
             self.api_uninstall()
         elif path == "/api/ank-manager/stop":
@@ -3149,17 +3582,7 @@ small{color:#334155}
     @staticmethod
     def _read_module_prop():
         """Parse module.prop into a dict, or None if not present (lite mode)."""
-        try:
-            with open(UPDATE_MODULE_PROP, "r") as f:
-                info = {}
-                for line in f:
-                    line = line.strip()
-                    if "=" in line and not line.startswith("#"):
-                        k, v = line.split("=", 1)
-                        info[k] = v
-                return info
-        except OSError:
-            return None
+        return read_prop_file(UPDATE_MODULE_PROP)
 
     @staticmethod
     def _fetch_update_manifest(url, timeout=10):
@@ -3226,6 +3649,22 @@ small{color:#334155}
             pass
         return state, log_tail
 
+    @staticmethod
+    def _update_guard_busy():
+        """True when a RUNNING state is fresh (<30 min): an update or a
+        rollback is in flight. A stale RUNNING is logged and ignored."""
+        state, _ = AnkHandler._update_state()
+        if not state.startswith("RUNNING"):
+            return False
+        try:
+            age = time.time() - os.path.getmtime(UPDATE_STATE_FILE)
+            if age < 1800:
+                return True
+            log(f"[UPDATE] stale RUNNING state ({int(age)}s old), proceeding")
+        except OSError:
+            pass
+        return False
+
     def api_update_check(self, parsed=None):
         prop = self._read_module_prop()
         cur_version = (prop or {}).get("version", "unknown")
@@ -3248,6 +3687,10 @@ small{color:#334155}
             "zip_url": None,
             "sha256": None,
             "changelog": None,
+            "rollback_available": False,
+            "backup_version": None,
+            "backup_versionCode": None,
+            "backup_build_date": None,
             "state": state,
             "log": log_tail,
         }
@@ -3255,6 +3698,18 @@ small{color:#334155}
             out["error"] = "module.prop not found (lite mode?) - update not supported"
             self.send_json(out)
             return
+        # Rollback target = the version the last update came from (kept by
+        # ank-updater.sh until the next update starts). Only older versions.
+        bprop = read_prop_file(UPDATE_BACKUP_PROP)
+        if bprop:
+            try:
+                bvc = int(bprop.get("versionCode") or 0)
+            except (TypeError, ValueError):
+                bvc = 0
+            out["backup_version"] = bprop.get("version")
+            out["backup_versionCode"] = bvc
+            out["backup_build_date"] = bprop.get("buildDate") or None
+            out["rollback_available"] = 0 < bvc < cur_vc
         if local_only:
             # Instant, offline answer: no remote manifest fetch
             out["local_only"] = True
@@ -3292,16 +3747,9 @@ small{color:#334155}
         if prop is None:
             self.send_error(400, "Not supported (module.prop not found - lite mode?)")
             return
-        state, _ = self._update_state()
-        if state.startswith("RUNNING"):
-            try:
-                age = time.time() - os.path.getmtime(UPDATE_STATE_FILE)
-                if age < 1800:
-                    self.send_error(409, "An update is already in progress")
-                    return
-                log(f"[UPDATE] stale RUNNING state ({int(age)}s old), proceeding")
-            except OSError:
-                pass
+        if self._update_guard_busy():
+            self.send_error(409, "An update is already in progress")
+            return
         zip_url = (data or {}).get("zip_url")
         sha256 = (data or {}).get("sha256")
         if not zip_url:
@@ -3325,31 +3773,52 @@ small{color:#334155}
             return
         try:
             os.makedirs(ANK_SDCARD, exist_ok=True)
-            with open(UPDATE_STATE_FILE, "w") as f:
-                f.write("RUNNING (spawned)")
         except OSError:
             pass
-        args = [HOST_SH, updater, zip_url, sha256 or "-"]
-        try:
-            if os.geteuid() != 0:
-                cmd_str = " ".join(f"'{a}'" for a in args)
-                subprocess.Popen(["su", "-c", cmd_str],
-                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                                 start_new_session=True)
-            else:
-                subprocess.Popen(args,
-                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                                 start_new_session=True)
-        except Exception as e:
-            try:
-                with open(UPDATE_STATE_FILE, "w") as f:
-                    f.write(f"FAILED: spawn failed: {e}")
-            except OSError:
-                pass
-            self.send_error(500, f"failed to spawn updater: {e}")
+        # The worker downloads and verifies the zip, stops running containers
+        # when critical files changed, then spawns the updater with the local
+        # file (the updater skips its own download for a local path).
+        _set_update_state("RUNNING (download)")
+        threading.Thread(target=_update_apply_worker,
+                         args=(zip_url, sha256, updater), daemon=True).start()
+        self.send_json({"message": "Update started", "state": "RUNNING (download)"})
+
+    def api_update_rollback(self, data):
+        prop = self._read_module_prop()
+        if prop is None:
+            self.send_error(400, "Not supported (module.prop not found - lite mode?)")
             return
-        log(f"[UPDATE] started: {zip_url}")
-        self.send_json({"message": "Update started", "state": "RUNNING (spawned)"})
+        if self._update_guard_busy():
+            self.send_error(409, "An update is already in progress")
+            return
+        bprop = read_prop_file(UPDATE_BACKUP_PROP)
+        if not bprop:
+            self.send_error(404, "No backup available to roll back to")
+            return
+        try:
+            bvc = int(bprop.get("versionCode") or 0)
+        except (TypeError, ValueError):
+            bvc = 0
+        try:
+            cur_vc = int(prop.get("versionCode") or 0)
+        except (TypeError, ValueError):
+            cur_vc = 0
+        if bvc <= 0 or bvc >= cur_vc:
+            self.send_error(400, "Backup is not an older version - rollback not applicable")
+            return
+        updater = os.path.join(SCRIPTS_DIR, "ank-updater.sh")
+        if not os.path.isfile(updater):
+            self.send_error(500, "ank-updater.sh not installed - module install incomplete (full reinstall required, wipes ANK data)")
+            return
+        try:
+            os.makedirs(ANK_SDCARD, exist_ok=True)
+        except OSError:
+            pass
+        _set_update_state("RUNNING (rollback)")
+        _update_log(f"Rollback requested: vc{cur_vc} -> vc{bvc}")
+        threading.Thread(target=_update_rollback_worker,
+                         args=(updater,), daemon=True).start()
+        self.send_json({"message": "Rollback started", "state": "RUNNING (rollback)"})
 
     def api_container_inspect(self, name):
         config = load_container_config(name)
@@ -3601,68 +4070,12 @@ small{color:#334155}
 
         # --- LITE MODE ---
         if is_lite():
-            def do_lite_start():
-                try:
-                    ok, result = ank_lite.start_container(name)
-                    cfg = load_container_config(name)
-                    if cfg:
-                        if not ok:
-                            log(f"ERROR: lite start {name}: {result}")
-                            cfg["status"] = "failed"
-                            cfg["pid"] = None
-                            save_container_config(name, cfg)
-                            note_container_stopped(name)
-                        else:
-                            log(f"Container {name} started (lite)")
-                            cfg2 = load_container_config(name)
-                            if cfg2:
-                                cfg2["status"] = "running"
-                                save_container_config(name, cfg2)
-                            note_container_started(name)
-                except Exception as e:
-                    log(f"ERROR: lite start thread {name}: {e}")
-                    cfg = load_container_config(name)
-                    if cfg:
-                        cfg["status"] = "failed"
-                        cfg["pid"] = None
-                        save_container_config(name, cfg)
-                        note_container_stopped(name)
-            threading.Thread(target=do_lite_start, daemon=True).start()
+            threading.Thread(target=_lite_start_flow, args=(name,), daemon=True).start()
             self.send_json({"message": f"Container '{name}' starting"})
             return
 
         # --- ROOT MODE ---
-        def do_start():
-            try:
-                output, code = run_script("container.sh", "start", name)
-                cfg = load_container_config(name)
-                if cfg:
-                    if code != 0:
-                        log(f"ERROR: start {name}: {output}")
-                        cfg["status"] = "stopped"
-                        cfg["pid"] = None
-                        save_container_config(name, cfg)
-                        note_container_stopped(name)
-                    else:
-                        log(f"Container {name} started")
-                        # Re-read config — container.sh updated PID and status
-                        cfg2 = load_container_config(name)
-                        if cfg2:
-                            cfg2["status"] = "running"
-                            save_container_config(name, cfg2)
-                        else:
-                            cfg["status"] = "running"
-                            save_container_config(name, cfg)
-                        note_container_started(name)
-            except Exception as e:
-                log(f"ERROR: start thread {name}: {e}")
-                cfg = load_container_config(name)
-                if cfg:
-                    cfg["status"] = "stopped"
-                    cfg["pid"] = None
-                    save_container_config(name, cfg)
-                    note_container_stopped(name)
-        threading.Thread(target=do_start, daemon=True).start()
+        threading.Thread(target=_start_container_flow, args=(name,), daemon=True).start()
         self.send_json({"message": f"Container '{name}' starting"})
 
     def api_stop_container(self, name):
@@ -8813,6 +9226,12 @@ def main():
         print(f"Build queue worker started ({len(_queue_snapshot())} pending)")
     except Exception as _qe:
         print(f"Build queue worker not started: {_qe}")
+
+    # Autostart containers flagged autostart=true (initial boot, and the
+    # server restarts that follow an update/rollback). Skipped while an
+    # update/rollback state is RUNNING.
+    threading.Thread(target=_autostart_worker, daemon=True).start()
+    print("Autostart worker started")
 
     server = ThreadingHTTPServer(("0.0.0.0", PORT), AnkHandler)
 

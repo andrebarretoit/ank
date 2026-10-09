@@ -2859,6 +2859,7 @@ function showSettingsSection(section) {
       <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:16px">
         <button class="btn btn-ghost btn-sm" id="upd-check"><i class="bi bi-arrow-clockwise"></i> Check for Updates</button>
         <button class="btn btn-primary btn-sm" id="upd-apply" disabled><i class="bi bi-cloud-arrow-down"></i> Apply Update</button>
+        <button class="btn btn-ghost btn-sm" id="upd-rollback" style="display:none"><i class="bi bi-arrow-counterclockwise"></i> Rollback</button>
       </div>
       <div style="margin-top:8px;font-size:11px;color:var(--text-muted)">Remote check runs only when you click "Check for Updates". Opening this tab only reads local state.</div>
       <div id="upd-progress" style="display:none;margin-top:16px">
@@ -2867,6 +2868,7 @@ function showSettingsSection(section) {
       </div>
     </div></div>`;
     let _updInfo = null;
+    let _rollbackPending = false;
     function updRender(info) {
       _updInfo = info;
       const cur = document.getElementById('upd-current');
@@ -2901,6 +2903,16 @@ function showSettingsSection(section) {
       if (info.changelog) { cl.style.display = 'block'; cl.textContent = `Changelog: ${info.changelog}`; }
       else { cl.style.display = 'none'; }
       document.getElementById('upd-apply').disabled = running || !info.update_available;
+      const rb = document.getElementById('upd-rollback');
+      if (rb) {
+        if (info.rollback_available && !running) {
+          rb.style.display = '';
+          const bpf = `vc${info.backup_versionCode}${info.backup_build_date ? '-' + info.backup_build_date : ''}`;
+          rb.innerHTML = `<i class="bi bi-arrow-counterclockwise"></i> Rollback to ${bpf}`;
+        } else {
+          rb.style.display = 'none';
+        }
+      }
       const prog = document.getElementById('upd-progress');
       const logEl = document.getElementById('upd-log');
       if (state !== 'IDLE' && info.log && info.log.length) {
@@ -2925,10 +2937,16 @@ function showSettingsSection(section) {
           const state = info.state || 'IDLE';
           if (state.startsWith('DONE') && !prev.startsWith('DONE')) {
             updStopPoll();
-            toast('Update applied - server restarting', 'success');
+            if (_rollbackPending) {
+              _rollbackPending = false;
+              toast('Rollback applied - server restarting', 'success');
+            } else {
+              toast('Update applied - server restarting', 'success');
+            }
           } else if (state.startsWith('FAILED') && !prev.startsWith('FAILED')) {
             updStopPoll();
-            toast(`Update failed: ${state}`, 'error');
+            toast(`${_rollbackPending ? 'Rollback' : 'Update'} failed: ${state}`, 'error');
+            _rollbackPending = false;
           } else if (!state.startsWith('RUNNING')) {
             updStopPoll();
           }
@@ -2978,6 +2996,22 @@ function showSettingsSection(section) {
       if (sent) toast(`Update signal sent to ${sent} target${sent > 1 ? 's' : ''}`, 'success');
       failed.forEach(f => toast(f, 'error'));
       if (targets.some(t => t.local)) { updCheck(true, true); updStartPoll(); }
+    });
+    document.getElementById('upd-rollback')?.addEventListener('click', async () => {
+      const info = _updInfo;
+      if (!info || !info.rollback_available) return;
+      const bpf = `vc${info.backup_versionCode}${info.backup_build_date ? '-' + info.backup_build_date : ''}`;
+      const ok = await confirmAction('Rollback', `Rollback this device to ${bpf}? Running containers restart only when critical files changed; containers with Autostart enabled come back after the server restarts.`);
+      if (!ok) return;
+      try {
+        await api('POST', '/update/rollback', {});
+        _rollbackPending = true;
+        toast(`Rollback to ${bpf} started`, 'success');
+        updCheck(true, true);
+        updStartPoll();
+      } catch (e) {
+        toast(`Rollback failed: ${e.message}`, 'error');
+      }
     });
     // Manager-only scope selector: shows up when this device manages children
     let _updChildren = [];
