@@ -76,10 +76,10 @@ Docker-like container platform for Android — runs Linux containers via chroot 
 - **Realtime log streaming** — Build/deploy/start/stop output via polling
 - **Realtime stats** — CPU, memory, uptime, container status
 - **Port mapping** — Forward device ports to containers (TCP), auto-increment on conflict
-- **Auto-start** — ANK server and services restore on boot (Magisk `service.d`)
+- **Auto-start** — ANK server and services restore on boot (Magisk `service.d`), then containers flagged **Autostart** are started one by one
 - **ankd service daemon** — Per-container services (start/stop/restart/enable/disable/logs)
 - **Security** — Token Bearer auth (24h), login rate limiting, security headers, optional self-signed HTTPS
-- **In-app updates** — Settings → Update checks the manifest, downloads the zip, verifies its SHA-256 and reports progress per state (`RUNNING (...)` → `DONE (PatchFix=vc19-0210)`); see [Updates & Versioning](#updates--versioning)
+- **In-app updates** — Settings → Update checks the manifest, downloads the zip, verifies its SHA-256 and reports progress per state (`RUNNING (...)` → `DONE (PatchFix=vc19-0210)`); when the update changes critical files the running containers are stopped first and the Autostart ones come back after the restart, and a **Rollback** button restores the previous version from the update backup; see [Updates & Versioning](#updates--versioning)
 - **Complete uninstall** — Uninstall via panel with full removal
 - **Multi-device nodes** — Manage multiple remote ANK devices via HTTP API with pairing; **unidirectional**: the parent pushes its stats to each child on every heartbeat and the child never polls the parent
 - **Channel/PatchFix versioning** — every build carries its release channel and a `vc<code>-<DDMM>` patch stamp (channel name, version number and build date — see [Updates & Versioning](#updates--versioning))
@@ -885,8 +885,13 @@ number is what tells them apart; the date only says *when* the patch was coded.
 
 The in-panel updater (`Settings → Update`) reads the manifest (`releases.json`),
 downloads `ank-upgrade.zip`, verifies its SHA-256, backs up the current code and
-extracts the new code over the installed module. The progress log reports each
-state and finishes with `DONE (PatchFix=vc19-0210)`.
+extracts the new code over the installed module. When the new version changes
+critical files (`container.sh`, `ankd.sh`) the running containers are stopped first and
+the ones flagged **Autostart** are started again after the restart; versions without
+critical changes leave the containers untouched. The progress log reports each state
+and finishes with `DONE (PatchFix=vc19-0210)`. The same backup powers the **Rollback**
+button on that page: it restores the previous version (code + runtime server),
+resyncs the live copies and brings the Autostart containers back.
 
 ---
 
