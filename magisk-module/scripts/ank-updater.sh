@@ -17,7 +17,8 @@
 # Failure: any failure after extraction restores the module code from the
 #           backup copy and, if the resync already started, the runtime server
 #           (ankfs/opt/ank) from the tarball. The backup is kept after a
-#           successful update until the next one starts.
+#           successful update until the next one starts or the 7-day rollback
+#           window expires (the server removes it then).
 # Log:  /sdcard/AndroidKonteiner/ank-update.log
 # State: /sdcard/AndroidKonteiner/ank-update.state (RUNNING (...)/DONE (PatchFix=vc19-0210)/FAILED: ...)
 
@@ -231,7 +232,7 @@ do_rollback() {
         exit 1
     fi
     OLD_PF="vc${OLD_VC}${OLD_BUILDDATE:+-$OLD_BUILDDATE}"
-    log "Rolling back to $OLD_PF from $BACKUP"
+    log "Rolling back to $OLD_PF"
 
     set_state "RUNNING (restore)"
     if ! restore_module_code; then
@@ -255,7 +256,7 @@ do_rollback() {
     start_autostart_containers
 
     set_state "DONE ($OLD_PF)"
-    log "=== ROLLBACK DONE === (backup retained at $BACKUP)"
+    log "=== ROLLBACK DONE === (you are now on $OLD_PF)"
     restart_panel_server
     exit 0
 }
@@ -397,7 +398,7 @@ propagate_ankd
 # ---- Finish ----
 rm -f "$ZIP" 2>/dev/null
 set_state "DONE ($NEW_PF)"
-log "=== UPDATE DONE === (previous version preserved at $BACKUP)"
+log "=== UPDATE DONE === (previous version kept - you can roll back from Settings > Update within 7 days)"
 
 restart_panel_server
 exit 0

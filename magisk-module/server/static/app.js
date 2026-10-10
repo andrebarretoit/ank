@@ -2861,10 +2861,15 @@ function showSettingsSection(section) {
         <button class="btn btn-primary btn-sm" id="upd-apply" disabled><i class="bi bi-cloud-arrow-down"></i> Apply Update</button>
         <button class="btn btn-ghost btn-sm" id="upd-rollback" style="display:none"><i class="bi bi-arrow-counterclockwise"></i> Rollback</button>
       </div>
+      <div id="upd-rollback-note" style="display:none;margin-top:8px;font-size:11px;color:var(--text-muted)"></div>
       <div style="margin-top:8px;font-size:11px;color:var(--text-muted)">Remote check runs only when you click "Check for Updates". Opening this tab only reads local state.</div>
       <div id="upd-progress" style="display:none;margin-top:16px">
         <div class="form-label" style="margin-bottom:6px">Progress</div>
         <pre id="upd-log" style="background:var(--bg-base);color:var(--text-secondary);border:1px solid var(--border);border-radius:8px;padding:12px;max-height:260px;overflow-y:auto;font-family:'Consolas','Courier New',monospace;font-size:12px;line-height:1.5;white-space:pre-wrap;word-break:break-all;min-height:80px"></pre>
+      </div>
+      <div style="margin-top:16px">
+        <div id="upd-hist-toggle" class="form-label" style="margin-bottom:6px;cursor:pointer;user-select:none"><i class="bi bi-clock-history"></i> Update History <span id="upd-hist-count" style="font-weight:400;color:var(--text-muted);font-size:11px"></span> <i class="bi bi-chevron-down" id="upd-hist-caret" style="font-size:10px;color:var(--text-muted)"></i></div>
+        <div id="upd-hist-list" style="display:none"></div>
       </div>
     </div></div>`;
     let _updInfo = null;
@@ -2904,13 +2909,35 @@ function showSettingsSection(section) {
       else { cl.style.display = 'none'; }
       document.getElementById('upd-apply').disabled = running || !info.update_available;
       const rb = document.getElementById('upd-rollback');
+      const rbNote = document.getElementById('upd-rollback-note');
       if (rb) {
         if (info.rollback_available && !running) {
           rb.style.display = '';
           const bpf = `vc${info.backup_versionCode}${info.backup_build_date ? '-' + info.backup_build_date : ''}`;
           rb.innerHTML = `<i class="bi bi-arrow-counterclockwise"></i> Rollback to ${bpf}`;
+          if (rbNote && info.backup_expires_at) {
+            const days = info.backup_ttl_days || 7;
+            const when = new Date(info.backup_expires_at).toLocaleDateString();
+            rbNote.style.display = 'block';
+            rbNote.textContent = `Rollback checkpoint kept for ${days} days - expires on ${when} and is removed automatically.`;
+          } else if (rbNote) {
+            rbNote.style.display = 'none';
+          }
+          // Flash once (5s) whenever a NEW checkpoint appears (right after an
+          // update, or when the previous one was replaced); the same
+          // checkpoint never blinks again.
+          const seen = localStorage.getItem('ank_rollback_seen');
+          if (seen !== bpf) {
+            localStorage.setItem('ank_rollback_seen', bpf);
+            rb.classList.remove('upd-rb-blink');
+            void rb.offsetWidth;
+            rb.classList.add('upd-rb-blink');
+            setTimeout(() => rb.classList.remove('upd-rb-blink'), 5000);
+          }
         } else {
           rb.style.display = 'none';
+          if (rbNote) rbNote.style.display = 'none';
+          if (!info.rollback_available) localStorage.removeItem('ank_rollback_seen');
         }
       }
       const prog = document.getElementById('upd-progress');
@@ -2937,6 +2964,7 @@ function showSettingsSection(section) {
           const state = info.state || 'IDLE';
           if (state.startsWith('DONE') && !prev.startsWith('DONE')) {
             updStopPoll();
+            updHistLoad();
             if (_rollbackPending) {
               _rollbackPending = false;
               toast('Rollback applied - server restarting', 'success');
@@ -2945,6 +2973,7 @@ function showSettingsSection(section) {
             }
           } else if (state.startsWith('FAILED') && !prev.startsWith('FAILED')) {
             updStopPoll();
+            updHistLoad();
             toast(`${_rollbackPending ? 'Rollback' : 'Update'} failed: ${state}`, 'error');
             _rollbackPending = false;
           } else if (!state.startsWith('RUNNING')) {
@@ -2967,6 +2996,60 @@ function showSettingsSection(section) {
         if (!silent) toast(`Check failed: ${e.message}`, 'error');
       }
     }
+    async function updHistLoad() {
+      try {
+        const d = await api('GET', '/update/history');
+        updHistRender(d.history || []);
+      } catch (e) {}
+    }
+    function updHistRender(list) {
+      const box = document.getElementById('upd-hist-list');
+      const cnt = document.getElementById('upd-hist-count');
+      if (!box) return;
+      if (cnt) cnt.textContent = list.length ? `(${list.length})` : '';
+      if (!list.length) {
+        box.innerHTML = '<div style="font-size:12px;color:var(--text-muted);padding:6px 0">No updates recorded on this device yet.</div>';
+        return;
+      }
+      box.innerHTML = list.map((e, i) => {
+        const isRb = e.type === 'rollback';
+        const icon = isRb ? 'bi-arrow-counterclockwise' : 'bi-arrow-clockwise';
+        const label = isRb ? 'Rollback' : 'Update';
+        const when = e.date ? new Date(e.date).toLocaleString() : '';
+        let badge, color;
+        if (e.result === 'running') { badge = 'In progress'; color = 'var(--warning)'; }
+        else if (e.result === 'done') { badge = 'Done'; color = 'var(--success)'; }
+        else { badge = 'Failed'; color = 'var(--danger)'; }
+        const arrow = `${esc(e.from || '?')} <i class="bi bi-arrow-right" style="font-size:9px"></i> ${esc(e.to || '?')}`;
+        const clBtn = e.changelog ? ` <a href="#" class="upd-hist-cl" data-i="${i}" style="font-size:11px">changelog</a>` : '';
+        const err = (e.result === 'failed' && e.error) ? `<div style="font-size:11px;color:var(--danger);margin-top:2px">${esc(String(e.error))}</div>` : '';
+        const clBox = e.changelog ? `<div class="upd-hist-clbox" data-i="${i}" style="display:none;font-size:11px;color:var(--text-secondary);margin-top:4px;padding:8px;background:var(--bg-base);border:1px solid var(--border);border-radius:6px;white-space:pre-wrap">${esc(e.changelog)}</div>` : '';
+        return `<div style="padding:8px 0;border-bottom:1px solid var(--border)">
+          <div style="display:flex;gap:8px;align-items:center;font-size:12px;flex-wrap:wrap">
+            <i class="bi ${icon}" style="color:var(--text-muted)"></i>
+            <b>${label}</b> ${arrow}
+            <span style="color:var(--text-muted)">· ${when}</span>
+            <span style="color:${color};font-weight:600">· ${badge}</span>${clBtn}
+          </div>${err}${clBox}
+        </div>`;
+      }).join('');
+      box.querySelectorAll('a.upd-hist-cl').forEach(a => {
+        a.addEventListener('click', ev => {
+          ev.preventDefault();
+          const b = box.querySelector(`.upd-hist-clbox[data-i="${a.dataset.i}"]`);
+          if (b) b.style.display = b.style.display === 'none' ? 'block' : 'none';
+        });
+      });
+    }
+    document.getElementById('upd-hist-toggle')?.addEventListener('click', () => {
+      const list = document.getElementById('upd-hist-list');
+      const caret = document.getElementById('upd-hist-caret');
+      if (!list) return;
+      const open = list.style.display === 'none';
+      list.style.display = open ? 'block' : 'none';
+      if (caret) caret.className = open ? 'bi bi-chevron-up' : 'bi bi-chevron-down';
+      if (open) updHistLoad();
+    });
     document.getElementById('upd-check')?.addEventListener('click', () => updCheck(false));
     document.getElementById('upd-apply')?.addEventListener('click', async () => {
       const scopeSel = document.getElementById('upd-scope-select');
@@ -3031,6 +3114,7 @@ function showSettingsSection(section) {
       if (nodeSel) nodeSel.style.display = e.target.value === 'node' ? '' : 'none';
     });
     updCheck(true, true);
+    updHistLoad();
   } else if (section === 'ank-manager') {
     el.innerHTML = `<div class="card"><div class="card-header"><h3><i class="bi bi-speedometer2"></i> ANK Manager</h3></div><div class="card-body">
       <div id="ank-mgr-status" style="display:flex;align-items:center;gap:12px;margin-bottom:20px;padding:16px;background:var(--bg-base);border-radius:8px">

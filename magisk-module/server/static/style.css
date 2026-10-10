@@ -1486,3 +1486,12 @@ tr:hover td { background: var(--bg-hover); }
   .backup-steps { flex-direction: column; gap: 2px; }
   .backup-step { justify-content: flex-start; }
 }
+
+/* Update page: flash the Rollback button once (5s) when a new checkpoint
+   appears - 0.5s hard blink x10 = 5 seconds */
+@keyframes updRbBlink {
+  50% { opacity: .25; }
+}
+.upd-rb-blink {
+  animation: updRbBlink .5s step-end 10;
+}

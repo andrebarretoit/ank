@@ -22,6 +22,7 @@ import select
 import re
 import shlex
 import glob
+import shutil
 import urllib.request
 import urllib.error
 try:
@@ -285,6 +286,14 @@ UPDATE_BACKUP_PROP = os.path.join(UPDATE_BACKUP_DIR, "module", "module.prop")
 # Where the panel stages the zip before handing it to ank-updater.sh
 # (must match the updater's $TMP_DIR/ank-update.zip so it skips the download)
 UPDATE_ZIP_TMP = os.path.join(ANK_DIR, "tmp", "ank-update.zip")
+# Rollback window: the checkpoint (previous version) is offered for this many
+# days after the update that created it, then removed automatically.
+UPDATE_BACKUP_TTL_DAYS = 7
+# Permanent per-device record of every update/rollback (newest first,
+# capped). Survives updates and rollbacks: it lives on sdcard.
+UPDATE_HISTORY_FILE = os.path.join(ANK_SDCARD, "ank-update-history.json")
+UPDATE_HISTORY_MAX = 50
+_history_lock = threading.Lock()
 # Files whose change affects RUNNING containers: they must be stopped for the
 # new code to take effect. Map = zip path -> live copy the updater resyncs.
 CRITICAL_REL_LIVE = {
@@ -1368,6 +1377,161 @@ def _backup_critical_changed():
         if cur != old:
             return True
     return False
+
+def _backup_created_at():
+    """Epoch seconds when the rollback checkpoint was created, or None."""
+    try:
+        return os.path.getmtime(UPDATE_BACKUP_DIR)
+    except OSError:
+        return None
+
+def cleanup_expired_backup():
+    """Remove the rollback checkpoint once it is older than the retention
+    window (7 days). Safe to call often: returns True only when it removed
+    an expired checkpoint (or nothing was there)."""
+    created = _backup_created_at()
+    if created is None:
+        return False
+    age = time.time() - created
+    if age <= UPDATE_BACKUP_TTL_DAYS * 86400:
+        return False
+    shutil.rmtree(UPDATE_BACKUP_DIR, ignore_errors=True)
+    log(f"[UPDATE] rollback checkpoint older than {UPDATE_BACKUP_TTL_DAYS} days - removed")
+    _update_log(f"Rollback checkpoint expired ({UPDATE_BACKUP_TTL_DAYS} days) - removed")
+    return True
+
+def _backup_retention_worker():
+    """Periodic housekeeping: drop an expired rollback checkpoint even when
+    nobody opens the Update page (checked hourly, first run after boot)."""
+    try:
+        time.sleep(60)
+        while True:
+            cleanup_expired_backup()
+            time.sleep(3600)
+    except Exception as e:
+        log(f"[UPDATE] retention worker error: {e}")
+
+# ---- Update history: permanent record of each update/rollback attempt ----
+
+def _history_read():
+    try:
+        with open(UPDATE_HISTORY_FILE, "r") as f:
+            data = json.load(f)
+        return data if isinstance(data, list) else []
+    except (OSError, ValueError):
+        return []
+
+def _history_write(entries):
+    try:
+        os.makedirs(ANK_SDCARD, exist_ok=True)
+        tmp = UPDATE_HISTORY_FILE + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(entries[:UPDATE_HISTORY_MAX], f, ensure_ascii=False)
+        os.replace(tmp, UPDATE_HISTORY_FILE)
+    except OSError as e:
+        log(f"[UPDATE] history write failed: {e}")
+
+def _patchfix(vc, build_date=None):
+    out = f"vc{vc}" if vc else "vc?"
+    return f"{out}-{build_date}" if build_date else out
+
+def history_add(entry):
+    """Prepend a new update/rollback attempt to the device history."""
+    with _history_lock:
+        entries = _history_read()
+        entries.insert(0, entry)
+        _history_write(entries)
+
+def history_resolve_running(**fields):
+    """Finish the newest entry when it is still 'running'. True when updated."""
+    with _history_lock:
+        entries = _history_read()
+        if not entries or entries[0].get("result") != "running":
+            return False
+        entries[0].update(fields)
+        _history_write(entries)
+        return True
+
+def _history_seed_from_checkpoint():
+    """One-time backfill: with an empty history, record the last known good
+    update (rollback checkpoint -> current version) so the first boot with
+    history support is not blank. The checkpoint holds the version the last
+    update came FROM and its mtime is when that update ran."""
+    bprop = read_prop_file(UPDATE_BACKUP_PROP)
+    if not bprop:
+        return False
+    prop = read_prop_file(UPDATE_MODULE_PROP)
+    if not prop:
+        return False
+    try:
+        bvc = int(bprop.get("versionCode") or 0)
+        cur_vc = int(prop.get("versionCode") or 0)
+    except (TypeError, ValueError):
+        return False
+    if not (0 < bvc < cur_vc):  # only a real older checkpoint = a real update
+        return False
+    created = _backup_created_at()
+    if created is None:
+        return False
+    entry = {
+        "type": "update",
+        "from": _patchfix(bprop.get("versionCode"), bprop.get("buildDate")),
+        "to": _patchfix(prop.get("versionCode"), prop.get("buildDate")),
+        "changelog": None,
+        "date": int(created * 1000),
+        "result": "done",
+        "seeded": True,
+    }
+    with _history_lock:
+        entries = _history_read()
+        if entries:  # anything already recorded wins (incl. a running one)
+            return False
+        entries.insert(0, entry)
+        _history_write(entries)
+    log("[UPDATE] history: seeded baseline from rollback checkpoint")
+    return True
+
+def _history_settle_once():
+    """One reconcile tick: mark the newest entry done/failed from the state
+    file the updater writes. Returns True while the entry is still running.
+
+    Runs on a timer and at boot: after DONE the updater restarts the server,
+    so the new process settles the entry the old one may have missed."""
+    entries = _history_read()
+    if not entries or entries[0].get("result") != "running":
+        return False
+    state, _ = AnkHandler._update_state()
+    if state.startswith("DONE"):
+        m = re.search(r"\(([^)]*)\)", state)
+        history_resolve_running(result="done",
+                                to=m.group(1) if m else entries[0].get("to"))
+        return False
+    if state.startswith("FAILED"):
+        err = state[8:] if state.startswith("FAILED: ") else state
+        history_resolve_running(result="failed", error=err)
+        return False
+    if not state.startswith("RUNNING"):
+        history_resolve_running(result="failed", error="interrupted")
+        return False
+    # RUNNING but stale (>30 min): the updater died mid-run
+    try:
+        if time.time() - os.path.getmtime(UPDATE_STATE_FILE) > 1800:
+            history_resolve_running(result="failed", error="interrupted (stale state)")
+            return False
+    except OSError:
+        pass
+    return True
+
+def _update_history_worker():
+    """Resolves the newest history entry from the update state file."""
+    try:
+        time.sleep(5)
+        _history_seed_from_checkpoint()
+        while True:
+            pending = _history_settle_once()
+            time.sleep(3 if pending else 15)
+    except Exception as e:
+        log(f"[UPDATE] history worker error: {e}")
 
 def _spawn_detached(args):
     """Spawn a helper script detached (via su when not root). (ok, err)."""
@@ -3088,6 +3252,8 @@ small{color:#334155}
             self.api_system_info()
         elif path == "/api/update/check":
             self.api_update_check(parsed)
+        elif path == "/api/update/history":
+            self.api_update_history()
         elif path == "/api/system/cache":
             self.api_system_cache()
         elif path == "/api/networks":
@@ -3691,6 +3857,9 @@ small{color:#334155}
             "backup_version": None,
             "backup_versionCode": None,
             "backup_build_date": None,
+            "backup_ttl_days": UPDATE_BACKUP_TTL_DAYS,
+            "backup_created_at": None,
+            "backup_expires_at": None,
             "state": state,
             "log": log_tail,
         }
@@ -3699,7 +3868,10 @@ small{color:#334155}
             self.send_json(out)
             return
         # Rollback target = the version the last update came from (kept by
-        # ank-updater.sh until the next update starts). Only older versions.
+        # ank-updater.sh until the next update starts or the 7-day window
+        # expires). Only older versions.
+        cleanup_expired_backup()
+        out["backup_ttl_days"] = UPDATE_BACKUP_TTL_DAYS
         bprop = read_prop_file(UPDATE_BACKUP_PROP)
         if bprop:
             try:
@@ -3710,6 +3882,11 @@ small{color:#334155}
             out["backup_versionCode"] = bvc
             out["backup_build_date"] = bprop.get("buildDate") or None
             out["rollback_available"] = 0 < bvc < cur_vc
+            created = _backup_created_at()
+            if created is not None:
+                # epoch ms for JS Date
+                out["backup_created_at"] = int(created * 1000)
+                out["backup_expires_at"] = int((created + UPDATE_BACKUP_TTL_DAYS * 86400) * 1000)
         if local_only:
             # Instant, offline answer: no remote manifest fetch
             out["local_only"] = True
@@ -3752,6 +3929,7 @@ small{color:#334155}
             return
         zip_url = (data or {}).get("zip_url")
         sha256 = (data or {}).get("sha256")
+        latest_vc = latest_bd = latest_cl = None
         if not zip_url:
             url = prop.get("updateJson", "")
             if not url:
@@ -3764,6 +3942,9 @@ small{color:#334155}
                 return
             zip_url = manifest.get("zipUrl")
             sha256 = manifest.get("sha256")
+            latest_vc = manifest.get("versionCode")
+            latest_bd = manifest.get("buildDate")
+            latest_cl = manifest.get("changelog")
         if not zip_url:
             self.send_error(400, "No zipUrl available for update")
             return
@@ -3779,6 +3960,17 @@ small{color:#334155}
         # when critical files changed, then spawns the updater with the local
         # file (the updater skips its own download for a local path).
         _set_update_state("RUNNING (download)")
+        # State first, entry second: whenever the settle worker sees a
+        # 'running' entry the state file can no longer hold the previous
+        # run's DONE/FAILED, so it can never finish the wrong entry.
+        history_add({
+            "type": "update",
+            "from": _patchfix(prop.get("versionCode"), prop.get("buildDate")),
+            "to": _patchfix(latest_vc, latest_bd),
+            "changelog": latest_cl,
+            "date": int(time.time() * 1000),
+            "result": "running",
+        })
         threading.Thread(target=_update_apply_worker,
                          args=(zip_url, sha256, updater), daemon=True).start()
         self.send_json({"message": "Update started", "state": "RUNNING (download)"})
@@ -3791,6 +3983,7 @@ small{color:#334155}
         if self._update_guard_busy():
             self.send_error(409, "An update is already in progress")
             return
+        cleanup_expired_backup()
         bprop = read_prop_file(UPDATE_BACKUP_PROP)
         if not bprop:
             self.send_error(404, "No backup available to roll back to")
@@ -3816,9 +4009,22 @@ small{color:#334155}
             pass
         _set_update_state("RUNNING (rollback)")
         _update_log(f"Rollback requested: vc{cur_vc} -> vc{bvc}")
+        history_add({
+            "type": "rollback",
+            "from": _patchfix(prop.get("versionCode"), prop.get("buildDate")),
+            "to": _patchfix(bprop.get("versionCode"), bprop.get("buildDate")),
+            "changelog": None,
+            "date": int(time.time() * 1000),
+            "result": "running",
+        })
         threading.Thread(target=_update_rollback_worker,
                          args=(updater,), daemon=True).start()
         self.send_json({"message": "Rollback started", "state": "RUNNING (rollback)"})
+
+    def api_update_history(self):
+        """Permanent per-device record of every update/rollback attempt."""
+        self.send_json({"history": _history_read(),
+                        "max_entries": UPDATE_HISTORY_MAX})
 
     def api_container_inspect(self, name):
         config = load_container_config(name)
@@ -9231,6 +9437,8 @@ def main():
     # server restarts that follow an update/rollback). Skipped while an
     # update/rollback state is RUNNING.
     threading.Thread(target=_autostart_worker, daemon=True).start()
+    threading.Thread(target=_backup_retention_worker, daemon=True).start()
+    threading.Thread(target=_update_history_worker, daemon=True).start()
     print("Autostart worker started")
 
     server = ThreadingHTTPServer(("0.0.0.0", PORT), AnkHandler)
