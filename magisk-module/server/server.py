@@ -1525,8 +1525,10 @@ def _history_settle_once():
 def _update_history_worker():
     """Resolves the newest history entry from the update state file."""
     try:
-        time.sleep(5)
+        # Seed first: the baseline must be visible as soon as the server
+        # boots, without waiting on the settle loop's grace period.
         _history_seed_from_checkpoint()
+        time.sleep(5)
         while True:
             pending = _history_settle_once()
             time.sleep(3 if pending else 15)
@@ -3380,6 +3382,8 @@ small{color:#334155}
             self.api_exec_container(path.split("/")[3], data)
         elif path.startswith("/api/containers/") and path.endswith("/update"):
             self.api_update_container(path.split("/")[3], data)
+        elif path.startswith("/api/containers/") and path.endswith("/rename"):
+            self.api_rename_container(path.split("/")[3], data)
         elif "/files/write" in path and path.startswith("/api/containers/"):
             name = path.split("/")[3]
             self.api_files_write(name, data)
@@ -4023,6 +4027,13 @@ small{color:#334155}
 
     def api_update_history(self):
         """Permanent per-device record of every update/rollback attempt."""
+        # Reconcile on read so the list never depends on worker timing
+        # (or on the user pressing Check first).
+        try:
+            _history_seed_from_checkpoint()
+            _history_settle_once()
+        except Exception as e:
+            log(f"[UPDATE] history settle on read: {e}")
         self.send_json({"history": _history_read(),
                         "max_entries": UPDATE_HISTORY_MAX})
 
@@ -5250,6 +5261,64 @@ small{color:#334155}
             _sp = config.get("static_path", "")
             _write_ank_config(merged, _service, _port, _sp)
         self.send_json({"message": f"Container '{name}' updated"})
+
+    def api_rename_container(self, old_name, data):
+        """Rename a stopped container (dir + config identity), keeping stack
+        and backup-routine references in sync. Only allowed while stopped."""
+        new_name = (data.get("name") or "").strip() if isinstance(data, dict) else ""
+        if not new_name or not all(c.isalnum() or c in "-_" for c in new_name):
+            self.send_json({"error": "Invalid container name (letters, digits, - and _ only)"}, 400)
+            return
+        if new_name == old_name:
+            self.send_json({"name": old_name, "renamed": False})
+            return
+        cfg = load_container_config(old_name)
+        if not cfg:
+            self.send_json({"error": f"Container '{old_name}' not found"}, 404)
+            return
+        if os.path.exists(os.path.join(CONTAINERS_DIR, new_name)):
+            self.send_json({"error": f"Container '{new_name}' already exists"}, 409)
+            return
+        if cfg.get("status") != "stopped":
+            self.send_json({"error": "Container must be stopped before renaming"}, 409)
+            return
+        if _container_live_pids(os.path.join(CONTAINERS_DIR, old_name, "merged")):
+            self.send_json({"error": "Container still has running processes - stop it first"}, 409)
+            return
+        try:
+            os.rename(os.path.join(CONTAINERS_DIR, old_name),
+                      os.path.join(CONTAINERS_DIR, new_name))
+        except OSError as e:
+            self.send_json({"error": f"Rename failed: {e}"}, 500)
+            return
+        cfg["name"] = new_name
+        try:
+            save_container_config(new_name, cfg)
+        except Exception as e:
+            log(f"ERROR: rename config write {new_name}: {e}")
+        try:
+            sm = self._get_stack_manager()
+            if sm:
+                for st in sm.list_stacks():
+                    cl = st.get("containers") or []
+                    if old_name in cl:
+                        st["containers"] = [new_name if c == old_name else c for c in cl]
+                        sm._save_stack_config(st["name"], st)
+        except Exception as e:
+            log(f"ERROR: rename stack refs {old_name}: {e}")
+        try:
+            bm = self._get_backup_manager()
+            if bm:
+                for r in bm.list_routines():
+                    cl = r.get("containers") or []
+                    if old_name in cl:
+                        rid = r.get("id") or r.get("name")
+                        if rid:
+                            bm.update_routine(rid, {"containers": [new_name if c == old_name else c for c in cl]})
+        except Exception as e:
+            log(f"ERROR: rename backup refs {old_name}: {e}")
+        log(f"Container renamed: {old_name} -> {new_name}")
+        self.send_json({"name": new_name, "renamed": True})
 
     def api_pull_image(self, data):
         version = data.get("version", "3.20")

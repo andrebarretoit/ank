@@ -333,10 +333,12 @@ function navigateTo(page) {
   if (page === 'containers') loadContainers();
   if (page === 'images') {
     showImageSection('quick-deploy');
-    loadImages().then(() => {
+    const imagesRerender = () => {
       const sel = document.querySelector('#images-list .split-list-card.selected');
       if (!sel) showImageSection('quick-deploy');
-    });
+    };
+    loadTemplates().then(imagesRerender);
+    loadImagesList().then(imagesRerender);
   }
   if (page === 'nodes') { loadNodes(); loadPairingRequests(); }
   if (page === 'stacks') loadStacks();
@@ -908,6 +910,7 @@ async function showContainerDetail(name, nodeId) {
           <div class="settings-section">
             <div class="settings-section-title"><i class="bi bi-gear"></i> General</div>
             <div class="form-group"><label class="checkbox-label" style="display:flex;align-items:center;gap:8px;cursor:pointer"><input type="checkbox" id="detail-autostart" style="width:18px;height:18px;accent-color:var(--accent)"><i class="bi bi-power" style="color:var(--accent)"></i> Autostart on boot</label></div>
+            <div class="form-group" style="margin-top:8px"><label class="form-label">Name</label><input type="text" class="form-input" id="detail-name" disabled><small class="form-hint" id="detail-name-hint">Stop the container to enable renaming</small></div>
           </div>
           <div class="settings-section">
             <div class="settings-section-title"><i class="bi bi-key"></i> Access</div>
@@ -1006,6 +1009,15 @@ async function showContainerDetail(name, nodeId) {
     // Populate settings form (skipped for pending — those elements don't exist)
     if (!isPending) {
       document.getElementById('detail-autostart').checked = c.autostart || false;
+      const nameInput = document.getElementById('detail-name');
+      if (nameInput) {
+        nameInput.value = c.name || name;
+        const localOk = !nodeId || nodeId === 'local';
+        const canRename = localOk && c.status === 'stopped';
+        nameInput.disabled = !canRename;
+        const nameHint = document.getElementById('detail-name-hint');
+        if (nameHint) nameHint.textContent = !localOk ? 'Renaming is only available on this device' : (canRename ? 'Rename applies when you press Save' : 'Stop the container to enable renaming');
+      }
       document.getElementById('detail-mem-limit').value = c.resources?.memory_limit || '256M';
       document.getElementById('detail-cpu-limit').value = c.resources?.cpu_limit_percent || 50;
       document.getElementById('detail-ssh-port').value = c.ssh_port || '';
@@ -1030,6 +1042,15 @@ async function showContainerDetail(name, nodeId) {
     document.getElementById('detail-settings-form')?.addEventListener('submit', async (e) => {
       e.preventDefault();
       if (!currentContainer) return;
+      const nameInput = document.getElementById('detail-name');
+      let newName = '';
+      if (nameInput && !nameInput.disabled) {
+        newName = nameInput.value.trim();
+        if (newName && newName !== name && !/^[A-Za-z0-9_-]+$/.test(newName)) {
+          toast('Invalid container name (letters, digits, - and _ only)', 'error');
+          return;
+        }
+      }
       try {
         const updateData = {
           autostart: document.getElementById('detail-autostart').checked,
@@ -1040,8 +1061,13 @@ async function showContainerDetail(name, nodeId) {
         const newPass = document.getElementById('detail-root-password').value;
         if (newPass && newPass.length >= 4) updateData.root_password = newPass;
         await api('POST', `/containers/${name}/update`, updateData);
-        await showContainerDetail(name, nodeId);
-        toast(`Settings saved for "${name}"`, 'success');
+        let finalName = name;
+        if (newName && newName !== name) {
+          const rr = await api('POST', `/containers/${name}/rename`, { name: newName });
+          finalName = rr.name || newName;
+        }
+        await showContainerDetail(finalName, nodeId);
+        toast(finalName !== name ? `Renamed to "${finalName}"` : `Settings saved for "${name}"`, 'success');
       } catch (e) { toast(`Failed: ${e.message}`, 'error'); }
     });
 
@@ -1347,16 +1373,23 @@ async function transferImage(imageName) {
 let cachedTemplates = [];
 let cachedImages = [];
 
-async function loadImages() {
+async function loadTemplates() {
   try {
-    const [images, templates] = await Promise.all([
-      api('GET', '/images/all').catch(() => []),
-      api('GET', '/images/templates').catch(() => [])
-    ]);
-    cachedImages = Array.isArray(images) ? images : [];
+    const templates = await api('GET', '/images/templates').catch(() => []);
     cachedTemplates = Array.isArray(templates) ? templates : [];
+  } catch (e) { console.error('Templates load failed:', e); }
+}
+
+async function loadImagesList() {
+  try {
+    const images = await api('GET', '/images/all').catch(() => []);
+    cachedImages = Array.isArray(images) ? images : [];
     document.getElementById('images-count-label').textContent = cachedImages.length + ' images';
   } catch (e) { console.error('Images load failed:', e); }
+}
+
+async function loadImages() {
+  await Promise.all([loadImagesList(), loadTemplates()]);
 }
 
 function handleAnkFile(file) {
@@ -2111,7 +2144,7 @@ async function loadBackups() {
   try {
     const data = await api('GET', '/backups');
     const routines = data.routines || [];
-    if (!routines.length) { el.innerHTML = '<div class="empty-state"><i class="bi bi-cloud-arrow-up"></i><h3>No backup routines</h3><p>Create a backup routine to protect your containers</p><button class="btn btn-primary" onclick="openBackupWizardForContainer(\'\')"><i class="bi bi-plus-lg"></i> Create Routine</button></div>'; const btn = document.getElementById('btn-create-backup'); if (btn) btn.style.display = ''; return; }
+    if (!routines.length) { el.innerHTML = '<div class="empty-state"><i class="bi bi-cloud-arrow-up"></i><h3>No backup routines</h3><p>Create a backup routine to protect your containers</p></div>'; const btn = document.getElementById('btn-create-backup'); if (btn) btn.style.display = ''; return; }
     const btn = document.getElementById('btn-create-backup'); if (btn) btn.style.display = '';
     el.innerHTML = routines.map(r => {
       const lastRun = r.last_run ? new Date(r.last_run).toLocaleString() : 'Never';
@@ -2969,7 +3002,7 @@ function showSettingsSection(section) {
               _rollbackPending = false;
               toast('Rollback applied - server restarting', 'success');
             } else {
-              toast('Update applied - server restarting', 'success');
+              toast('Android Konteiner has been successfully updated.', 'success');
             }
           } else if (state.startsWith('FAILED') && !prev.startsWith('FAILED')) {
             updStopPoll();
@@ -2986,6 +3019,7 @@ function showSettingsSection(section) {
       try {
         const info = await api('GET', local ? '/update/check?local=1' : '/update/check');
         updRender(info);
+        updHistLoad();
         const state = info.state || 'IDLE';
         if (state.startsWith('RUNNING')) updStartPoll(); else updStopPoll();
         if (!silent) {
