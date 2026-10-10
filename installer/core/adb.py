@@ -469,7 +469,10 @@ class ADB:
             ("Removing /data/local/ank...", lambda: _sh("rm -rf /data/local/ank")),
             ("Removing /data/local/tmp/ank...", lambda: _sh("rm -rf /data/local/tmp/ank")),
             ("Removing /sdcard/AndroidKonteiner...", lambda: _sh("rm -rf /sdcard/AndroidKonteiner")),
-            ("Removing Magisk module...", lambda: _sh("rm -rf /data/adb/modules/ank /data/adb/service.d/ank.sh")),
+            ("Removing Magisk module...", lambda: _sh(
+                "rm -rf /data/adb/modules/ank /data/adb/service.d/ank.sh; "
+                "rm -rf /data/adb/modules/.ank-update-old"
+            )),
             ("Removing ANK UI...", lambda: self.uninstall_ank_ui(serial, callback)),
             ("Cleaning caches...", lambda: _sh("rm -rf /data/local/tmp/ank* 2>/dev/null")),
         ]

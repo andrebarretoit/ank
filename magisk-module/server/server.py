@@ -8047,11 +8047,12 @@ small{color:#334155}
         stack_config = sm._load_stack_config(name)
         if stack_config:
             for cname in stack_config.get("containers", []):
-                log_path = os.path.join(CONTAINERS_DIR, cname, "logs", "ankd.log")
+                log_path = os.path.join(ANK_DIR, "logs", f"{cname}.log")
                 if os.path.exists(log_path):
                     try:
                         with open(log_path, "r", encoding="utf-8", errors="replace") as f:
-                            lines.extend(f.readlines()[-50:])
+                            for line in f.readlines()[-50:]:
+                                lines.append(f"[{cname}] {line}")
                     except Exception:
                         pass
         self.send_json({"lines": lines[-200:]})
@@ -8061,7 +8062,7 @@ small{color:#334155}
         if not sm:
             self.send_json({"error": "stack_manager not available"}, 500)
             return
-        metrics = sm.get_stack_metrics(name)
+        metrics = sm.get_metrics(name)
         self.send_json(metrics)
 
     def api_create_stack(self, data):
@@ -9457,7 +9458,8 @@ def main():
     if _server_dir not in sys.path:
         sys.path.insert(0, _server_dir)
 
-    # Start auto-scaling orchestrator (shares the singleton StackManager)
+    # Start auto-scaling orchestrator (shares the singleton StackManager;
+    # it also reconciles the load balancers and the portproxy forwards)
     try:
         from ank_orchestrator import Orchestrator as _Orchestrator
         if AnkHandler._stack_manager_instance is None:
@@ -9466,12 +9468,7 @@ def main():
         _sm = AnkHandler._stack_manager_instance
         _orch = _Orchestrator(_sm)
         _orch.start(interval=10)
-        print("Orchestrator started (auto-scaling enabled)")
-        try:
-            _sm.start_monitoring(interval=30)
-            print("Stack auto-scale monitor started (30s interval)")
-        except Exception as _me:
-            print(f"Stack monitor not started: {_me}")
+        print("Orchestrator started (auto-scaling + reconcile enabled)")
     except Exception as _oe:
         print(f"Orchestrator not started: {_oe}")
 

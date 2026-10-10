@@ -95,6 +95,10 @@ cleanup() {
     # Remove ALL ANK data (fresh start)
     rm -rf "$ANK_DIR"
     rm -rf "/sdcard/AndroidKonteiner"
+    # Stale rollback checkpoint from a previous install: a fresh start must
+    # not inherit its history seed or its Rollback button (glob "ank*" never
+    # matches this hidden dir). Panel updates recreate it from scratch.
+    rm -rf "/data/adb/modules/.ank-update-old"
 
     # Recreate base dirs
     mkdir -p "$ANK_DIR/logs" "$ANK_DIR/cache"

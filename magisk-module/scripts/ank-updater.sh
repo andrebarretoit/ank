@@ -12,8 +12,13 @@
 # Rollback (--rollback): restores the previous version from the backup copy
 #       (module code + runtime server tarball), resyncs the runtime copies,
 #       propagates ankd.sh, starts containers flagged autostart=true one by
-#       one, DONE -> restart server. Used by the panel's Rollback button;
-#       the panel stops running containers first when critical files differ.
+#       one, then restarts the server and WAITS for it to come back. Before
+#       touching anything it snapshots the current version; if the restored
+#       code fails validation (py_compile) or the server does not come back
+#       after the restart, the snapshot is restored so the panel keeps
+#       running the version you were on instead of dying. Used by the
+#       panel's Rollback button; the panel stops running containers first
+#       when critical files differ.
 # Failure: any failure after extraction restores the module code from the
 #           backup copy and, if the resync already started, the runtime server
 #           (ankfs/opt/ank) from the tarball. The backup is kept after a
@@ -214,6 +219,101 @@ restart_panel_server() {
     fi
 }
 
+# Synchronous variant used by the rollback path so we can verify the
+# restored server actually comes back before declaring DONE.
+restart_panel_server_sync() {
+    if [ -f "$ANK_DIR/core/restart-server.sh" ]; then
+        log "Restarting ANK server (waiting for result)..."
+        sh "$ANK_DIR/core/restart-server.sh" >> "$LOG" 2>&1
+    else
+        log "WARN: restart-server.sh missing - cannot restart the server"
+        return 1
+    fi
+}
+
+# Wait until the panel server process is up AND stable (alive again after
+# 5s). Matches only the panel server, not container python processes.
+wait_for_server() {
+    local i=0 pid=""
+    while [ "$i" -lt 40 ]; do
+        pid=$(pgrep -f "ankfs/opt/ank/server.py\|python3 /opt/ank/server.py" 2>/dev/null | head -1)
+        if [ -n "$pid" ]; then
+            sleep 5
+            if kill -0 "$pid" 2>/dev/null; then
+                return 0
+            fi
+        fi
+        sleep 1
+        i=$((i + 1))
+    done
+    return 1
+}
+
+# ---- Self-heal material: snapshot of the version currently running ----
+PREROLL_MODULE="$TMP_DIR/pre-rollback-module"
+PREROLL_RUNTIME="$TMP_DIR/pre-rollback-runtime.tgz"
+
+snapshot_current() {
+    rm -rf "$PREROLL_MODULE" 2>/dev/null
+    mkdir -p "$PREROLL_MODULE" || return 1
+    local e
+    for e in "$MODULE_DIR"/*; do
+        [ -e "$e" ] || continue
+        [ "$(basename "$e")" = "ankfs" ] && continue
+        cp -R "$e" "$PREROLL_MODULE/" 2>/dev/null
+    done
+    [ -f "$PREROLL_MODULE/module.prop" ] || return 1
+    if [ -d "$ANKFS/opt/ank" ]; then
+        tar czf "$PREROLL_RUNTIME" -C "$ANKFS" opt/ank 2>/dev/null || return 1
+    fi
+    log "Snapshot of current version saved (self-heal material)"
+    return 0
+}
+
+restore_snapshot() {
+    [ -f "$PREROLL_MODULE/module.prop" ] || return 1
+    mkdir -p "$MODULE_DIR" 2>/dev/null
+    local e
+    for e in "$MODULE_DIR"/*; do
+        [ -e "$e" ] || continue
+        [ "$(basename "$e")" = "ankfs" ] && continue
+        rm -rf "$e" 2>/dev/null
+    done
+    for e in "$PREROLL_MODULE"/*; do
+        [ -e "$e" ] || continue
+        cp -R "$e" "$MODULE_DIR/" 2>/dev/null
+    done
+    if [ -f "$PREROLL_RUNTIME" ] && [ -d "$ANKFS" ]; then
+        tar xzf "$PREROLL_RUNTIME" -C "$ANKFS" 2>/dev/null
+    fi
+    log "Previous version restored from snapshot"
+    return 0
+}
+
+# Syntax-check the restored server.py with the ankfs python (host musl
+# run, same way service.sh starts it). Returns 0 when it compiles or when
+# validation is not possible; 1 only on a definitive syntax error.
+validate_restored_server() {
+    [ -f "$ANKFS/opt/ank/server.py" ] || return 1
+    local MUSL=""
+    case "$(uname -m)" in
+        aarch64|arm64) MUSL="$ANKFS/lib/ld-musl-aarch64.so.1" ;;
+        armv7*|armhf)  MUSL="$ANKFS/lib/ld-musl-armhf.so.1" ;;
+        x86_64)        MUSL="$ANKFS/lib/ld-musl-x86_64.so.1" ;;
+        *) MUSL=$(find "$ANKFS/lib" -name "ld-musl-*.so.*" 2>/dev/null | head -1) ;;
+    esac
+    [ -f "$MUSL" ] || MUSL=$(find "$ANKFS/lib" -name "ld-musl-*.so.*" 2>/dev/null | head -1)
+    if [ ! -f "$MUSL" ] || [ ! -f "$ANKFS/usr/bin/python3" ]; then
+        return 0  # cannot validate on this device - assume ok
+    fi
+    if (cd "$ANKFS" && env LD_LIBRARY_PATH="$ANKFS/usr/lib:$ANKFS/lib" \
+        "$MUSL" "$ANKFS/usr/bin/python3" -m py_compile "$ANKFS/opt/ank/server.py" \
+        >/dev/null 2>&1); then
+        return 0
+    fi
+    return 1
+}
+
 # ---- Rollback: restore the previous version from the backup copy ----
 do_rollback() {
     BK_PROP="$BACKUP/module/module.prop"
@@ -225,6 +325,17 @@ do_rollback() {
         set_state "FAILED: backup has no runtime server tarball"
         exit 1
     fi
+
+    # ---- Pre-flight: validate the backup BEFORE touching anything ----
+    if ! tar tzf "$BACKUP/runtime-server.tgz" >/dev/null 2>&1; then
+        set_state "FAILED: backup runtime tarball is corrupt"
+        exit 1
+    fi
+    if ! tar tzf "$BACKUP/runtime-server.tgz" 2>/dev/null | grep -q "opt/ank/server.py"; then
+        set_state "FAILED: backup runtime tarball has no server.py"
+        exit 1
+    fi
+
     OLD_VC=$(grep '^versionCode=' "$BK_PROP" 2>/dev/null | head -1 | cut -d= -f2)
     OLD_BUILDDATE=$(grep '^buildDate=' "$BK_PROP" 2>/dev/null | head -1 | cut -d= -f2)
     if [ -z "$OLD_VC" ]; then
@@ -234,31 +345,80 @@ do_rollback() {
     OLD_PF="vc${OLD_VC}${OLD_BUILDDATE:+-$OLD_BUILDDATE}"
     log "Rolling back to $OLD_PF"
 
+    # ---- Snapshot the version we are on now (self-heal material).
+    #      Nothing is modified yet: a failure here keeps the panel alive
+    #      on the current version. ----
+    set_state "RUNNING (snapshot)"
+    if ! snapshot_current; then
+        set_state "FAILED: cannot snapshot current version (nothing was modified)"
+        exit 1
+    fi
+
+    # ---- Restore the previous version ----
     set_state "RUNNING (restore)"
     if ! restore_module_code; then
-        set_state "FAILED: module code restore incomplete"
+        restore_snapshot
+        set_state "FAILED: module code restore incomplete (previous version restored)"
         exit 1
     fi
     RESTORED_VC=$(grep '^versionCode=' "$MODULE_DIR/module.prop" 2>/dev/null | head -1 | cut -d= -f2)
     if [ "$RESTORED_VC" != "$OLD_VC" ]; then
-        set_state "FAILED: restore verification failed (module.prop vc=${RESTORED_VC:-missing}, expected $OLD_VC)"
+        restore_snapshot
+        set_state "FAILED: restore verification failed (previous version restored, module.prop vc=${RESTORED_VC:-missing}, expected $OLD_VC)"
         exit 1
     fi
     if ! tar xzf "$BACKUP/runtime-server.tgz" -C "$ANKFS" 2>/dev/null; then
-        set_state "FAILED: runtime server restore failed"
+        restore_snapshot
+        set_state "FAILED: runtime server restore failed (previous version restored)"
+        exit 1
+    fi
+    if [ ! -f "$ANKFS/opt/ank/server.py" ]; then
+        restore_snapshot
+        set_state "FAILED: server.py missing after restore (previous version restored)"
         exit 1
     fi
     log "Module code + runtime server restored ($OLD_PF)"
 
+    # ---- Validate the restored code before restarting the panel ----
+    set_state "RUNNING (validate)"
+    if ! validate_restored_server; then
+        log "ROLLBACK: restored server.py failed validation - restoring previous version"
+        restore_snapshot
+        resync_runtime
+        set_state "FAILED: restored version failed validation (kept the version you were on)"
+        exit 1
+    fi
+
     resync_runtime
-    [ -f "$ANKFS/opt/ank/server.py" ] || { set_state "FAILED: server.py missing after resync"; exit 1; }
+    [ -f "$ANKFS/opt/ank/server.py" ] || { restore_snapshot; resync_runtime; set_state "FAILED: server.py missing after resync (previous version restored)"; exit 1; }
     propagate_ankd
     start_autostart_containers
 
-    set_state "DONE ($OLD_PF)"
-    log "=== ROLLBACK DONE === (you are now on $OLD_PF)"
-    restart_panel_server
-    exit 0
+    # ---- Restart and WAIT for the panel to come back ----
+    set_state "RUNNING (restart)"
+    restart_panel_server_sync
+    if wait_for_server; then
+        set_state "DONE ($OLD_PF)"
+        log "=== ROLLBACK DONE === (you are now on $OLD_PF)"
+        rm -rf "$PREROLL_MODULE" "$PREROLL_RUNTIME" 2>/dev/null
+        exit 0
+    fi
+
+    # ---- Self-heal: the restored server did not come back.
+    #      Put the version we came from back so the panel keeps running. ----
+    log "ROLLBACK: server did not come back - restoring the version you were on"
+    set_state "RUNNING (self-heal)"
+    restore_snapshot
+    resync_runtime
+    propagate_ankd
+    restart_panel_server_sync
+    if wait_for_server; then
+        set_state "FAILED: rollback failed (server did not start), restored the version you were on"
+    else
+        set_state "FAILED: rollback failed and self-restore failed - full reinstall required"
+    fi
+    rm -rf "$PREROLL_MODULE" "$PREROLL_RUNTIME" 2>/dev/null
+    exit 1
 }
 
 mkdir -p "$SDCARD" "$TMP_DIR" 2>/dev/null

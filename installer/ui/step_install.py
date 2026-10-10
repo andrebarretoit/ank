@@ -115,6 +115,7 @@ class InstallThread(QThread):
         self.log.emit("Running final cleanup to remove any leftovers...")
         self.adb.shell(self.serial, "rm -rf /data/local/ank")
         self.adb.shell(self.serial, "rm -rf /data/adb/modules/ank*")
+        self.adb.shell(self.serial, "rm -rf /data/adb/modules/.ank-update-old")
         self.adb.shell(self.serial, "rm -rf /data/adb/service.d/ank*")
 
         self.progress.emit(1.0, "Uninstall complete!")

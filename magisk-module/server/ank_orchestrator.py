@@ -10,13 +10,21 @@ CONTAINERS_DIR = os.path.join(ANK_DIR, "containers")
 LOGS_DIR = os.path.join(ANK_DIR, "logs")
 
 
+def _log(msg):
+    print(f"[ORCH] {msg}", flush=True)
+
+
 class Orchestrator:
+    """Supervisor loop: reconciles the load balancers and the userspace
+    portproxy forwards every tick, then evaluates stack auto-scaling."""
+
     def __init__(self, stack_manager):
         self.stack_manager = stack_manager
         self._thread = None
         self._running = False
         self._interval = 10
         self._scale_state = {}
+        self._ppm = None
 
     def start(self, interval=10):
         """Start the orchestrator background thread"""
@@ -28,21 +36,90 @@ class Orchestrator:
     def stop(self):
         self._running = False
 
+    def _get_ppm(self):
+        if self._ppm is None:
+            from ank_portproxy import PortProxyManager
+            self._ppm = PortProxyManager(
+                log=lambda m: _log(f"[PORTPROXY] {m}"))
+        return self._ppm
+
     def _loop(self):
-        """Main monitoring loop"""
+        """Main supervisor loop"""
+        first = True
         while self._running:
             try:
+                self._reconcile(first=first)
                 stacks = self.stack_manager.list_stacks()
                 for stack in stacks:
                     if stack.get("status") == "active":
                         self._check_stack(stack)
-            except Exception:
-                pass
+            except Exception as e:
+                _log(f"tick error: {e}")
+            first = False
             time.sleep(self._interval)
+
+    def _reconcile(self, first=False):
+        """Bring reality back to the desired state: every active stack with
+        containers has a live LB, and every container's ports are forwarded
+        through ank_portproxy (releases stale entries automatically)."""
+        ppm = self._get_ppm()
+
+        # -- restore missing LBs (boot, crash, rollback) --
+        for stack in self.stack_manager.list_stacks():
+            if stack.get("status") != "active":
+                continue
+            name = stack.get("name")
+            if not stack.get("containers"):
+                continue
+            if name not in self.stack_manager._lb_instances:
+                if first:
+                    _log(f"[RECONCILE] restoring LB for stack '{name}'")
+                self.stack_manager._start_lb(name, stack)
+
+        # -- portproxy forwards for every root-mode container --
+        desired = {}
+        for cfg_file in glob.glob(os.path.join(CONTAINERS_DIR, "*/config.json")):
+            cname = os.path.basename(os.path.dirname(cfg_file))
+            try:
+                with open(cfg_file) as f:
+                    cfg = json.load(f)
+            except Exception:
+                continue
+            if cfg.get("mode") == "lite":
+                continue  # proot containers share the host network
+            if cfg.get("status") in ("failed", "deleting"):
+                continue
+            ip = cfg.get("ip_address", "")
+            try:
+                ssh_port = int(cfg.get("ssh_port") or 0)
+            except (TypeError, ValueError):
+                ssh_port = 0
+            # SSH: same host port into the container's netns
+            if ip and ssh_port:
+                desired[ssh_port] = (ip, ssh_port)
+            for pm in cfg.get("port_mappings", []):
+                try:
+                    hp = int(pm.get("host_port"))
+                    cp = int(pm.get("container_port"))
+                except (TypeError, ValueError):
+                    continue
+                if ip:
+                    # Isolated/bridge container: host port -> container ip
+                    desired[hp] = (ip, cp)
+                else:
+                    # Legacy compat: service already on the host loopback.
+                    # hp==cp needs no forward; hp!=cp maps to 127.0.0.1:cp.
+                    if hp != cp:
+                        desired[hp] = ("127.0.0.1", cp)
+        ppm.reconcile(desired)
 
     def _check_stack(self, stack):
         """Check if a stack needs scaling"""
         name = stack["name"]
+        trigger = stack.get("trigger", "requests")
+        # Guard: a none/null trigger means "never auto-scale this stack"
+        if trigger is None or str(trigger).strip().lower() in ("", "none"):
+            return
         current_count = len(stack.get("containers", []))
         trigger = stack.get("trigger", "requests")
         threshold_up = stack.get("threshold_up", 100)

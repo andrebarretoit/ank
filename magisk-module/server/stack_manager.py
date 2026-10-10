@@ -9,6 +9,8 @@ with a Python reverse proxy load balancer distributing traffic between them.
 
 import os
 import json
+import re
+import socket
 import time
 import threading
 import subprocess
@@ -20,6 +22,9 @@ STACKS_DIR = os.path.join(ANK_DIR, "stacks")
 CONTAINERS_DIR = os.path.join(ANK_DIR, "containers")
 SCRIPTS_DIR = os.path.join(ANK_DIR, "core")
 LB_PORT_RANGE = (30000, 39999)
+SERVICE_PORT_RANGE = (40000, 49999)
+ANKD_PORT_BASE = 50000
+ANKD_PORT_END = 59999
 REPLICA_PORT_BASE = 50000
 
 try:
@@ -70,17 +75,41 @@ def _log(msg):
     print(f"[STACK] {msg}", flush=True)
 
 
-def _find_free_port(start=LB_PORT_RANGE[0], end=LB_PORT_RANGE[1]):
+# Template specs mirroring server.py IMAGE_TEMPLATES: image name, packages
+# installed at create time and the static path the service serves.
+_TEMPLATE_SPECS = {
+    "nginx":  {"pkgs": "nginx curl", "static_path": "/var/www/html"},
+    "apache": {"pkgs": "apache2 curl", "static_path": "/var/www/localhost/htdocs"},
+    "php":    {"pkgs": "php82 php82-mbstring php82-json php82-cgi", "static_path": "/var/www/php"},
+    "node":   {"pkgs": "nodejs npm", "static_path": "/var/www/app"},
+    "python": {"pkgs": "python3 py3-pip", "static_path": "/var/www/app"},
+}
+
+
+def _port_busy(port):
+    """True when something already accepts connections on 127.0.0.1:port."""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(0.1)
+        result = s.connect_ex(("127.0.0.1", int(port)))
+        s.close()
+        return result == 0
+    except Exception:
+        return False
+
+
+def _collect_used_ports():
     used = set()
     for cfg_file in glob.glob(os.path.join(CONTAINERS_DIR, "*/config.json")):
         try:
             with open(cfg_file) as f:
                 cfg = json.load(f)
-            if cfg.get("ssh_port"):
-                try:
-                    used.add(int(cfg["ssh_port"]))
-                except (ValueError, TypeError):
-                    pass
+            for key in ("ssh_port", "ankd_port"):
+                if cfg.get(key):
+                    try:
+                        used.add(int(cfg[key]))
+                    except (ValueError, TypeError):
+                        pass
             for pm in cfg.get("port_mappings", []):
                 if pm.get("host_port"):
                     try:
@@ -100,22 +129,30 @@ def _find_free_port(start=LB_PORT_RANGE[0], end=LB_PORT_RANGE[1]):
                     pass
         except Exception:
             pass
+    return used
+
+
+def _find_free_port(start=LB_PORT_RANGE[0], end=LB_PORT_RANGE[1], extra_used=()):
+    used = _collect_used_ports()
+    used.update(int(p) for p in extra_used)
     for port in range(start, end):
-        if port not in used:
-            try:
-                s = __import__("socket").socket(__import__("socket").AF_INET, __import__("socket").SOCK_STREAM)
-                s.settimeout(0.1)
-                result = s.connect_ex(("127.0.0.1", port))
-                s.close()
-                if result != 0:
-                    return port
-            except Exception:
-                return port
+        if port not in used and not _port_busy(port):
+            return port
     return start
 
 
 def _get_free_ssh_port():
     return _find_free_port(2200, 65000)
+
+
+def _get_free_service_port(extra_used=()):
+    """Host/container service port for a stack replica (40000-49999)."""
+    return _find_free_port(SERVICE_PORT_RANGE[0], SERVICE_PORT_RANGE[1], extra_used)
+
+
+def _get_free_ankd_port(extra_used=()):
+    """ankd health-listener port for a stack replica (50000-59999)."""
+    return _find_free_port(ANKD_PORT_BASE, ANKD_PORT_END, extra_used)
 
 
 def _get_free_replica_port():
@@ -183,8 +220,21 @@ class StackManager:
         ankfile = config.get("ankfile", "")
         min_instances = max(1, config.get("min", 1))
         max_instances = max(min_instances, config.get("max", 10))
-        lb_port = config.get("lb_port") or _find_free_port()
-        lb_port = int(lb_port)
+        lb_port = config.get("lb_port") or config.get("port")
+        port_warning = None
+        if lb_port:
+            try:
+                lb_port = int(lb_port)
+            except (ValueError, TypeError):
+                lb_port = None
+        if lb_port:
+            if _port_busy(lb_port):
+                new_port = _find_free_port()
+                port_warning = f"LB port {lb_port} in use, using {new_port} instead"
+                _log(f"WARN: {port_warning}")
+                lb_port = new_port
+        else:
+            lb_port = _find_free_port()
         root_password = config.get("root_password", "ankstack")
         trigger = config.get("trigger", "requests")
         threshold_up = config.get("threshold_up", 100)
@@ -214,6 +264,8 @@ class StackManager:
             "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "metrics": {"requests_total": 0, "last_scale_event": 0},
         }
+        if port_warning:
+            stack_config["port_warning"] = port_warning
 
         stack_dir = os.path.join(STACKS_DIR, name)
         data_dir = os.path.join(stack_dir, "data")
@@ -490,9 +542,11 @@ class StackManager:
         backends = []
         for cname in containers:
             info = self._get_container_info(cname)
-            if info and info.get("status") == "running" and info.get("ip"):
+            if info and info.get("status") == "running":
                 svc_port = self._get_service_port(cname)
-                backends.append(f"{info['ip']}:{svc_port}")
+                # Isolated mode: the container service is reachable on the
+                # host through ank_portproxy at 127.0.0.1:host_port.
+                backends.append(f"127.0.0.1:{svc_port}")
 
         if not backends:
             _log(f"WARN: No running backends for '{stack_name}'")
@@ -618,33 +672,54 @@ class StackManager:
         return best
 
     def _create_stack_container(self, stack_name, cname, template, root_password, ankfile="", shared_volume=False):
-        ssh_port = _get_free_ssh_port()
-        image = "ank-alpinebase-3.20"
-        pkgs = ""
-        custom_workdir = "/"
-        custom_cmd = ""
         parsed = None
-
         if ankfile:
             parsed = self._parse_ankfile(ankfile)
-            image = parsed.get("base_image", image)
+            template_id = "ankfile"
+            image = parsed.get("base_image", "ank-alpinebase-3.20")
             pkgs = parsed.get("pkgs", "")
-            custom_workdir = parsed.get("workdir", "/")
-            custom_cmd = parsed.get("cmd", "")
-            template = "ankfile"
         else:
-            pkgs_map = {"nginx": "nginx", "apache": "apache2", "php": "php82 php82-cgi",
-                        "node": "nodejs npm", "python": "python3"}
-            pkgs = pkgs_map.get(template, "")
+            template_id = template
+            spec = _TEMPLATE_SPECS.get(template)
+            if spec:
+                # Distinct image name so container.sh builds it with pkgs
+                # (same mechanism as the deploy path in server.py).
+                image = f"{template}-3.20"
+                pkgs = spec["pkgs"]
+            else:
+                image = "ank-alpinebase-3.20"
+                pkgs = ""
+        spec = _TEMPLATE_SPECS.get(template_id)
 
-        _log(f"Creating container '{cname}' (template={template}, port={ssh_port})")
-        output, code = run_script("container.sh", "create", cname, image, root_password, str(ssh_port), pkgs)
+        ssh_port = _get_free_ssh_port()
+        service_port = _get_free_service_port(extra_used={ssh_port})
+        ankd_port = _get_free_ankd_port(extra_used={ssh_port, service_port})
+
+        _log(f"Creating container '{cname}' (template={template_id}, ssh={ssh_port}, "
+             f"service={service_port}, ankd={ankd_port})")
+        output, code = run_script("container.sh", "create", cname, image, root_password,
+                                  str(ssh_port), pkgs, template_id)
         if code != 0:
             _log(f"ERROR: Failed to create '{cname}': {output}")
             return False
 
+        config = load_container_config(cname) or {}
+        config["template"] = template_id
+        config["template_id"] = template_id
+        config["image"] = image
+        config["ankd_port"] = ankd_port
+        if spec:
+            config["port_mappings"] = [{"host_port": service_port,
+                                        "container_port": service_port,
+                                        "protocol": "tcp"}]
+            config["serves_static"] = True
+            config["static_path"] = spec["static_path"]
+        save_container_config(cname, config)
+
         if parsed:
             self._apply_ankfile_config(cname, parsed)
+        if spec:
+            self._apply_stack_service(cname, template_id, service_port)
 
         if shared_volume:
             stack_data_dir = os.path.join(STACKS_DIR, stack_name, "data")
@@ -659,6 +734,116 @@ class StackManager:
             _log(f"ERROR: Failed to start '{cname}': {output}")
             return False
         return True
+
+    @staticmethod
+    def _stack_index_html(template_id, port):
+        return ('<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">'
+                f'<title>ANK Stack - {template_id}</title>'
+                '<style>*{margin:0;padding:0;box-sizing:border-box}'
+                'body{font-family:-apple-system,sans-serif;background:#0f172a;color:#e2e8f0;'
+                'min-height:100vh;display:flex;align-items:center;justify-content:center}'
+                '.card{background:#1e293b;border-radius:16px;padding:48px;text-align:center}'
+                'h1{font-weight:800}</style></head><body><div class="card">'
+                '<h1>ANK Stack</h1>'
+                f'<p>{template_id} replica listening on :{port}</p>'
+                '</div></body></html>')
+
+    def _apply_stack_service(self, cname, template_id, port):
+        """Mirror the deploy-time service setup (server.py template deploy)
+        so the replica actually listens on the mapped port."""
+        merged = os.path.join(CONTAINERS_DIR, cname, "merged")
+        spec = _TEMPLATE_SPECS.get(template_id, {})
+        static_path = spec.get("static_path", "")
+        html = self._stack_index_html(template_id, port)
+
+        def _write(rel, content):
+            path = os.path.join(merged, rel)
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w") as f:
+                f.write(content)
+
+        try:
+            _write(os.path.join("etc", "ank", "config"),
+                   f"service={template_id}\nport={port}\nstatic_path={static_path}\n")
+
+            if template_id == "nginx":
+                os.makedirs(os.path.join(merged, "run", "nginx"), exist_ok=True)
+                _write(os.path.join("var", "www", "html", "index.html"), html)
+                _write(os.path.join("etc", "nginx", "nginx.conf"),
+                       "daemon off;\nuser root;\n"
+                       "events { worker_connections 1024; }\n"
+                       "http {\n    include /etc/nginx/mime.types;\n"
+                       "    default_type application/octet-stream;\n"
+                       "    server {\n"
+                       f"        listen {port};\n"
+                       "        root /var/www/html;\n"
+                       "        index index.html;\n"
+                       "        location / { try_files $uri $uri/ =404; }\n"
+                       "    }\n}\n")
+            elif template_id == "apache":
+                _write(os.path.join("var", "www", "localhost", "htdocs", "index.html"), html)
+                httpd = os.path.join(merged, "etc", "apache2", "httpd.conf")
+                if os.path.isfile(httpd):
+                    with open(httpd) as f:
+                        conf = f.read()
+                    conf2, n = re.subn(r"(?m)^Listen\s+\d+", f"Listen {port}", conf, count=1)
+                    if n:
+                        with open(httpd, "w") as f:
+                            f.write(conf2)
+            elif template_id == "php":
+                _write(os.path.join("var", "www", "php", "index.php"),
+                       "<?php echo '<!DOCTYPE html><html><head><meta charset=\"UTF-8\">"
+                       "<title>ANK Stack - PHP</title></head><body>"
+                       "<h1>ANK Stack</h1><p>PHP replica listening on :" + str(port) +
+                       "</p></body></html>'; ?>\n")
+            elif template_id == "node":
+                _write(os.path.join("var", "www", "app", "server.js"),
+                       "const http = require('http');\n"
+                       "const srv = http.createServer((req, res) => {\n"
+                       "    res.writeHead(200, {'Content-Type': 'text/html'});\n"
+                       f"    res.end({json.dumps(html)});\n"
+                       "});\n"
+                       f"const PORT = process.env.ANK_PORT || {port};\n"
+                       "srv.listen(PORT, () => console.log('ANK stack replica on :' + PORT));\n")
+                _write(os.path.join("var", "www", "app", "package.json"),
+                       '{"name":"ank-stack-app","version":"1.0.0","main":"server.js"}\n')
+            elif template_id == "python":
+                _write(os.path.join("var", "www", "app", "server.py"),
+                       "from http.server import HTTPServer, BaseHTTPRequestHandler\n"
+                       "import os\n"
+                       f"HTML = {html!r}\n"
+                       "class Handler(BaseHTTPRequestHandler):\n"
+                       "    def do_GET(self):\n"
+                       "        self.send_response(200)\n"
+                       "        self.send_header('Content-Type', 'text/html')\n"
+                       "        self.end_headers()\n"
+                       "        self.wfile.write(HTML.encode())\n"
+                       "    def log_message(self, fmt, *args):\n"
+                       "        pass\n"
+                       f"HTTPServer(('0.0.0.0', int(os.environ.get('ANK_PORT', '{port}'))), "
+                       "Handler).serve_forever()\n")
+
+            # Point the generated service definition at the mapped port so
+            # ankd health checks match (php also needs its CMD port patched:
+            # the built-in server port lives in the command line).
+            svc_dir = os.path.join(merged, "etc", "ankd", "services.d")
+            for fn in sorted(os.listdir(svc_dir)) if os.path.isdir(svc_dir) else []:
+                if not fn.endswith(".ankd") or "sshd" in fn:
+                    continue
+                path = os.path.join(svc_dir, fn)
+                with open(path) as f:
+                    lines = f.readlines()
+                with open(path, "w") as f:
+                    for line in lines:
+                        if line.startswith("PORT="):
+                            f.write(f"PORT={port}\n")
+                        elif template_id == "php" and line.startswith("CMD="):
+                            f.write(f"CMD=php82 -S 0.0.0.0:{port} -t /var/www/php\n")
+                        else:
+                            f.write(line)
+            _log(f"Service config applied for '{cname}' ({template_id} on port {port})")
+        except Exception as e:
+            _log(f"WARN: service config for '{cname}' failed: {e}")
 
     def _parse_ankfile(self, content):
         result = {

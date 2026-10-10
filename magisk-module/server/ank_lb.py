@@ -256,13 +256,18 @@ class LoadBalancer:
 
     @staticmethod
     def _is_healthy_status(resp: bytes) -> bool:
-        """Parse HTTP response status line to check for 2xx status code."""
+        """Parse HTTP response status line. Any well-formed HTTP response
+        counts as healthy: services that don't serve /health still answer
+        with a valid status line (404/401/501...), only garbage or a dead
+        socket marks the backend down."""
         try:
             status_line = resp.split(b"\r\n", 1)[0]
+            if not status_line.startswith(b"HTTP/"):
+                return False
             parts = status_line.split(b" ", 2)
             if len(parts) >= 2:
-                code = int(parts[1])
-                return 200 <= code < 300
+                int(parts[1])  # valid numeric status code
+                return True
         except (ValueError, IndexError):
             pass
         return False

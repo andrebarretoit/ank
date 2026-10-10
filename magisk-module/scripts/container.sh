@@ -991,13 +991,12 @@ cmd_create() {
 }
 CFGEOF
 
-    # Apply network policies
+    # Apply network policies (port forwarding is handled by the server's
+    # ank_portproxy - orchestrator reconcile; no iptables here)
     if [ "$MODE" = "isolated" ]; then
         sh "$SCRIPTS_DIR/network.sh" apply_policies "$NAME"
-        sh "$SCRIPTS_DIR/network.sh" apply_ports "$NAME"
     else
         sh "$SCRIPTS_DIR/network.sh" apply_policies_compat "$NAME"
-        sh "$SCRIPTS_DIR/network.sh" apply_ports_compat "$NAME"
     fi
 
     echo "Container '$NAME' created (IP: $IP, SSH port: $SSH_PORT, mode: $MODE)"
@@ -1406,42 +1405,11 @@ cmd_start() {
     fi
     _start_phase "cgroup attached"
 
-    # Setup SSH port forwarding (only for modes with network namespace)
-    if [ -n "$SSH_PORT" ] && [ "$SSH_PORT" != "null" ] && [ "$IP" != "none" ] && [ -n "$IP" ]; then
-        if [ "$MODE" = "isolated" ]; then
-            setup_ssh_forward "$IP" "$SSH_PORT"
-        fi
-        # In shared_host/shared_network/lite modes, sshd listens directly on SSH_PORT
-    fi
+    # Port forwarding (SSH + service ports) is applied by the server's
+    # ank_portproxy via the orchestrator reconcile loop - nothing to do here.
 
-    # Setup service port forwarding
-    local SVC_PORT=""
-    local IMAGE=$(grep -o '"image":"[^"]*"' "$CONFIG" | cut -d'"' -f4)
-    case "$IMAGE" in
-        nginx*) SVC_PORT="8080" ;;
-        apache*) SVC_PORT="9090" ;;
-        php*) SVC_PORT="8000" ;;
-        node*) SVC_PORT="3000" ;;
-        python*) SVC_PORT="5000" ;;
-    esac
-    if [ -n "$SVC_PORT" ] && [ "$IP" != "none" ] && [ -n "$IP" ]; then
-        if [ "$MODE" = "isolated" ]; then
-            iptables -t nat -D PREROUTING -p tcp --dport "$SVC_PORT" -j DNAT --to-destination "${IP}:${SVC_PORT}" 2>/dev/null
-            iptables -D FORWARD -p tcp -d "$IP" --dport "$SVC_PORT" -j ACCEPT 2>/dev/null
-            iptables -t nat -A PREROUTING -p tcp --dport "$SVC_PORT" -j DNAT --to-destination "${IP}:${SVC_PORT}" 2>/dev/null
-            iptables -A FORWARD -p tcp -d "$IP" --dport "$SVC_PORT" -j ACCEPT 2>/dev/null
-            echo "Service forward: host:$SVC_PORT -> $IP:$SVC_PORT"
-        fi
-    fi
-
-    # Apply custom port_mappings from config.json (overrides hardcoded service ports)
-    local HAS_CUSTOM_PORTS=$(grep -o '"host_port"' "$CONFIG" 2>/dev/null | head -1)
-    if [ -n "$HAS_CUSTOM_PORTS" ]; then
-        if [ "$MODE" = "isolated" ]; then
-            sh "$SCRIPTS_DIR/network.sh" apply_ports "$NAME" 2>/dev/null
-            echo "Custom port mappings applied from config.json"
-        fi
-    fi
+    # Apply custom port_mappings from config.json - also handled by
+    # ank_portproxy (orchestrator reconcile).
 
     # Update config
     sed -i "s/\"status\": \"[^\"]*\"/\"status\": \"running\"/" "$CONFIG"
@@ -1758,11 +1726,9 @@ _remove_container_rules() {
     local IMAGE=$(grep -o '"image":"[^"]*"' "$CONFIG" 2>/dev/null | cut -d'"' -f4)
     local MODE=$(get_mode)
 
-    # SSH port forwarding
+    # SSH port forwarding (remove_ssh_forward kept for rollback compat;
+    # live forwards are released by ank_portproxy when the config is gone)
     if [ -n "$SSH_PORT" ] && [ "$SSH_PORT" != "null" ] && [ -n "$IP" ] && [ "$IP" != "none" ]; then
-        if [ "$MODE" = "isolated" ]; then
-            remove_ssh_forward "$IP" "$SSH_PORT" 2>/dev/null
-        fi
         iptables -t nat -D PREROUTING -p tcp --dport "$SSH_PORT" -j REDIRECT --to-port 22 2>/dev/null
         iptables -t nat -D PREROUTING -p tcp --dport "$SSH_PORT" -j DNAT --to-destination "${IP}:22" 2>/dev/null
         iptables -D FORWARD -p tcp -d "$IP" --dport 22 -j ACCEPT 2>/dev/null

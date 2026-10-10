@@ -2008,8 +2008,9 @@ async function loadStacks() {
     const stacks = data.stacks || [];
     if (!stacks.length) { el.innerHTML = '<div class="empty-state"><i class="bi bi-layers"></i><h3>No stacks</h3><p>Create a stack to get started</p></div>'; return; }
     el.innerHTML = stacks.map(s => {
-      const running = (s.containers||[]).filter(c => c.status==='running').length;
       const total = (s.containers||[]).length;
+      const running = typeof s.running_count === 'number' ? s.running_count
+        : (s.containers||[]).filter(c => c && typeof c === 'object' && c.status==='running').length;
       const bc = running===total&&total>0 ? 'badge-success' : running>0 ? 'badge-warning' : total>0 ? 'badge-danger' : 'badge-neutral';
       const tpl = s.template === 'ankfile' ? '<i class="bi bi-filetype-json"></i> Ankfile' : esc(s.template||s.image||'');
       const lbPort = s.port || s.lb_port || '-';
@@ -2026,11 +2027,13 @@ function showStackDetail(name) {
   const el = document.getElementById('stack-detail');
   if (!el) return;
   el.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text-muted)"><i class="bi bi-arrow-repeat spin" style="font-size:24px"></i></div>';
-  api('GET', '/stacks/all').then(data => {
-    const s = (data.stacks||[]).find(x => x.name === name);
-    if (!s) { el.innerHTML = '<div style="padding:20px;color:var(--text-muted)">Stack not found</div>'; return; }
-    const running = (s.containers||[]).filter(c => c.status==='running').length;
-    const total = (s.containers||[]).length;
+  api('GET', `/stacks/${encodeURIComponent(name)}`).then(s => {
+    if (!s || s.error) { el.innerHTML = '<div style="padding:20px;color:var(--text-muted)">Stack not found</div>'; return; }
+    const details = (s.container_details && s.container_details.length) ? s.container_details
+      : (s.containers||[]).map(c => typeof c === 'string' ? {name: c, status: 'unknown', ip: '-'} : c);
+    const total = (s.containers||[]).length || details.length;
+    const running = typeof s.running_count === 'number' ? s.running_count
+      : details.filter(c => c.status==='running').length;
     el.innerHTML = `
       <div class="sr-header">
         <h2><i class="bi bi-layers" style="color:var(--accent)"></i>${esc(s.name)}</h2>
@@ -2053,12 +2056,13 @@ function showStackDetail(name) {
         <div class="sr-info-item"><div class="sr-label">Scale Range</div><div class="sr-value">${s.min||1} — ${s.max||10}</div></div>
         <div class="sr-info-item"><div class="sr-label">Trigger</div><div class="sr-value">${esc(s.trigger||'none')}</div></div>
       </div>
+      ${s.port_warning ? `<div style="font-size:11px;color:var(--warning,#f59e0b);margin-bottom:8px"><i class="bi bi-exclamation-triangle"></i> ${esc(s.port_warning)}</div>` : ''}
       <div style="font-size:12px;font-weight:600;color:var(--text-secondary);margin-bottom:10px">Containers</div>
-      ${(s.containers||[]).map(c => {
+      ${details.map(c => {
         const sc = getStatusBadgeClass(c.status);
         return `<div style="display:flex;align-items:center;justify-content:space-between;padding:8px 12px;border:1px solid var(--border);border-radius:8px;margin-bottom:6px">
           <span style="font-size:13px">${esc(c.name)} <span class="badge ${sc}" style="font-size:9px">${getStatusLabel(c.status)}</span></span>
-          <span style="font-size:11px;color:var(--text-muted)">${esc(c.ip||'-')}</span>
+          <span style="font-size:11px;color:var(--text-muted)">${esc(c.ip||'-')}${c.ssh_port ? ' · ssh: '+c.ssh_port : ''}</span>
         </div>`;
       }).join('') || '<div style="text-align:center;padding:16px;color:var(--text-muted);font-size:12px">No containers</div>'}`;
   }).catch(e => { el.innerHTML = `<div style="color:var(--danger);padding:20px">${esc(e.message)}</div>`; });
